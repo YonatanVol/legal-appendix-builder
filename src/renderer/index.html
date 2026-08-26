@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self';">
+<title>בונה תיקי נספחים</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="topbar">
+  <h1>בונה תיקי נספחים <span class="version" id="version"></span></h1>
+  <p class="sub">כתב תביעה + נספחים → תיק מוגמר עם חוצצים, תוכן עניינים ומספור רץ</p>
+</header>
+
+<main>
+
+  <section class="card">
+    <div class="card-head">
+      <span class="step">1</span>
+      <h2>כתב התביעה</h2>
+    </div>
+    <div id="body-drop" class="drop">
+      <div id="body-empty" class="drop-empty">
+        <p class="drop-title">גרור לכאן את קובץ ה-PDF של כתב התביעה</p>
+        <p class="drop-hint">או <button type="button" class="link" id="body-browse">בחר קובץ</button></p>
+      </div>
+      <div id="body-filled" class="drop-filled hidden">
+        <div class="file-main">
+          <span class="file-name" id="body-name"></span>
+          <span class="pill" id="body-pages"></span>
+        </div>
+        <button type="button" class="ghost" id="body-clear">החלף</button>
+      </div>
+    </div>
+    <p class="note">יש לייצא את כתב התביעה מ-Word <strong>ללא מספור עמודים</strong> — התוכנה ממספרת את כל התיק בעצמה.</p>
+  </section>
+
+  <section class="card">
+    <div class="card-head">
+      <span class="step">2</span>
+      <h2>נספחים</h2>
+      <div class="head-actions">
+        <button type="button" class="secondary" id="add-appendix">הוסף נספח</button>
+      </div>
+    </div>
+
+    <div id="appendix-empty" class="drop drop-slim">
+      <p class="drop-title">גרור לכאן קובצי PDF של נספחים</p>
+      <p class="drop-hint">כל קובץ ייהפך לנספח נפרד. אפשר לצרף כמה קבצים לאותו נספח בהמשך.</p>
+    </div>
+
+    <ul id="appendix-list" class="appendix-list"></ul>
+  </section>
+
+  <section class="card">
+    <div class="card-head">
+      <span class="step">3</span>
+      <h2>הפקה</h2>
+    </div>
+    <div class="summary" id="summary">בחר כתב תביעה ונספח אחד לפחות.</div>
+    <div class="build-row">
+      <button type="button" class="primary" id="build" disabled>צור תיק</button>
+      <span class="progress" id="progress"></span>
+    </div>
+    <div class="error hidden" id="error"></div>
+    <div class="result hidden" id="result">
+      <p class="result-title" id="result-title"></p>
+      <div class="result-actions">
+        <button type="button" class="secondary" id="open-file">פתח קובץ</button>
+        <button type="button" class="ghost" id="reveal-file">פתח תיקייה</button>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<div id="drag-veil" class="drag-veil hidden"><span>שחרר כדי להוסיף</span></div>
+
+<script src="app.js"></script>
+</body>
+</html>

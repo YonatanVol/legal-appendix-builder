@@ -1,0 +1,27 @@
+appId: com.rotem.office.appendixbuilder
+productName: בונה תיקי נספחים
+copyright: ""
+
+directories:
+  output: dist
+  buildResources: assets
+
+# Only the application itself ships; fixtures and test output stay behind.
+files:
+  - src/**/*
+  - assets/fonts/**/*
+  - package.json
+  - "!**/*.map"
+
+# The app never talks to the network, so nothing here should either.
+publish: null
+npmRebuild: false
+
+win:
+  # electron-builder converts this 1024x1024 PNG into a multi-resolution .ico.
+  icon: assets/icon.png
+  # `zip` packages from macOS without Wine, unlike the NSIS installer targets.
+  target:
+    - target: zip
+      arch: [x64]
+  artifactName: "AppendixBuilder-${version}-win-x64.${ext}"

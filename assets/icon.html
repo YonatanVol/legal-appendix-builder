@@ -1,0 +1,48 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8">
+<style>
+  /* The drop shadow overflows the artboard; without this the scrollbars render into
+     the capture and clip the right edge. */
+  html, body {
+    margin: 0; padding: 0;
+    width: 512px; height: 512px;
+    background: transparent;
+    overflow: hidden;
+  }
+  svg { display: block; }
+</style>
+</head>
+<body>
+<svg width="512" height="512" viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2f74d8"/>
+      <stop offset="1" stop-color="#17458f"/>
+    </linearGradient>
+    <filter id="lift" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="7" stdDeviation="9" flood-color="#0a2a5e" flood-opacity="0.35"/>
+    </filter>
+  </defs>
+
+  <rect width="512" height="512" rx="112" fill="url(#bg)"/>
+
+  <g filter="url(#lift)">
+    <!-- the pleading -->
+    <rect x="112" y="82" width="240" height="348" rx="16" fill="#ffffff"/>
+    <!-- lines of text, kept few so they still read when the icon is 16px -->
+    <g fill="#9fb3cf">
+      <rect x="146" y="132" width="172" height="17" rx="8"/>
+      <rect x="146" y="176" width="172" height="17" rx="8"/>
+      <rect x="146" y="220" width="118" height="17" rx="8"/>
+    </g>
+    <!-- appendix dividers, tabbed out to the side -->
+    <g fill="#f6b432">
+      <rect x="296" y="286" width="112" height="34" rx="12"/>
+      <rect x="296" y="334" width="112" height="34" rx="12"/>
+      <rect x="296" y="382" width="112" height="34" rx="12"/>
+    </g>
+  </g>
+</svg>
+</body>
+</html>

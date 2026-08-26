@@ -1,0 +1,8 @@
+node_modules/
+dist/
+.DS_Store
+
+# Case documents. These are real medical and legal records and must never be
+# committed. The tests read them from here; see the README.
+test/fixtures/
+test/output/
