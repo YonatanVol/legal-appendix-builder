@@ -6,6 +6,7 @@ const { ipcMain, dialog, shell } = require('electron');
 const { inspect } = require('./pdf/inspect');
 const { computeLayout, formatRange } = require('./pdf/layout');
 const { buildBundle } = require('./pdf/assemble');
+const history = require('./history');
 // Read from the manifest rather than app.getVersion(): that only resolves the app's
 // own package.json in some launch contexts, and reports Electron's version otherwise.
 const { version } = require('../../package.json');
@@ -28,6 +29,25 @@ async function inspectAll(filePaths) {
     results.push({ ...(await inspect(filePath)), suggestedTitle: titleFromFilename(filePath) });
   }
   return results;
+}
+
+/**
+ * Read a file back for a restore. Anything that stops it being usable, gone, moved,
+ * corrupt or encrypted, comes back as missing rather than throwing: the rest of the
+ * arrangement is still worth restoring, and she can point at the one file again.
+ */
+async function inspectOrMissing(filePath) {
+  try {
+    return { ...(await inspect(filePath)), missing: false };
+  } catch (err) {
+    return {
+      path: filePath,
+      name: path.basename(filePath),
+      pageCount: 0,
+      missing: true,
+      reason: err.message,
+    };
+  }
 }
 
 function fail(err) {
@@ -62,6 +82,23 @@ function registerIpc() {
 
     try {
       return { ok: true, files: await inspectAll(filePaths) };
+    } catch (err) {
+      return fail(err);
+    }
+  });
+
+  // Used when a restored file is no longer where it was, so the dialog says so
+  // rather than reusing a picker titled for a different job.
+  ipcMain.handle('pick:locate', async (_event, missingName) => {
+    const { canceled, filePaths } = await dialog.showOpenDialog({
+      title: missingName ? `אתר את הקובץ "${missingName}"` : 'אתר את הקובץ',
+      filters: PDF_FILTER,
+      properties: ['openFile'],
+    });
+    if (canceled || filePaths.length === 0) return { ok: true, cancelled: true };
+
+    try {
+      return { ok: true, file: (await inspectAll(filePaths))[0] };
     } catch (err) {
       return fail(err);
     }
@@ -109,7 +146,66 @@ function registerIpc() {
       const result = await buildBundle(spec, (stage) => {
         if (!sender.isDestroyed()) sender.send('bundle:progress', stage);
       });
-      return { ok: true, result };
+
+      // The bundle already exists on disk. Losing its history row is a small
+      // inconvenience; reporting a failed build would be a lie.
+      let historyId = null;
+      try {
+        historyId = (await history.record(spec, result)).id;
+      } catch (err) {
+        console.error('history: could not record the bundle:', err.message);
+      }
+
+      return { ok: true, result: { ...result, historyId } };
+    } catch (err) {
+      return fail(err);
+    }
+  });
+
+  ipcMain.handle('history:list', async () => {
+    try {
+      return { ok: true, entries: await history.list() };
+    } catch (err) {
+      return fail(err);
+    }
+  });
+
+  ipcMain.handle('history:restore', async (_event, id) => {
+    try {
+      const entry = await history.get(id);
+      if (!entry) return fail(new Error('התיק הזה כבר לא נמצא בהיסטוריה.'));
+
+      // Every file is read again rather than trusting the page counts that were
+      // stored. Correcting a letter is the whole point of this feature, and a
+      // corrected letter is a different length: stale counts would put every range
+      // in the table of contents quietly wrong.
+      const body = await inspectOrMissing(entry.bodyPath);
+
+      const appendices = [];
+      for (const appendix of entry.appendices) {
+        const files = [];
+        for (const file of appendix.files) files.push(await inspectOrMissing(file));
+        appendices.push({ title: appendix.title, files });
+      }
+
+      return {
+        ok: true,
+        restored: {
+          id: entry.id,
+          outputPath: entry.outputPath,
+          savedAt: entry.savedAt,
+          body,
+          appendices,
+        },
+      };
+    } catch (err) {
+      return fail(err);
+    }
+  });
+
+  ipcMain.handle('history:remove', async (_event, id) => {
+    try {
+      return { ok: true, removed: await history.remove(id) };
     } catch (err) {
       return fail(err);
     }

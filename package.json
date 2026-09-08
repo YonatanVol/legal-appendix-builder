@@ -1,19 +1,21 @@
 {
   "name": "rotem-office",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Builds a court-ready PDF bundle: pleading + appendices, with dividers, table of contents and running page numbers.",
   "main": "src/main/index.js",
   "private": true,
   "scripts": {
     "start": "electron .",
     "split-reference": "node test/split-reference.js",
-    "test": "npm run test:build && npm run test:verify && npm run test:edge && npm run test:ui && npm run test:security",
+    "test": "npm run test:build && npm run test:verify && npm run test:edge && npm run test:ui && npm run test:history && npm run test:history-ui && npm run test:security",
     "test:build": "electron test/build-headless.js",
     "test:verify": "node test/verify.js",
     "test:edge": "electron test/edge-cases.js",
     "test:ui": "electron test/ui-smoke.js",
     "test:security": "electron test/security.js",
-    "build:win": "electron-builder --win --x64"
+    "build:win": "electron-builder --win --x64",
+    "test:history": "electron test/history.js",
+    "test:history-ui": "electron test/history-ui.js"
   },
   "dependencies": {
     "pdf-lib": "^1.17.1"

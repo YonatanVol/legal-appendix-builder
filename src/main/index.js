@@ -27,6 +27,13 @@ function createWindow() {
   win.setMenuBarVisibility(false);
   win.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'));
 
+  // The page carries its own <title>, which replaces whatever the window was given
+  // as soon as it loads. Setting it again afterwards keeps the version visible in
+  // the title bar and the task bar, which is where a build gets identified.
+  win.webContents.on('did-finish-load', () => {
+    win.setTitle(`בונה תיקי נספחים ${version}`);
+  });
+
   // External links would be blocked anyway; refuse to even open a window for them.
   win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   win.webContents.on('will-navigate', (event) => event.preventDefault());

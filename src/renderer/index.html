@@ -16,6 +16,11 @@
 
 <main>
 
+  <div class="restored hidden" id="restored">
+    <span class="restored-text" id="restored-text"></span>
+    <button type="button" class="link" id="restored-new">התחל תיק חדש</button>
+  </div>
+
   <section class="card">
     <div class="card-head">
       <span class="step">1</span>
@@ -34,7 +39,7 @@
         <button type="button" class="ghost" id="body-clear">החלף</button>
       </div>
     </div>
-    <p class="note">יש לייצא את כתב התביעה מ-Word <strong>ללא מספור עמודים</strong> — התוכנה ממספרת את כל התיק בעצמה.</p>
+    <p class="note">יש לייצא את כתב התביעה מ-Word <strong>ללא מספור עמודים</strong>. התוכנה ממספרת את כל התיק בעצמה.</p>
   </section>
 
   <section class="card">
@@ -71,10 +76,46 @@
         <button type="button" class="secondary" id="open-file">פתח קובץ</button>
         <button type="button" class="ghost" id="reveal-file">פתח תיקייה</button>
       </div>
+      <p class="result-hint hidden" id="result-hint">
+        התיק נשמר בהיסטוריה.
+        <button type="button" class="link" id="result-history">אפשר לפתוח אותו שוב ולערוך</button>
+      </p>
     </div>
   </section>
 
 </main>
+
+<button type="button" class="history-tab" id="history-tab"
+        aria-controls="history-drawer" aria-expanded="false" title="היסטוריה">
+  <span class="history-tab-label">היסטוריה</span>
+  <span class="history-tab-count hidden" id="history-count"></span>
+</button>
+
+<div class="scrim hidden" id="history-scrim"></div>
+
+<aside class="drawer hidden" id="history-drawer" role="dialog" aria-modal="true"
+       aria-labelledby="history-title">
+  <header class="drawer-head">
+    <h2 id="history-title">היסטוריה</h2>
+    <button type="button" class="ghost icon" id="history-close" aria-label="סגירה">✕</button>
+  </header>
+
+  <div class="drawer-search hidden" id="drawer-search">
+    <input type="search" id="history-search" autocomplete="off"
+           placeholder="חיפוש לפי שם קובץ או כותרת נספח">
+  </div>
+
+  <div class="drawer-body">
+    <p class="drawer-note hidden" id="history-empty">
+      כאן יופיעו התיקים שהפקת.<br>
+      אחרי שתיצרי תיק אפשר יהיה לפתוח אותו מכאן שוב, לתקן ולהפיק מחדש, בלי לבחור את
+      הקבצים ולהקליד את הכותרות מהתחלה.
+    </p>
+    <p class="drawer-note hidden" id="history-none">לא נמצא תיק שמתאים לחיפוש.</p>
+    <p class="drawer-note hidden" id="history-error"></p>
+    <ul class="history-list" id="history-list"></ul>
+  </div>
+</aside>
 
 <div id="drag-veil" class="drag-veil hidden"><span>שחרר כדי להוסיף</span></div>
 

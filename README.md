@@ -57,6 +57,30 @@ contents or divider pages can be searched, selected or copied, which matters for
 filing. The Culmus build of the same typeface embeds normally, and a test now asserts
 that the Hebrew face is embedded.
 
+## Reopening a filing
+
+Every bundle that is produced is recorded, and a side tab lists them. Opening one puts
+the edit screen back the way it was, so correcting a letter means swapping one file and
+rebuilding rather than reselecting everything and retyping every title.
+
+Only the arrangement is stored: which files, in what order, under what titles. The
+documents stay where they are. They are medical records, and copying them into the app's
+own folder would be both a privacy cost and hundreds of megabytes per case. What was lost
+after a build was never the files.
+
+Two details carry most of the weight:
+
+- **Files are read again on every reopen** rather than trusting the page counts that were
+  stored. A corrected letter is a different length, and stale counts would put every range
+  in the table of contents quietly wrong.
+- **A file that has moved does not fail the reopen.** It comes back marked as missing with
+  a button to locate it, the rest of the arrangement loads, and the build stays blocked
+  until it is found, with the summary line saying so.
+
+The record lives in the user's own application data folder and holds file paths and
+appendix titles, which name clients. That is the same exposure as the documents
+themselves, the network lockdown covers it, and each row can be deleted.
+
 ## Testing against a known-correct answer
 
 The suite rebuilds a real 49-page filing that was actually submitted. It is split back
@@ -68,13 +92,15 @@ That document is a client record and **is not in this repository**, so `test/fix
 is empty on a fresh clone and the suite will not run without it. Point
 `npm run split-reference` at a comparable filing to regenerate the fixtures.
 
-96 checks across four suites:
+160 checks across six suites:
 
 | Suite | Covers |
 |---|---|
 | `test:build` + `test:verify` | Full rebuild of the reference filing and comparison against it, including font embedding |
 | `test:edge` | Page rotation in all four orientations, an exhibit spanning several files, 26 exhibits overflowing the contents onto a second page, a title wrapping to two lines and its leader, margin overrun, and rejected input |
 | `test:ui` | The interface itself: suggested titles, live range preview, reordering, build gating |
+| `test:history` | Recording, reopening, rebuilding over the same file, a corrected pleading, a file that moved, a damaged store, and a store that cannot be written |
+| `test:history-ui` | The drawer, driven with real pointer sequences: opening, search, escape and focus, reopening a case, a missing file, and two presses landing at once |
 | `test:security` | The network lockdown is real, and does not break page generation |
 
 ## Running it
