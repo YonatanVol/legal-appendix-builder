@@ -87,9 +87,17 @@ After 1.3.0 was published, the post-release job installed the published installe
 Windows machine and it exited `0xC0000005`, although the same bytes had installed cleanly on
 the build machine. It was never sent to anyone.
 
-A stress run of 20 installs on each of three machines reproduced it: two machines never
-crashed, the third crashed on its first four installs and not after. Every Windows crash
-report named `System.dll`, exception `0xc0000005`, at the same offset.
+A first stress run, 20 installs on each of three machines, showed crashes on only one of
+them, on its first four installs. That understated it: after one install succeeds, later
+installs skip the faulty code. A second run uninstalled completely before every install, on
+six fresh machines, alternating the published 1.3.0 installer with the 1.3.1 candidate:
+
+| Installer | Clean first installs | Crashed |
+|---|---|---|
+| 1.3.0 | 60 | 27 (45%), on all six machines |
+| 1.3.1 | 60 | 0 |
+
+Every Windows crash report named `System.dll`, exception `0xc0000005`, at the same offset.
 
 electron-builder 25.1.8's per-user template looks up the user's Programs folder and copies a
 fixed 8192 characters from a buffer sized to the path, an overread whose effect depends on the
