@@ -71,6 +71,14 @@ check('installs for the user alone, with no administrator prompt',
 check('uninstalling keeps her history', nsis.deleteAppDataOnUninstall === false);
 check('the bundled fonts are packaged', (builder.files || []).some((f) => /assets\/fonts/.test(f)));
 
+// 1.3.0's installer crashed at random with 0xC0000005 before extracting anything:
+// electron-builder 25's per-user install code copied a fixed 8192 characters out of the
+// short buffer Windows returns for the user's Programs folder, and whether that overread
+// hit unmapped memory depended on the heap. electron-builder 26.12 copies it bounded.
+const multiUser = read('node_modules/app-builder-lib/templates/nsis/multiUser.nsh');
+check('the installer reads the per-user Programs folder with a bounded copy',
+  multiUser.includes('lstrcpynW') && !multiUser.includes('(&w${NSIS_MAX_STRLEN} .s)'));
+
 const indexSource = read('src/main/index.js');
 const appId = (/const APP_ID = '([^']+)'/.exec(indexSource) || [])[1];
 check('the running app identifies itself with the installer\'s app id', appId === builder.appId,

@@ -80,3 +80,20 @@ check read that as "GitHub unreachable". It was confirmed benign by requesting t
 page from repositories that do have releases, which return the release as JSON, and
 `scripts/selftest-verdicts.js` now accepts that one answer, for this repository only.
 `test/selftest-verdicts.js` uses the exact text recorded on Windows.
+
+## The installer crashed on some first installs (fixed in 1.3.1)
+
+After 1.3.0 was published, the post-release job installed the published installer on a fresh
+Windows machine and it exited `0xC0000005`, although the same bytes had installed cleanly on
+the build machine. It was never sent to anyone.
+
+A stress run of 20 installs on each of three machines reproduced it: two machines never
+crashed, the third crashed on its first four installs and not after. Every Windows crash
+report named `System.dll`, exception `0xc0000005`, at the same offset.
+
+electron-builder 25.1.8's per-user template looks up the user's Programs folder and copies a
+fixed 8192 characters from a buffer sized to the path, an overread whose effect depends on the
+heap. It runs only when no earlier install is recorded, so it hits exactly a first install on
+a clean machine, and never an update. electron-builder 26.12 fixed it upstream (PR #9769);
+1.3.1 uses 26.15.3. `test/config.js` checks the template's bounded copy, and the workflow now
+does 15 clean installs, uninstalling completely between them, on every run.

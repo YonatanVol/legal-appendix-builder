@@ -99,6 +99,47 @@ jobs:
           $menu = Get-ChildItem "$env:APPDATA\Microsoft\Windows\Start Menu\Programs" -Recurse -Filter '*.lnk' -ErrorAction SilentlyContinue
           Write-Host "start-menu shortcuts: $(($menu | ForEach-Object Name) -join ', ')"
 
+      - name: A first install does not crash, over 15 clean installs
+        run: |
+          # The 1.3.0 installer crashed with 0xC0000005 in System.dll on some machines, and
+          # only on a first install: its lookup of the per-user Programs folder runs only
+          # when no earlier install is recorded under HKCU. Installing over an existing
+          # install skips that code entirely, so every round first uninstalls completely.
+          # The crash also depends on the machine, so a clean run here is evidence, not
+          # proof; test/config.js checks the installer template itself.
+          $setup = (Get-ChildItem dist -Filter 'AppendixBuilder-Setup-*.exe' | Select-Object -First 1).FullName
+          function Get-RecordedInstall {
+            Get-ChildItem HKCU:\Software -ErrorAction SilentlyContinue | ForEach-Object {
+              $loc = (Get-ItemProperty $_.PSPath -Name InstallLocation -ErrorAction SilentlyContinue).InstallLocation
+              if ($loc -like '*rotem-office*') { $loc }
+            }
+          }
+          function Uninstall-Completely {
+            Get-Process AppendixBuilder -ErrorAction SilentlyContinue | Stop-Process -Force
+            $uninstaller = Get-ChildItem $env:INSTALL_DIR -Filter 'Uninstall*.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($uninstaller) { Start-Process $uninstaller.FullName -ArgumentList '/S' -Wait }
+            # The uninstaller hands off to a copy of itself, so wait for the files and the record to go.
+            $deadline = (Get-Date).AddSeconds(90)
+            while (((Test-Path "$env:INSTALL_DIR\AppendixBuilder.exe") -or (Get-RecordedInstall)) -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 500 }
+            if (Test-Path "$env:INSTALL_DIR\AppendixBuilder.exe") { throw 'uninstall did not remove the program' }
+            if (Get-RecordedInstall) { throw 'uninstall left the install recorded, so the next install would not be a first install' }
+          }
+          $failures = 0
+          for ($i = 1; $i -le 15; $i++) {
+            Uninstall-Completely
+            $p = Start-Process $setup -ArgumentList '/S' -PassThru -Wait
+            if ($p.ExitCode -ne 0) {
+              $failures++
+              Write-Host ("clean install {0}: exit {1} (0x{2:X8})" -f $i, $p.ExitCode, ($p.ExitCode -band 0xFFFFFFFF))
+            } elseif (-not (Test-Path "$env:INSTALL_DIR\AppendixBuilder.exe")) {
+              $failures++
+              Write-Host "clean install ${i}: exit 0 but the program is not there"
+            }
+          }
+          Get-Process AppendixBuilder -ErrorAction SilentlyContinue | Stop-Process -Force
+          if ($failures) { throw "$failures of 15 clean installs failed" }
+          Write-Host 'all 15 clean installs succeeded'
+
       - name: The installed program can start from where it was installed
         run: node scripts/check-win-package.js "$env:INSTALL_DIR"
 
