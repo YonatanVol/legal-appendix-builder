@@ -13,6 +13,10 @@
  * With APPENDIX_BUILDER_SELFTEST_UPDATE_FEED=http://127.0.0.1:<port>/ it instead proves
  * an update: finds a newer build on that local feed, downloads it, and installs it.
  *
+ * With APPENDIX_BUILDER_SELFTEST_UPDATE_CHECK=github it asks the real GitHub for the
+ * newest release, through the same network rule the installed app uses, and installs
+ * nothing. That is how a change to GitHub's download hosts gets noticed.
+ *
  * Nothing here touches her real history: the store is pointed at a scratch folder.
  * The mode only writes to the path it was given and reaches no network the normal app
  * cannot; anyone able to set this variable for her process could already do more.
@@ -87,7 +91,11 @@ function run() {
 
   app
     .whenReady()
-    .then(() => (process.env.APPENDIX_BUILDER_SELFTEST_UPDATE_FEED ? updateScenario() : filingScenario()))
+    .then(() => {
+      if (process.env.APPENDIX_BUILDER_SELFTEST_UPDATE_FEED) return updateScenario();
+      if (process.env.APPENDIX_BUILDER_SELFTEST_UPDATE_CHECK === 'github') return liveCheckScenario();
+      return filingScenario();
+    })
     .catch(fatal('the self-test ran to completion'));
 
   /* ---------------------------------------------------------------- filing ---- */
@@ -206,6 +214,27 @@ function run() {
     finish();
   }
 
+  /* ------------------------------------------------------------ live check ---- */
+
+  async function liveCheckScenario() {
+    const updater = require('./updater').start({ version });
+    if (!check('the updater started against GitHub', !!updater)) return finish();
+
+    const outcome = await new Promise((resolve) => {
+      updater.once('update-not-available', (info) => resolve({ phase: 'current', latest: info && info.version }));
+      updater.once('update-available', (info) => resolve({ phase: 'available', latest: info.version }));
+      updater.once('error', (err) => resolve({ phase: 'error', error: String((err && err.message) || err) }));
+    });
+
+    extra = { update: { from: version, ...outcome } };
+    check(
+      'GitHub answered through the updater\'s network rule',
+      outcome.phase !== 'error',
+      outcome.error || `newest published: ${outcome.latest}`
+    );
+    finish();
+  }
+
   /* ---------------------------------------------------------------- update ---- */
 
   async function updateScenario() {
@@ -233,5 +262,6 @@ function run() {
     updater.quitAndInstall(true, false);
   }
 }
+
 
 module.exports = { run };

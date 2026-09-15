@@ -143,10 +143,13 @@ function start({ getWindow = () => null, isBuilding = () => false, version }) {
   // feed is honoured only in self-test mode and only on the loopback address.
   const selfTest = !!process.env.APPENDIX_BUILDER_SELFTEST;
   const feed = selfTest ? loopbackFeed(process.env.APPENDIX_BUILDER_SELFTEST_UPDATE_FEED) : null;
+  // The live check asks the real GitHub, through the real network rule, whether this
+  // is the newest version. It proves GitHub's hosts are still the ones allowed.
+  const liveCheck = selfTest && process.env.APPENDIX_BUILDER_SELFTEST_UPDATE_CHECK === 'github';
 
   const enabled =
     !process.env.APPENDIX_BUILDER_DISABLE_UPDATES &&
-    (feed || (!selfTest && app.isPackaged && process.platform === 'win32'));
+    (feed || liveCheck || (!selfTest && app.isPackaged && process.platform === 'win32'));
 
   if (!enabled) {
     publish({ phase: 'disabled' });
@@ -167,7 +170,7 @@ function start({ getWindow = () => null, isBuilding = () => false, version }) {
     error: (m) => log(`error ${m}`),
     debug: () => {},
   };
-  autoUpdater.autoDownload = true;
+  autoUpdater.autoDownload = !liveCheck;
   autoUpdater.autoInstallOnAppQuit = true;
   autoUpdater.allowDowngrade = false;
   autoUpdater.allowPrerelease = false;
@@ -200,7 +203,7 @@ function start({ getWindow = () => null, isBuilding = () => false, version }) {
   const check = () =>
     autoUpdater.checkForUpdates().catch((err) => log(`check failed: ${err.message}`));
 
-  setTimeout(check, feed ? 0 : FIRST_CHECK_AFTER_MS);
+  setTimeout(check, feed || liveCheck ? 0 : FIRST_CHECK_AFTER_MS);
   const timer = setInterval(check, CHECK_EVERY_MS);
   if (timer.unref) timer.unref();
 

@@ -1,14 +1,17 @@
 # Legal Appendix Builder
 
-A local Windows desktop app that assembles a legal filing: it takes the pleading and the
-exhibit PDFs and produces one court-ready document — a divider page before each exhibit,
-a generated table of contents, and continuous page numbering across the whole bundle.
+A Windows desktop app that assembles a legal filing: it takes the pleading and the
+exhibit PDFs and produces one court-ready document, with a divider page before each
+exhibit, a generated table of contents, and continuous page numbering across the whole
+bundle.
 
 Built for an Israeli law practice, so the interface and the generated pages are in
 Hebrew. [README בעברית](README.he.md).
 
-Everything runs on the machine. The app handles medical records, so outbound network
-access is blocked at the session layer rather than merely avoided in code.
+Documents never leave the machine. The app handles medical records, so the part that
+touches documents has no network access at all, blocked at the session layer rather than
+merely avoided in code. The single exception is the updater, which may reach GitHub's
+release hosts over HTTPS and nothing else. See [Updates and what they change](#updates-and-what-they-change).
 
 ## The problem
 
@@ -20,7 +23,7 @@ divider pages have to be redone.
 
 ```
 pages 1..B      the pleading
-page  B+1       נספחים – תוכן עניינים   (contents; more than one page if there are many)
+page  B+1       נספחים / תוכן עניינים   (contents; more than one page if there are many)
                 for each exhibit:
                   one divider page   "נספח N" / title / "עמ' X-Y"
                   the exhibit's pages
@@ -39,7 +42,7 @@ resolves the ordering correctly and makes a dotted leader a single CSS rule.
 
 **The contents page is a fixed point.** It prints the page ranges, and its own length
 shifts them. `computeLayout` is resolved against the renderer, re-rendering until the
-contents page stops changing length — see [`src/main/pdf/layout.js`](src/main/pdf/layout.js).
+contents page stops changing length. See [`src/main/pdf/layout.js`](src/main/pdf/layout.js).
 
 **Dot leaders are measured, not guessed.** CSS has no stretchy box inside a run of text,
 so the gap left on the last line of a wrapped title is measured after layout and exactly
@@ -52,7 +55,7 @@ true.
 
 **The typeface is bundled deliberately.** The David that ships with Windows is marked
 non-embeddable, so Chromium cannot place it in the PDF and converts the text to vector
-outlines. The page then looks perfect and contains no text at all — nothing on the
+outlines. The page then looks perfect and contains no text at all: nothing on the
 contents or divider pages can be searched, selected or copied, which matters for a court
 filing. The Culmus build of the same typeface embeds normally, and a test now asserts
 that the Hebrew face is embedded.
@@ -101,33 +104,89 @@ is empty on a fresh clone and the suite will not run without it. Point
 | `test:ui` | The interface itself: suggested titles, live range preview, reordering, build gating |
 | `test:history` | Recording, reopening, rebuilding over the same file, a corrected pleading, a file that moved, a damaged store, and a store that cannot be written |
 | `test:history-ui` | The drawer, driven with real pointer sequences: opening, search, escape and focus, reopening a case, a missing file, and two presses landing at once |
-| `test:security` | The network lockdown is real, and does not break page generation |
+| `test:config` | Configuration a runtime test would only catch too late: every runtime module ships, the installer and app agree on the app id, releases come only from tags, no dashes in Hebrew copy |
+| `test:updater-ui` | The update notices, the restart button, and the main process refusing to restart during a real build |
+| `test:security` | Both network rules are real and attached to the sessions actually used, and neither breaks page generation |
+| `test:selftest` | The app's own self-test, run from source; the Windows workflow runs the same one against the installed program |
 
-## Running it
+## Installing
+
+Download `AppendixBuilder-Setup-<version>.exe` from the
+[latest release](https://github.com/YonatanVol/legal-appendix-builder/releases/latest)
+and double-click it. It installs for the current user only, with no administrator
+prompt, opens the app, and adds a desktop and Start-menu shortcut.
+
+The app is not code-signed, so the first time Windows shows *"Windows protected your
+PC"*. Choose **More info** and then **Run anyway**. Updates do not show this again.
+
+Version 1.2.0 shipped as a zip instead, and it failed on the first real machine with
+*"ffmpeg.dll was not found"*: the exe loads that DLL at start-up and had been run
+without the files beside it. Installers replace zips for that reason.
+
+## Updates and what they change
+
+Installed copies update themselves. About eight seconds after start, and every four
+hours after that, the app asks GitHub for a newer release. A newer version downloads in
+the background and installs the next time the app closes. A notice offers to restart
+now instead, and that restart is refused while a filing is being written. After an
+update the app says which version it now is and shows the release notes.
+
+An auto-updater runs code fetched from the internet, so it is worth being exact about
+what protects it:
+
+- **Only GitHub, only HTTPS.** electron-updater uses its own session, separate from the
+  one documents are handled in. `src/main/security.js` restricts that session to
+  GitHub's release hosts; the document session keeps no network access. `test/security.js`
+  proves both rules are attached to the sessions actually used.
+- **A checksum, not a signature.** Each installer is checked against the SHA-512
+  published beside it in `latest.yml`. That catches a corrupted or altered download.
+  Both files come from the same release, though, so it does not help if the release
+  itself is replaced, and because the app is unsigned there is no publisher signature
+  to check as well.
+- **So the GitHub account is the key.** Anyone who gains control of the account, or can
+  push a `v*` tag to this repository, can ship code that runs on the user's machine with
+  access to her client files. Keep two-factor authentication on the account and restrict
+  who can create tags. A code-signing certificate would add the missing signature check
+  and remove the SmartScreen warning on first install.
+
+The updater writes to `update.log` in the app's data folder
+(`%APPDATA%\בונה תיקי נספחים`). Setting `APPENDIX_BUILDER_DISABLE_UPDATES=1` turns
+updates off.
+
+## Building and releasing
 
 ```bash
 npm install
 npm start          # run the app
-npm test           # run every suite
-npm run build:win  # package for Windows -> dist/
+npm test           # run every local suite
 ```
 
-Packaging targets `zip`, which builds from macOS without Wine, unlike the NSIS
-installer targets.
+**Windows builds happen on Windows**, in `.github/workflows/windows.yml`, on every push.
+This Mac can no longer build for Windows at all: electron-builder's Wine and `makensis`
+are Intel binaries, and macOS 27 has no Rosetta. The workflow:
 
-### Releases
+1. builds the installer and checks, from the exe's import table, that every DLL it loads
+   at start-up sits beside it (`scripts/check-win-package.js`);
+2. installs it silently, the way a user installs it, and checks the installed folder the
+   same way;
+3. launches the installed program in self-test mode, where it opens its window, produces
+   a filing through the build button's own path, confirms the generated pages carry
+   embedded text, and records and reopens it from history (`src/main/selftest.js`);
+4. launches it twice and checks the second launch hands over to the open window;
+5. proves updates end to end: a tampered update is refused, a genuine one downloads and
+   installs, and the updated program still passes its self-test.
 
-Raise the version before packaging, or the new build silently replaces the previous
-download and the two cannot be told apart:
+To release, add the version's notes to [CHANGELOG.md](CHANGELOG.md) first. The text
+before a version's first `###` heading is what the user sees after updating; the
+workflow refuses to release a version without it. Then:
 
 ```bash
-npm version patch   # bug fix
-npm version minor   # feature or visible change
-npm run build:win
+npm version minor        # or patch: commits and creates the tag v1.4.0
+git push --follow-tags   # the workflow verifies it on Windows, then publishes it
 ```
 
-The version comes from `package.json` and appears in the window title, in the app
-header, and in the artifact filename. See [CHANGELOG.md](CHANGELOG.md).
+Installed copies pick the release up at their next check. The version appears in the
+window title, in the app header, and in the installer's file name.
 
 ## Layout of the code
 
@@ -138,19 +197,27 @@ header, and in the artifact filename. See [CHANGELOG.md](CHANGELOG.md).
 | `src/main/pdf/assemble.js` | Merging, and rotation-aware page numbering |
 | `src/main/pdf/inspect.js` | Reading and validating input PDFs |
 | `src/main/templates/` | The divider and contents pages as HTML, and the leader measurement |
-| `src/main/security.js` | The network lockdown |
+| `src/main/security.js` | The network lockdown, and the updater's narrower exception |
+| `src/main/updater.js` | Checking, downloading and installing updates |
+| `src/main/selftest.js` | The self-test the Windows workflow runs inside the installed program |
+| `src/main/window.js` | The one window, shared by the app and the self-test |
+| `scripts/` | Windows package check, self-test runner, local update feed, release notes |
 
-## Three things that cost real time
+## Things that cost real time
 
 - **`printToPDF` takes `pageSize` in inches.** Getting the unit wrong produces pages
   thousands of times too large while the text still extracts perfectly, so every
   text-based test passes. `test/verify.js` asserts the page size for that reason.
 - **Creating and destroying a window per page fails on the second page**, sometimes
   taking the process with it. `render.js` keeps one hidden window and reuses it.
+- **A build that works on the development machine is not an install that works.** The
+  first person to install 1.2.0 never saw a window. Every test had run from source on a
+  Mac; nothing had ever launched the program on Windows. The workflow now installs and
+  runs it there before anything is released.
 - **Page margins must be given to `printToPDF`, not written as CSS padding.** Padding on
   a block spanning several pages is laid down only at the start and end of the flow, so
   a contents page running onto a second page is cut off at the bottom. For the same
-  reason the templates carry no `@page { margin }` rule — it would override the margins
+  reason the templates carry no `@page { margin }` rule, because it would override the margins
   the engine is given.
 
 ## Licence
@@ -158,5 +225,5 @@ header, and in the artifact filename. See [CHANGELOG.md](CHANGELOG.md).
 The code is MIT (see [LICENSE](LICENSE)).
 
 `assets/fonts/` contains the David typeface from the Culmus project, under GPL v2 with
-the font exception — embedding it in a document does not place that document under the
+the font exception: embedding it in a document does not place that document under the
 GPL. See `assets/fonts/LICENSE-culmus.txt`.

@@ -178,6 +178,44 @@ app.whenReady().then(async () => {
   check('  the file is on disk', fs.existsSync(path.join(OUT, 'history-unrecorded.pdf')));
   history.setStoreFile(path.join(scratch, 'history.json'));
 
+  /* ---- a file briefly locked, as Windows antivirus does ---- */
+  console.log('\na history file locked for a moment');
+  const fspModule = require('fs/promises');
+  const realRename = fspModule.rename;
+  let refusals = 0;
+  fspModule.rename = async (...args) => {
+    if (refusals < 2) {
+      refusals += 1;
+      throw Object.assign(new Error('EPERM: operation not permitted, rename'), { code: 'EPERM' });
+    }
+    return realRename(...args);
+  };
+  const lockedSpec = { outputPath: path.join(OUT, 'history-locked.pdf'), bodyPath: BODY, appendices: ARRANGEMENT };
+  let recorded = null;
+  try {
+    recorded = await history.record(lockedSpec, { totalPages: 25, tocPage: 8 });
+  } catch (err) {
+    recorded = err;
+  }
+  check('a rename refused twice still records the row', recorded && recorded.id && refusals === 2,
+    recorded instanceof Error ? recorded.message : `${refusals} refusals, then saved`);
+
+  fspModule.rename = async () => {
+    throw Object.assign(new Error('EBUSY: resource busy or locked, rename'), { code: 'EBUSY' });
+  };
+  let gaveUp = null;
+  try {
+    await history.record({ ...lockedSpec, outputPath: path.join(OUT, 'history-stuck.pdf') }, { totalPages: 1, tocPage: 1 });
+  } catch (err) {
+    gaveUp = err;
+  }
+  fspModule.rename = realRename;
+  check('a rename that never frees gives up rather than hanging', gaveUp && gaveUp.code === 'EBUSY');
+  check('  and leaves no temporary file behind',
+    !fs.readdirSync(path.dirname(history.storeFile())).some((f) => f.endsWith('.tmp')));
+  check('  and the rows already saved are intact',
+    (await history.list()).some((e) => e.outputPath === lockedSpec.outputPath));
+
   /* ---- the same file addressed two ways is one row ---- */
   console.log('\npath handling');
   const odd = path.join(OUT, '.', 'history-first.pdf');

@@ -13,6 +13,11 @@ on:
     branches: ['**']
     tags: ['v*']
   pull_request:
+  schedule:
+    # Weekly: install the published release and have it ask the real GitHub for updates.
+    # If GitHub changes the hosts it serves downloads from, this fails and GitHub emails
+    # the repository owner, instead of installed copies silently never updating.
+    - cron: '0 6 * * 1'
   workflow_dispatch:
     inputs:
       reproduce_zip_bug:
@@ -30,6 +35,7 @@ concurrency:
 jobs:
   build-and-verify:
     name: Build, install and run on Windows
+    if: github.event_name != 'schedule'
     runs-on: windows-latest
     timeout-minutes: 75
     env:
@@ -222,3 +228,44 @@ jobs:
             --title "Appendix Builder ${GITHUB_REF_NAME#v}" \
             --notes-file notes.md \
             --verify-tag
+
+  live-update-check:
+    name: The published release updates from the real GitHub
+    needs: release
+    # After a release, and on the weekly schedule. `always()` lets the schedule run even
+    # though the release job is skipped then.
+    if: ${{ always() && (needs.release.result == 'success' || github.event_name == 'schedule') }}
+    runs-on: windows-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Download the published installer
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = if ($env:GITHUB_REF_TYPE -eq 'tag') { $env:GITHUB_REF_NAME } else { '' }
+          if ($tag) { gh release download $tag --pattern 'AppendixBuilder-Setup-*.exe' --dir published }
+          else { gh release download --pattern 'AppendixBuilder-Setup-*.exe' --dir published }
+          Get-ChildItem published | ForEach-Object { Write-Host "$($_.Name)  $($_.Length)" }
+
+      - name: Install it
+        run: |
+          $setup = Get-ChildItem published -Filter 'AppendixBuilder-Setup-*.exe' | Select-Object -First 1
+          $p = Start-Process $setup.FullName -ArgumentList '/S' -PassThru -Wait
+          if ($p.ExitCode -ne 0) { throw "the installer exited with $($p.ExitCode)" }
+          Start-Sleep -Seconds 3
+          Get-Process AppendixBuilder -ErrorAction SilentlyContinue | Stop-Process -Force
+          $exe = Get-ChildItem "$env:LOCALAPPDATA\Programs" -Recurse -Filter 'AppendixBuilder.exe' | Select-Object -First 1
+          if (-not $exe) { throw 'the installed program was not found' }
+          "INSTALL_DIR=$($exe.DirectoryName)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Ask the real GitHub for updates through the installed app's network rule
+        run: node scripts/run-selftest.js "$env:RUNNER_TEMP\live-update.json" --env APPENDIX_BUILDER_SELFTEST_UPDATE_CHECK=github -- "$env:INSTALL_DIR\AppendixBuilder.exe"

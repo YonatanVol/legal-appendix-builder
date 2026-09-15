@@ -105,6 +105,7 @@ const { notesFor } = require('../scripts/release-notes');
 const notes = notesFor(pkg.version, read('CHANGELOG.md'));
 check(`CHANGELOG.md has notes for ${pkg.version} to show after the update`, !!notes && notes.length > 20,
   notes ? `${notes.length} chars` : 'missing');
+check('  and they read like a person wrote them, with no dashes', !!notes && !/[—–]/.test(notes));
 
 /* ---- copy ---- */
 console.log('\nHebrew copy');

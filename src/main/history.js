@@ -71,6 +71,23 @@ async function read() {
 }
 
 /** Written through a temporary file so an interrupted write cannot corrupt the store. */
+// On Windows, antivirus and the search indexer open a file the moment it is written, and
+// for that instant a rename over it fails with EPERM, EBUSY or EACCES. Waiting a beat
+// and trying again is what every Windows tool does; giving up would drop the row.
+const TRANSIENT = new Set(['EPERM', 'EBUSY', 'EACCES']);
+const RENAME_ATTEMPTS = 6;
+
+async function renameWithRetry(from, to) {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await fsp.rename(from, to);
+    } catch (err) {
+      if (!TRANSIENT.has(err.code) || attempt >= RENAME_ATTEMPTS) throw err;
+      await new Promise((resolve) => setTimeout(resolve, 40 * attempt));
+    }
+  }
+}
+
 async function write(entries) {
   const file = storeFile();
   await fsp.mkdir(path.dirname(file), { recursive: true });
@@ -78,7 +95,7 @@ async function write(entries) {
   const temp = `${file}.${process.pid}.tmp`;
   await fsp.writeFile(temp, JSON.stringify({ version: FILE_VERSION, entries }, null, 2), 'utf8');
   try {
-    await fsp.rename(temp, file);
+    await renameWithRetry(temp, file);
   } catch (err) {
     await fsp.rm(temp, { force: true }).catch(() => {});
     throw err;
