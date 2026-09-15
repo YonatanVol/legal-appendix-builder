@@ -111,9 +111,8 @@ is empty on a fresh clone and the suite will not run without it. Point
 
 ## Installing
 
-Download `AppendixBuilder-Setup-<version>.exe` from the
-[latest release](https://github.com/YonatanVol/appendix-builder-releases/releases/latest)
-and double-click it. It installs for the current user only, with no administrator
+Download the installer from this link, which never changes and always serves the newest
+release: <https://github.com/YonatanVol/appendix-builder-releases/releases/latest/download/AppendixBuilder-Setup.exe>. Then double-click it. It installs for the current user only, with no administrator
 prompt, opens the app, and adds a desktop and Start-menu shortcut.
 
 The app is not code-signed, so the first time Windows shows *"Windows protected your

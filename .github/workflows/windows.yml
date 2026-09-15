@@ -287,6 +287,9 @@ jobs:
             echo "::error::The RELEASES_TOKEN secret is missing, so nothing can be published to $OWNER/$REPO. See README, Building and releasing."
             exit 1
           fi
+          # Also under a name without the version, so one link always downloads the newest:
+          # https://github.com/<owner>/<repo>/releases/latest/download/AppendixBuilder-Setup.exe
+          cp "release/AppendixBuilder-Setup-${GITHUB_REF_NAME#v}.exe" release/AppendixBuilder-Setup.exe
           gh release create "$GITHUB_REF_NAME" release/* \
             --repo "$OWNER/$REPO" \
             --title "Appendix Builder ${GITHUB_REF_NAME#v}" \
@@ -334,6 +337,18 @@ jobs:
           if ($tag) { gh release download $tag --repo $env:RELEASES_REPO --pattern 'AppendixBuilder-Setup-*.exe' --dir published }
           else { gh release download --repo $env:RELEASES_REPO --pattern 'AppendixBuilder-Setup-*.exe' --dir published }
           Get-ChildItem published | ForEach-Object { Write-Host "$($_.Name)  $($_.Length)" }
+
+      - name: The permanent download link serves this installer
+        run: |
+          # The link handed to new users never changes. It must resolve to the newest release,
+          # byte for byte, without a GitHub login.
+          $versioned = Get-ChildItem published -Filter 'AppendixBuilder-Setup-*.exe' | Select-Object -First 1
+          $link = "https://github.com/$env:RELEASES_REPO/releases/latest/download/AppendixBuilder-Setup.exe"
+          Invoke-WebRequest $link -OutFile "$env:RUNNER_TEMP\via-link.exe"
+          $expected = (Get-FileHash $versioned.FullName -Algorithm SHA512).Hash
+          $actual = (Get-FileHash "$env:RUNNER_TEMP\via-link.exe" -Algorithm SHA512).Hash
+          if ($actual -ne $expected) { throw "$link does not serve $($versioned.Name)" }
+          Write-Host "OK: $link serves $($versioned.Name)"
 
       - name: Install it
         run: |

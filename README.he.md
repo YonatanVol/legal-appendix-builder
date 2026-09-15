@@ -24,8 +24,8 @@
 
 ## התקנה
 
-מורידים את `AppendixBuilder-Setup-<גרסה>.exe` מ[הגרסה האחרונה](https://github.com/YonatanVol/appendix-builder-releases/releases/latest)
-ולוחצים עליו פעמיים. התוכנה מותקנת למשתמש הנוכחי בלבד, בלי הרשאות מנהל, נפתחת, ומקבלת קיצור
+מורידים את קובץ ההתקנה מהקישור הזה, שלא משתנה אף פעם ותמיד מוריד את הגרסה הכי חדשה:
+<https://github.com/YonatanVol/appendix-builder-releases/releases/latest/download/AppendixBuilder-Setup.exe>. אחר כך לוחצים עליו פעמיים. התוכנה מותקנת למשתמש הנוכחי בלבד, בלי הרשאות מנהל, נפתחת, ומקבלת קיצור
 דרך בשולחן העבודה ובתפריט התחל.
 
 התוכנה אינה חתומה דיגיטלית, ולכן בפעם הראשונה Windows מציג "Windows protected your PC". בוחרים

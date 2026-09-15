@@ -108,6 +108,8 @@ const publishStep = (release.steps || []).find((st) => /releases repository/.tes
 check('releases go to that repository with the release token, not the code repository\'s own',
   String((publishStep.env || {}).GH_TOKEN).includes('secrets.RELEASES_TOKEN') &&
     /--repo "\$OWNER\/\$REPO"/.test(publishStep.run || ''));
+check('each release also carries the installer under the permanent link\'s name',
+  /cp "release\/AppendixBuilder-Setup-\$\{GITHUB_REF_NAME#v\}\.exe" release\/AppendixBuilder-Setup\.exe/.test(publishStep.run || ''));
 check('releases are published only from a version tag',
   String(release.if || '').includes("startsWith(github.ref, 'refs/tags/v')"), release.if);
 check('  and only after the Windows install and launch checks pass',
