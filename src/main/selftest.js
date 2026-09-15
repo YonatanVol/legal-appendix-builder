@@ -54,6 +54,7 @@ function run() {
       arch: process.arch,
       packaged: app.isPackaged,
       executable: process.execPath,
+      userData: app.getPath('userData'),
       durationMs: Date.now() - started,
       checks,
       ...extra,
@@ -256,10 +257,22 @@ function run() {
 
     if (!downloaded) return finish();
 
-    finished = true;
+    // Record the verified download before handing over, because a successful hand-over
+    // quits this process. The run is not marked finished: if the hand-over fails, by
+    // throwing or through the updater's error event, that failure must still be written
+    // and the process must still exit, rather than leaving an ok result and a hang.
     write();
-    // Silent install, and do not relaunch: the CI checks the installed files afterwards.
-    updater.quitAndInstall(true, false);
+    updater.on('error', (err) => {
+      check('the installer was started', false, (err && err.message) || err);
+      finish();
+    });
+    try {
+      // Silent install, and do not relaunch: the CI checks the installed files afterwards.
+      updater.quitAndInstall(true, false);
+    } catch (err) {
+      check('the installer was started', false, (err && err.message) || err);
+      finish();
+    }
   }
 }
 

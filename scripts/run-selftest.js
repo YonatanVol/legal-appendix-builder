@@ -18,7 +18,7 @@ const TIME_LIMIT_MS = 240000;
 const argv = process.argv.slice(2);
 const split = argv.indexOf('--');
 if (split < 1 || split === argv.length - 1) {
-  console.error('usage: node scripts/run-selftest.js <result.json> [--env K=V] [--expect update-rejected] -- <program> [args...]');
+  console.error('usage: node scripts/run-selftest.js <result.json> [--env K=V] [--expect update-rejected|github-reachable] -- <program> [args...]');
   process.exit(2);
 }
 
@@ -66,6 +66,15 @@ child.on('exit', (code, signal) => {
   console.log(`version ${result.version} on ${result.platform}/${result.arch}, packaged=${result.packaged}, ${result.durationMs}ms`);
   for (const c of result.checks) {
     console.log(`  ${c.ok ? 'PASS' : 'FAIL'}  ${c.name}${c.detail ? ` - ${c.detail}` : ''}`);
+  }
+
+  if (expect === 'github-reachable') {
+    // Before the first release GitHub answers, correctly, that nothing is published.
+    // That is still proof the settings and the network rule get the updater there.
+    const u = result.update || {};
+    const reached = result.ok || /No published versions/i.test(u.error || '');
+    console.log(reached ? `OK: GitHub answered (${u.error || `newest published: ${u.latest}`})` : `FAIL: GitHub was not reached: ${u.error || 'no answer'}`);
+    process.exit(reached ? 0 : 1);
   }
 
   if (expect === 'update-rejected') {

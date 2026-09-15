@@ -173,8 +173,16 @@ are Intel binaries, and macOS 27 has no Rosetta. The workflow:
    a filing through the build button's own path, confirms the generated pages carry
    embedded text, and records and reopens it from history (`src/main/selftest.js`);
 4. launches it twice and checks the second launch hands over to the open window;
-5. proves updates end to end: a tampered update is refused, a genuine one downloads and
+5. checks that the installed program's own update settings (`resources/app-update.yml`)
+   point at this repository, and that with them it reaches the real GitHub through its
+   network rule. The update test below uses a local feed, which bypasses those settings;
+6. proves updates end to end: a tampered update is refused, a genuine one downloads and
    installs, and the updated program still passes its self-test.
+
+After each release, and weekly, a further job installs the published release and asks the
+real GitHub for updates through the same rule. If GitHub changes the hosts it serves
+downloads from, that job fails and GitHub emails the repository owner, instead of
+installed copies silently never updating.
 
 To release, add the version's notes to [CHANGELOG.md](CHANGELOG.md) first. The text
 before a version's first `###` heading is what the user sees after updating; the

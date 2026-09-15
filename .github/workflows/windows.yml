@@ -29,7 +29,9 @@ permissions:
   contents: read
 
 concurrency:
-  group: windows-${{ github.ref }}
+  # Keyed by event as well: the weekly schedule also runs on main, and must neither
+  # cancel the verification of a push to main nor be cancelled by one.
+  group: windows-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
 
 jobs:
@@ -115,6 +117,12 @@ jobs:
           Write-Host "second launch exited with $($second.ExitCode); the first is still running"
           Get-Process AppendixBuilder -ErrorAction SilentlyContinue | Stop-Process -Force
           Start-Sleep -Seconds 2
+
+      - name: The installed program's own update settings point at this repository
+        run: node scripts/check-update-config.js "$env:INSTALL_DIR"
+
+      - name: With those settings it reaches the real GitHub through its network rule
+        run: node scripts/run-selftest.js "$env:RUNNER_TEMP\github-reachable.json" --expect github-reachable --env APPENDIX_BUILDER_SELFTEST_UPDATE_CHECK=github -- "$env:INSTALL_DIR\AppendixBuilder.exe"
 
       - name: Build a newer version to update to
         run: |
@@ -268,4 +276,17 @@ jobs:
           "INSTALL_DIR=$($exe.DirectoryName)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
       - name: Ask the real GitHub for updates through the installed app's network rule
-        run: node scripts/run-selftest.js "$env:RUNNER_TEMP\live-update.json" --env APPENDIX_BUILDER_SELFTEST_UPDATE_CHECK=github -- "$env:INSTALL_DIR\AppendixBuilder.exe"
+        run: |
+          # GitHub can take a little while to list a release it has just published. Only
+          # that answer is waited out; any other failure fails at once.
+          $result = "$env:RUNNER_TEMP\live-update.json"
+          for ($attempt = 1; $attempt -le 10; $attempt++) {
+            node scripts/run-selftest.js $result --env APPENDIX_BUILDER_SELFTEST_UPDATE_CHECK=github -- "$env:INSTALL_DIR\AppendixBuilder.exe"
+            if ($LASTEXITCODE -eq 0) { exit 0 }
+            $r = if (Test-Path $result) { Get-Content $result -Raw | ConvertFrom-Json } else { $null }
+            $reason = if ($r -and $r.update) { "$($r.update.error)" } else { '' }
+            if ($reason -notmatch 'No published versions') { exit 1 }
+            Write-Host "GitHub does not list the release yet (attempt $attempt of 10); waiting 30 seconds"
+            Start-Sleep -Seconds 30
+          }
+          throw 'GitHub still lists no release after five minutes'
