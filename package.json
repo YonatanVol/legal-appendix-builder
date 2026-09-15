@@ -7,7 +7,7 @@
   "scripts": {
     "start": "electron .",
     "split-reference": "node test/split-reference.js",
-    "test": "npm run test:config && npm run test:build && npm run test:verify && npm run test:edge && npm run test:ui && npm run test:history && npm run test:history-ui && npm run test:updater-ui && npm run test:security && npm run test:selftest-failure && npm run test:selftest",
+    "test": "npm run test:config && npm run test:verdicts && npm run test:build && npm run test:verify && npm run test:edge && npm run test:ui && npm run test:history && npm run test:history-ui && npm run test:updater-ui && npm run test:security && npm run test:selftest-failure && npm run test:selftest",
     "test:build": "electron test/build-headless.js",
     "test:verify": "node test/verify.js",
     "test:edge": "electron test/edge-cases.js",
@@ -19,7 +19,8 @@
     "test:config": "node test/config.js",
     "test:selftest": "node scripts/run-selftest.js test/output/selftest.json -- electron .",
     "test:updater-ui": "electron test/updater-ui.js",
-    "test:selftest-failure": "electron test/selftest-install-failure.js"
+    "test:selftest-failure": "electron test/selftest-install-failure.js",
+    "test:verdicts": "node test/selftest-verdicts.js"
   },
   "dependencies": {
     "electron-updater": "6.3.9",

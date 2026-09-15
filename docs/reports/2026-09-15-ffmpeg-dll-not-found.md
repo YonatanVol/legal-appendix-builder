@@ -70,3 +70,13 @@ From the first workflow run on the fix, on `windows-latest`:
 - a second launch exited and handed over to the open window
 - a tampered update was refused with `sha512 checksum mismatch`, and the installed version stayed 1.3.0
 - a genuine update to 99.0.0 downloaded, installed, and passed the same self-test
+
+## The first release attempt
+
+The first v1.3.0 tag run was stopped by its own pre-release check, and nothing was
+published. Pushing the tag lists it in GitHub's release feed at once, while
+`/releases/latest` has no published release to point to, so GitHub answers 406. The
+check read that as "GitHub unreachable". It was confirmed benign by requesting the same
+page from repositories that do have releases, which return the release as JSON, and
+`scripts/selftest-verdicts.js` now accepts that one answer, for this repository only.
+`test/selftest-verdicts.js` uses the exact text recorded on Windows.

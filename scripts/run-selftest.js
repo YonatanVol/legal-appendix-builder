@@ -69,12 +69,12 @@ child.on('exit', (code, signal) => {
   }
 
   if (expect === 'github-reachable') {
-    // Before the first release GitHub answers, correctly, that nothing is published.
-    // That is still proof the settings and the network rule get the updater there.
-    const u = result.update || {};
-    const reached = result.ok || /No published versions/i.test(u.error || '');
-    console.log(reached ? `OK: GitHub answered (${u.error || `newest published: ${u.latest}`})` : `FAIL: GitHub was not reached: ${u.error || 'no answer'}`);
-    process.exit(reached ? 0 : 1);
+    const yaml = require('js-yaml');
+    const { githubReachable } = require('./selftest-verdicts');
+    const { owner, repo } = yaml.load(fs.readFileSync(path.join(__dirname, '..', 'electron-builder.yml'), 'utf8')).publish;
+    const verdict = githubReachable(result, { owner, repo });
+    console.log(verdict.reached ? `OK: GitHub was reached (${verdict.why})` : `FAIL: GitHub was not reached: ${verdict.why}`);
+    process.exit(verdict.reached ? 0 : 1);
   }
 
   if (expect === 'update-rejected') {
