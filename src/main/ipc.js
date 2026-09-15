@@ -54,6 +54,11 @@ function fail(err) {
   return { ok: false, error: err && err.message ? err.message : String(err) };
 }
 
+// True while a filing is being written. The updater reads it so that a restart can
+// never land in the middle of a build.
+let building = 0;
+const isBuilding = () => building > 0;
+
 function registerIpc() {
   ipcMain.handle('app:version', () => ({ ok: true, version }));
 
@@ -142,6 +147,7 @@ function registerIpc() {
 
   ipcMain.handle('bundle:build', async (event, spec) => {
     const sender = event.sender;
+    building += 1;
     try {
       const result = await buildBundle(spec, (stage) => {
         if (!sender.isDestroyed()) sender.send('bundle:progress', stage);
@@ -159,6 +165,8 @@ function registerIpc() {
       return { ok: true, result: { ...result, historyId } };
     } catch (err) {
       return fail(err);
+    } finally {
+      building -= 1;
     }
   });
 
@@ -222,4 +230,4 @@ function registerIpc() {
   });
 }
 
-module.exports = { registerIpc, titleFromFilename };
+module.exports = { registerIpc, titleFromFilename, isBuilding };

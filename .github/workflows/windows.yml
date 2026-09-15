@@ -1,0 +1,224 @@
+name: Windows
+
+# Every push is built into an installer on a real Windows machine, installed the way a
+# user installs it, launched, and made to produce a filing. A tag like v1.3.0 then
+# publishes that verified installer as a GitHub release, and installed copies update
+# themselves from it.
+#
+# Why this exists: the 1.2.0 download failed on the first real Windows machine with
+# "ffmpeg.dll was not found", and until then no test had ever run on Windows.
+
+on:
+  push:
+    branches: ['**']
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      reproduce_zip_bug:
+        description: Also reproduce the 1.2.0 failure (the program run without its folder)
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+jobs:
+  build-and-verify:
+    name: Build, install and run on Windows
+    runs-on: windows-latest
+    timeout-minutes: 75
+    env:
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Configuration checks
+        run: node test/config.js
+
+      - name: Build the installer
+        run: npx electron-builder --win nsis --x64 --publish never
+
+      - name: The unpacked program can start from its folder
+        run: node scripts/check-win-package.js dist/win-unpacked
+
+      - name: Reproduce the 1.2.0 failure
+        if: ${{ github.event.inputs.reproduce_zip_bug == 'true' }}
+        continue-on-error: true
+        run: |
+          $alone = New-Item -ItemType Directory -Force "$env:RUNNER_TEMP\exe-alone"
+          Copy-Item dist\win-unpacked\AppendixBuilder.exe $alone
+          node scripts/check-win-package.js $alone
+          $p = Start-Process "$alone\AppendixBuilder.exe" -PassThru
+          if ($p.WaitForExit(30000)) {
+            Write-Host ("the program ended with 0x{0:X8} (0xC0000135 is STATUS_DLL_NOT_FOUND)" -f $p.ExitCode)
+          } else {
+            Write-Host 'no exit within 30s: Windows is holding the "was not found" error dialog open'
+            Stop-Process $p -Force
+          }
+
+      - name: Install it the way a user would
+        run: |
+          $setup = Get-ChildItem dist -Filter 'AppendixBuilder-Setup-*.exe' | Select-Object -First 1
+          if (-not $setup) { throw 'no installer was built' }
+          Write-Host ("installer: {0} ({1:N1} MB)" -f $setup.Name, ($setup.Length / 1MB))
+          $p = Start-Process $setup.FullName -ArgumentList '/S' -PassThru -Wait
+          if ($p.ExitCode -ne 0) { throw "the installer exited with $($p.ExitCode)" }
+          Start-Sleep -Seconds 3
+          Get-Process AppendixBuilder -ErrorAction SilentlyContinue | Stop-Process -Force
+          $exe = Get-ChildItem "$env:LOCALAPPDATA\Programs" -Recurse -Filter 'AppendixBuilder.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $exe) { throw 'the installed program was not found under %LOCALAPPDATA%\Programs' }
+          Write-Host "installed to: $($exe.DirectoryName)"
+          "INSTALL_DIR=$($exe.DirectoryName)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          $menu = Get-ChildItem "$env:APPDATA\Microsoft\Windows\Start Menu\Programs" -Recurse -Filter '*.lnk' -ErrorAction SilentlyContinue
+          Write-Host "start-menu shortcuts: $(($menu | ForEach-Object Name) -join ', ')"
+
+      - name: The installed program can start from where it was installed
+        run: node scripts/check-win-package.js "$env:INSTALL_DIR"
+
+      - name: Launch the installed program and have it produce a filing
+        run: node scripts/run-selftest.js "$env:RUNNER_TEMP\selftest.json" -- "$env:INSTALL_DIR\AppendixBuilder.exe"
+
+      - name: A second launch hands over to the window already open
+        env:
+          APPENDIX_BUILDER_DISABLE_UPDATES: '1'
+        run: |
+          $exe = "$env:INSTALL_DIR\AppendixBuilder.exe"
+          $first = Start-Process $exe -PassThru
+          Start-Sleep -Seconds 10
+          if ($first.HasExited) { throw "the program closed on its own (code $($first.ExitCode))" }
+          $second = Start-Process $exe -PassThru
+          if (-not $second.WaitForExit(30000)) { throw 'the second launch neither handed over nor exited' }
+          Start-Sleep -Seconds 2
+          if ($first.HasExited) { throw 'the open window closed when the program was launched again' }
+          Write-Host "second launch exited with $($second.ExitCode); the first is still running"
+          Get-Process AppendixBuilder -ErrorAction SilentlyContinue | Stop-Process -Force
+          Start-Sleep -Seconds 2
+
+      - name: Build a newer version to update to
+        run: |
+          npm version 99.0.0 --no-git-tag-version --allow-same-version | Out-Null
+          npx electron-builder --win nsis --x64 --publish never "-c.directories.output=dist-next"
+          $code = $LASTEXITCODE
+          git checkout -- package.json package-lock.json
+          if ($code -ne 0) { throw 'building the newer version failed' }
+          Get-ChildItem dist-next -File | ForEach-Object { Write-Host "$($_.Name)  $($_.Length)" }
+
+      - name: A tampered update is refused
+        run: |
+          New-Item -ItemType Directory -Force dist-tampered | Out-Null
+          Copy-Item dist-next\latest.yml dist-tampered\
+          Copy-Item dist-next\AppendixBuilder-Setup-99.0.0.exe dist-tampered\
+          # Change the installer without changing the checksum published beside it.
+          $f = [IO.File]::Open("$PWD\dist-tampered\AppendixBuilder-Setup-99.0.0.exe", 'Open', 'ReadWrite')
+          $f.Seek(-64, 'End') | Out-Null; $f.WriteByte(0x41); $f.Close()
+          $server = Start-Process node -ArgumentList 'scripts/serve-dir.js','dist-tampered','8322' -PassThru -NoNewWindow
+          Start-Sleep -Seconds 2
+          node scripts/run-selftest.js "$env:RUNNER_TEMP\update-tampered.json" --expect update-rejected --env APPENDIX_BUILDER_SELFTEST_UPDATE_FEED=http://127.0.0.1:8322/ -- "$env:INSTALL_DIR\AppendixBuilder.exe"
+          $code = $LASTEXITCODE
+          Stop-Process $server -Force
+          Start-Sleep -Seconds 5
+          $v = (Get-Item "$env:INSTALL_DIR\AppendixBuilder.exe").VersionInfo.ProductVersion
+          Write-Host "installed version afterwards: $v"
+          if ($code -ne 0) { exit $code }
+          if ($v -like '99.*') { throw 'the tampered update was installed' }
+          Remove-Item "$env:LOCALAPPDATA\*-updater" -Recurse -Force -ErrorAction SilentlyContinue
+
+      - name: A genuine update downloads and installs
+        run: |
+          $server = Start-Process node -ArgumentList 'scripts/serve-dir.js','dist-next','8321' -PassThru -NoNewWindow
+          Start-Sleep -Seconds 2
+          node scripts/run-selftest.js "$env:RUNNER_TEMP\update.json" --env APPENDIX_BUILDER_SELFTEST_UPDATE_FEED=http://127.0.0.1:8321/ -- "$env:INSTALL_DIR\AppendixBuilder.exe"
+          $code = $LASTEXITCODE
+          $exe = "$env:INSTALL_DIR\AppendixBuilder.exe"
+          $deadline = (Get-Date).AddMinutes(5)
+          $v = ''
+          while ($code -eq 0 -and $v -notlike '99.*' -and (Get-Date) -lt $deadline) {
+            Start-Sleep -Seconds 3
+            $v = (Get-Item $exe -ErrorAction SilentlyContinue).VersionInfo.ProductVersion
+            Write-Host "installed version: $v"
+          }
+          Stop-Process $server -Force
+          if ($code -ne 0) { exit $code }
+          if ($v -notlike '99.*') { throw 'the update was downloaded but never installed' }
+          # Let the silent installer finish writing before the next launch.
+          $deadline = (Get-Date).AddMinutes(2)
+          while ((Get-Process | Where-Object { $_.Path -like "*AppendixBuilder-Setup*" -or $_.Path -like "*\Temp\*.tmp" }) -and (Get-Date) -lt $deadline) { Start-Sleep -Seconds 2 }
+          Start-Sleep -Seconds 5
+
+      - name: The updated program still works
+        run: |
+          node scripts/run-selftest.js "$env:RUNNER_TEMP\selftest-updated.json" -- "$env:INSTALL_DIR\AppendixBuilder.exe"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $r = Get-Content "$env:RUNNER_TEMP\selftest-updated.json" -Raw | ConvertFrom-Json
+          if ($r.version -ne '99.0.0') { throw "expected the updated program to be 99.0.0, it reports $($r.version)" }
+
+      - name: Keep the verified installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer
+          path: |
+            dist/AppendixBuilder-Setup-*.exe
+            dist/AppendixBuilder-Setup-*.exe.blockmap
+            dist/latest.yml
+          if-no-files-found: error
+
+      - name: Keep the self-test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: selftest-results
+          path: ${{ runner.temp }}/*.json
+          if-no-files-found: ignore
+
+  release:
+    name: Publish the release
+    needs: build-and-verify
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-installer
+          path: release
+
+      - name: The tag, the code and the installer agree on the version
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          PKG=$(node -p "require('./package.json').version")
+          YML=$(grep -m1 '^version:' release/latest.yml | awk '{print $2}')
+          echo "tag=$TAG package=$PKG installer=$YML"
+          test "$TAG" = "$PKG"
+          test "$PKG" = "$YML"
+          test -f "release/AppendixBuilder-Setup-$PKG.exe"
+
+      - name: Notes from the changelog
+        run: node scripts/release-notes.js "${GITHUB_REF_NAME#v}" > notes.md
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" release/* \
+            --title "Appendix Builder ${GITHUB_REF_NAME#v}" \
+            --notes-file notes.md \
+            --verify-tag

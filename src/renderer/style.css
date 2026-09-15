@@ -514,3 +514,21 @@ button { font: inherit; cursor: pointer; border-radius: 7px; transition: backgro
   white-space: nowrap;
 }
 .history-item:hover .hi-hint { color: var(--accent); }
+
+/* ---- notices: update ready, just updated ---- */
+
+.notice {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  border-radius: var(--radius);
+  padding: 10px 14px;
+  font-size: 13px;
+}
+.notice-body { flex: 1; min-width: 0; }
+.notice-text { flex: 1; min-width: 0; }
+.notice-update { background: #fff7e6; border: 1px solid #f3d7a1; color: #6b4a0c; }
+.notice-updated { background: #eaf5ef; border: 1px solid #bfe0cd; color: #1c5a3b; align-items: flex-start; }
+.notice-notes { margin-top: 6px; }
+.notice-notes summary { cursor: pointer; font-weight: 600; }
+.notice-notes p { margin: 6px 0 0; white-space: pre-line; line-height: 1.6; color: #2c4a3a; }

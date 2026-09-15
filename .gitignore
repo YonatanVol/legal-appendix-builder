@@ -6,3 +6,5 @@ dist/
 # committed. The tests read them from here; see the README.
 test/fixtures/
 test/output/
+dist-next/
+dist-tampered/

@@ -19,6 +19,14 @@ contextBridge.exposeInMainWorld('api', {
   historyRemove: (id) => ipcRenderer.invoke('history:remove', id),
   revealFile: (path) => ipcRenderer.invoke('shell:reveal', path),
 
+  updateStatus: () => ipcRenderer.invoke('update:status'),
+  installUpdate: () => ipcRenderer.invoke('update:install'),
+  onUpdateStatus: (callback) => {
+    const listener = (_event, status) => callback(status);
+    ipcRenderer.on('update:status', listener);
+    return () => ipcRenderer.removeListener('update:status', listener);
+  },
+
   onProgress: (callback) => {
     const listener = (_event, stage) => callback(stage);
     ipcRenderer.on('bundle:progress', listener);

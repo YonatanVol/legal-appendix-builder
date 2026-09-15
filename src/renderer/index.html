@@ -16,6 +16,22 @@
 
 <main>
 
+  <div class="notice notice-update hidden" id="update-ready" role="status">
+    <span class="notice-text" id="update-ready-text"></span>
+    <button type="button" class="secondary" id="update-restart">הפעלה מחדש עכשיו</button>
+  </div>
+
+  <div class="notice notice-updated hidden" id="update-done" role="status">
+    <div class="notice-body">
+      <span class="notice-text" id="update-done-text"></span>
+      <details class="notice-notes hidden" id="update-done-notes">
+        <summary>מה חדש</summary>
+        <p id="update-done-notes-text"></p>
+      </details>
+    </div>
+    <button type="button" class="ghost icon" id="update-done-close" aria-label="סגירה">✕</button>
+  </div>
+
   <div class="restored hidden" id="restored">
     <span class="restored-text" id="restored-text"></span>
     <button type="button" class="link" id="restored-new">התחל תיק חדש</button>
@@ -108,7 +124,7 @@
   <div class="drawer-body">
     <p class="drawer-note hidden" id="history-empty">
       כאן יופיעו התיקים שהפקת.<br>
-      אחרי שתיצרי תיק אפשר יהיה לפתוח אותו מכאן שוב, לתקן ולהפיק מחדש, בלי לבחור את
+      אחרי יצירת תיק אפשר יהיה לפתוח אותו מכאן שוב, לתקן ולהפיק מחדש, בלי לבחור את
       הקבצים ולהקליד את הכותרות מהתחלה.
     </p>
     <p class="drawer-note hidden" id="history-none">לא נמצא תיק שמתאים לחיפוש.</p>

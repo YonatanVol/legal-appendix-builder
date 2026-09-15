@@ -13,15 +13,36 @@ files:
   - package.json
   - "!**/*.map"
 
-# The app never talks to the network, so nothing here should either.
-publish: null
 npmRebuild: false
+
+# Releases are published by .github/workflows/windows.yml, which builds the installer on
+# a real Windows machine, installs it, launches it and has it produce a filing before
+# anything is released. The installed app reads this to find its updates.
+publish:
+  provider: github
+  owner: YonatanVol
+  repo: legal-appendix-builder
+  releaseType: release
 
 win:
   # electron-builder converts this 1024x1024 PNG into a multi-resolution .ico.
   icon: assets/icon.png
-  # `zip` packages from macOS without Wine, unlike the NSIS installer targets.
+  # ASCII, so the installer, the updater and any command line never meet an encoding
+  # problem. The Hebrew name is what she sees: shortcuts, window title, uninstall entry.
+  executableName: AppendixBuilder
   target:
-    - target: zip
+    - target: nsis
       arch: [x64]
-  artifactName: "AppendixBuilder-${version}-win-x64.${ext}"
+
+# One file she double-clicks. The 1.2.0 zip let the program be run without the files
+# beside it, and it failed with "ffmpeg.dll was not found" before a window appeared.
+nsis:
+  oneClick: true
+  perMachine: false        # installs for her alone, no administrator prompt
+  allowElevation: false
+  runAfterFinish: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: בונה תיקי נספחים
+  deleteAppDataOnUninstall: false   # keep her history if she reinstalls
+  artifactName: "AppendixBuilder-Setup-${version}.${ext}"

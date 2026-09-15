@@ -227,6 +227,7 @@ async function refresh() {
 
 function updateBuildState() {
   el.build.disabled = !!blockingReason() || state.building;
+  updateRestartButton();
 }
 
 /* ---------------- mutations ---------------- */
@@ -730,6 +731,73 @@ window.addEventListener('keydown', (event) => {
     closeDrawer();
   }
 });
+
+/* ---------------- updates ---------------- */
+
+let updateStatus = { phase: 'idle' };
+
+const UPDATE_TOOLTIPS = {
+  disabled: 'עדכונים אוטומטיים פועלים בתוכנה המותקנת',
+  checking: 'בודק אם יש גרסה חדשה…',
+  current: 'זו הגרסה העדכנית',
+  error: 'לא ניתן היה לבדוק עדכונים כרגע. הבדיקה תחזור אוטומטית.',
+};
+
+function updateTooltip(status) {
+  if (status.phase === 'downloading') {
+    return `מוריד את גרסה ${status.version} ברקע (${status.percent || 0}%)`;
+  }
+  if (status.phase === 'ready') return `גרסה ${status.version} מוכנה להתקנה`;
+  return UPDATE_TOOLTIPS[status.phase] || '';
+}
+
+function renderUpdate(status) {
+  updateStatus = status || { phase: 'idle' };
+  const ready = updateStatus.phase === 'ready';
+
+  $('update-ready').classList.toggle('hidden', !ready);
+  if (ready) {
+    $('update-ready-text').textContent =
+      `גרסה ${updateStatus.version} מוכנה. היא תותקן אוטומטית בסגירת התוכנה.`;
+  }
+  $('version').title = updateTooltip(updateStatus);
+  updateRestartButton();
+}
+
+// A restart mid-build would kill a filing half written, so the button says why it waits.
+function updateRestartButton() {
+  const button = $('update-restart');
+  button.disabled = state.building;
+  button.title = state.building ? 'אפשר להפעיל מחדש אחרי שיצירת התיק תסתיים' : '';
+}
+
+$('update-restart').addEventListener('click', async () => {
+  clearError();
+  const response = await window.api.installUpdate();
+  if (!response.ok) showError(response.error);
+});
+
+$('update-done-close').addEventListener('click', () => $('update-done').classList.add('hidden'));
+
+function announceUpdate(justUpdated) {
+  if (!justUpdated) return;
+  $('update-done-text').textContent = `התוכנה עודכנה לגרסה ${justUpdated.version}.`;
+  const notes = (justUpdated.notes || '').trim();
+  $('update-done-notes').classList.toggle('hidden', !notes);
+  $('update-done-notes-text').textContent = notes;
+  $('update-done').classList.remove('hidden');
+}
+
+// The main process may not register these in every harness; the page must still work.
+window.api.onUpdateStatus(renderUpdate);
+window.api
+  .updateStatus()
+  .then((response) => {
+    if (!response || !response.ok) return;
+    renderUpdate(response.status);
+    announceUpdate(response.justUpdated);
+  })
+  .catch(() => {});
 
 /* ---------------- start ---------------- */
 
