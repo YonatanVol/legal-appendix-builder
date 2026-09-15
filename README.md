@@ -112,7 +112,7 @@ is empty on a fresh clone and the suite will not run without it. Point
 ## Installing
 
 Download `AppendixBuilder-Setup-<version>.exe` from the
-[latest release](https://github.com/YonatanVol/legal-appendix-builder/releases/latest)
+[latest release](https://github.com/YonatanVol/appendix-builder-releases/releases/latest)
 and double-click it. It installs for the current user only, with no administrator
 prompt, opens the app, and adds a desktop and Start-menu shortcut.
 
@@ -143,11 +143,20 @@ what protects it:
   Both files come from the same release, though, so it does not help if the release
   itself is replaced, and because the app is unsigned there is no publisher signature
   to check as well.
-- **So the GitHub account is the key.** Anyone who gains control of the account, or can
-  push a `v*` tag to this repository, can ship code that runs on the user's machine with
-  access to her client files. Keep two-factor authentication on the account and restrict
-  who can create tags. A code-signing certificate would add the missing signature check
-  and remove the SmartScreen warning on first install.
+- **So publishing rights are the key.** Anyone who can publish to the releases repository
+  (through the GitHub account, the `RELEASES_TOKEN` secret, or a `v*` tag on this
+  repository) can ship code that runs on the user's machine with access to her client
+  files. Keep two-factor authentication on the account, keep that token scoped to the
+  releases repository alone, and restrict who can create tags. A code-signing certificate
+  would add the missing signature check and remove the SmartScreen warning on first install.
+
+**Where updates come from.** This repository, with the source, is private. Installers and
+update files are published to a separate public repository,
+[`appendix-builder-releases`](https://github.com/YonatanVol/appendix-builder-releases),
+which holds no code. An installed app cannot update from a private repository without
+carrying a credential that anyone holding the installer could extract, so it reads the
+public one and carries none. Keeping the source private has a natural limit: an Electron
+installer contains the app's JavaScript.
 
 The updater writes to `update.log` in the app's data folder
 (`%APPDATA%\rotem-office`). Setting `APPENDIX_BUILDER_DISABLE_UPDATES=1` turns
@@ -183,6 +192,22 @@ After each release, and weekly, a further job installs the published release and
 real GitHub for updates through the same rule. If GitHub changes the hosts it serves
 downloads from, that job fails and GitHub emails the repository owner, instead of
 installed copies silently never updating.
+
+**One-time setup, and once a year after.** Publishing needs a token that can write to the
+releases repository and nothing else:
+
+1. Open [github.com/settings/personal-access-tokens/new](https://github.com/settings/personal-access-tokens/new).
+2. Name it `appendix-builder releases`, set an expiration (a year at most), and under
+   **Repository access** choose **Only select repositories** and pick `appendix-builder-releases`.
+3. Under **Permissions**, set **Contents** to **Read and write**. Nothing else.
+4. Generate it, then store it as a secret of this repository (it asks for the value and
+   does not echo it):
+   `gh secret set RELEASES_TOKEN --repo YonatanVol/legal-appendix-builder`
+
+The weekly check fails, and GitHub emails you, when the token expires or loses access.
+
+The pipeline runs for `main`, for version tags and for pull requests, not for every branch:
+Actions minutes are metered for private repositories, and Windows minutes count double.
 
 To release, add the version's notes to [CHANGELOG.md](CHANGELOG.md) first. The text
 before a version's first `###` heading is what the user sees after updating; the

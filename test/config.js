@@ -95,13 +95,19 @@ try {
 }
 check('updates are published to GitHub', publish.provider === 'github');
 if (remote) {
-  const m = /github\.com[:/]([^/]+)\/([^/.]+)(\.git)?$/.exec(remote);
-  check('  to the repository this code lives in',
-    m && m[1] === publish.owner && m[2] === publish.repo, `${publish.owner}/${publish.repo} vs ${remote}`);
+  // The code repository is private, and an app cannot update from a private repository
+  // without carrying a credential. Updates must come from a separate, code-free one.
+  const m = /github\.com[:/]([^/]+)\/([^/.]+?)(\.git)?$/.exec(remote);
+  check('  from a repository separate from the code',
+    m && m[1] === publish.owner && m[2] !== publish.repo, `${publish.owner}/${publish.repo} vs ${remote}`);
 }
 
 const workflow = yaml.load(read('.github/workflows/windows.yml'));
 const release = workflow.jobs.release || {};
+const publishStep = (release.steps || []).find((st) => /releases repository/.test(st.name || '')) || {};
+check('releases go to that repository with the release token, not the code repository\'s own',
+  String((publishStep.env || {}).GH_TOKEN).includes('secrets.RELEASES_TOKEN') &&
+    /--repo "\$OWNER\/\$REPO"/.test(publishStep.run || ''));
 check('releases are published only from a version tag',
   String(release.if || '').includes("startsWith(github.ref, 'refs/tags/v')"), release.if);
 check('  and only after the Windows install and launch checks pass',

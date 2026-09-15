@@ -9,8 +9,11 @@ name: Windows
 # "ffmpeg.dll was not found", and until then no test had ever run on Windows.
 
 on:
+  # The code repository is private, where Actions minutes are metered and Windows minutes
+  # count double. The full pipeline runs for main, for version tags and for pull requests,
+  # not for every push to every branch.
   push:
-    branches: ['**']
+    branches: [main]
     tags: ['v*']
   pull_request:
   schedule:
@@ -272,14 +275,22 @@ jobs:
       - name: Notes from the changelog
         run: node scripts/release-notes.js "${GITHUB_REF_NAME#v}" > notes.md
 
-      - name: Publish
+      - name: Publish to the public releases repository
         env:
-          GH_TOKEN: ${{ github.token }}
+          # A fine-grained token that may write only to the releases repository. It lives in
+          # this repository's Actions secrets and nowhere else, never inside the app.
+          GH_TOKEN: ${{ secrets.RELEASES_TOKEN }}
         run: |
+          OWNER=$(awk '/^publish:/{f=1} f && /^  owner:/{print $2; exit}' electron-builder.yml)
+          REPO=$(awk '/^publish:/{f=1} f && /^  repo:/{print $2; exit}' electron-builder.yml)
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::error::The RELEASES_TOKEN secret is missing, so nothing can be published to $OWNER/$REPO. See README, Building and releasing."
+            exit 1
+          fi
           gh release create "$GITHUB_REF_NAME" release/* \
+            --repo "$OWNER/$REPO" \
             --title "Appendix Builder ${GITHUB_REF_NAME#v}" \
-            --notes-file notes.md \
-            --verify-tag
+            --notes-file notes.md
 
   live-update-check:
     name: The published release updates from the real GitHub
@@ -299,13 +310,29 @@ jobs:
         with:
           node-version: 22
 
+      - name: The release token still works
+        env:
+          GH_TOKEN: ${{ secrets.RELEASES_TOKEN }}
+        run: |
+          # Fine-grained tokens expire. Checked every week, so an expired one shows up as a
+          # failed scheduled run and an email, not as a release that cannot be published.
+          $owner = (Select-String -Path electron-builder.yml -Pattern '^  owner: (.+)$').Matches[0].Groups[1].Value
+          $repo = (Select-String -Path electron-builder.yml -Pattern '^  repo: (.+)$').Matches[0].Groups[1].Value
+          "RELEASES_REPO=$owner/$repo" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          if (-not $env:GH_TOKEN) { throw 'The RELEASES_TOKEN secret is missing' }
+          $canWrite = gh api "repos/$owner/$repo" --jq '.permissions.push'
+          if ($LASTEXITCODE -ne 0 -or $canWrite -ne 'true') { throw "RELEASES_TOKEN can no longer publish to $owner/$repo (expired or revoked?)" }
+          $visibility = gh api "repos/$owner/$repo" --jq '.visibility'
+          if ($visibility -ne 'public') { throw "$owner/$repo is $visibility; installed copies can only update from a public repository" }
+          Write-Host "RELEASES_TOKEN can publish to $owner/$repo, which is public"
+
       - name: Download the published installer
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           $tag = if ($env:GITHUB_REF_TYPE -eq 'tag') { $env:GITHUB_REF_NAME } else { '' }
-          if ($tag) { gh release download $tag --pattern 'AppendixBuilder-Setup-*.exe' --dir published }
-          else { gh release download --pattern 'AppendixBuilder-Setup-*.exe' --dir published }
+          if ($tag) { gh release download $tag --repo $env:RELEASES_REPO --pattern 'AppendixBuilder-Setup-*.exe' --dir published }
+          else { gh release download --repo $env:RELEASES_REPO --pattern 'AppendixBuilder-Setup-*.exe' --dir published }
           Get-ChildItem published | ForEach-Object { Write-Host "$($_.Name)  $($_.Length)" }
 
       - name: Install it

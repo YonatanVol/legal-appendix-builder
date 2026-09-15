@@ -18,10 +18,14 @@ npmRebuild: false
 # Releases are published by .github/workflows/windows.yml, which builds the installer on
 # a real Windows machine, installs it, launches it and has it produce a filing before
 # anything is released. The installed app reads this to find its updates.
+#
+# The source code lives in a private repository. Installers and update files go to this
+# separate public one, which holds no code, so installed copies can update without any
+# credential inside the app.
 publish:
   provider: github
   owner: YonatanVol
-  repo: legal-appendix-builder
+  repo: appendix-builder-releases
   releaseType: release
 
 win:
