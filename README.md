@@ -150,7 +150,7 @@ what protects it:
   and remove the SmartScreen warning on first install.
 
 The updater writes to `update.log` in the app's data folder
-(`%APPDATA%\בונה תיקי נספחים`). Setting `APPENDIX_BUILDER_DISABLE_UPDATES=1` turns
+(`%APPDATA%\rotem-office`). Setting `APPENDIX_BUILDER_DISABLE_UPDATES=1` turns
 updates off.
 
 ## Building and releasing
