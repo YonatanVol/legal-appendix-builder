@@ -1782,6 +1782,7 @@ const panels = {
       const help = ui.section(container, 'איך עורכים',
         'בחר כלי בסרגל שמעל העמוד ולחץ או גרור על העמוד. לחיצה כפולה על טקסט עורכת אותו, Delete מוחק את הנבחר, Ctrl+Z מבטל.');
       const count = ui.note(help, '', 'muted');
+      ui.note(help, 'מחיקה בלבן רק מכסה במראה: הטקסט שמתחת נשאר בקובץ ואפשר להעתיק אותו. למחיקה אמיתית של מידע רגיש השתמש בכלי "השחרה".', 'muted');
       if (!file || !file.token) return;
       if (view.options.forToken && view.options.forToken !== file.token) view.set('objects', []);
       view.set('forToken', file.token);
