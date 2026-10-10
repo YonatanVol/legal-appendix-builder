@@ -120,7 +120,8 @@ function staleFields(form) {
   const asked = form.acroForm.dict.lookup(PDFName.of('NeedAppearances'));
   const viewersDraw = !!asked && asked.toString() === 'true';
   return form.getFields().filter((f) => {
-    const valued = (f instanceof PDFTextField && (f.getText() || '').trim()) || (f instanceof PDFDropdown && f.getSelected().length);
+    // A password field's value is never drawn from here; its viewer shows it masked.
+    const valued = (f instanceof PDFTextField && !f.isPassword() && (f.getText() || '').trim()) || (f instanceof PDFDropdown && f.getSelected().length);
     if (!valued) return false;
     if (viewersDraw) return true;
     return f.acroField.getWidgets().some((w) => {
@@ -159,7 +160,9 @@ function userRect(page, { x, y, w, h }) {
 async function drawAppearances(doc, fields) {
   const items = [];
   for (const field of fields) {
-    const value = field instanceof PDFDropdown ? (field.getSelected()[0] || '') : (field.getText() || '');
+    const typed = field instanceof PDFDropdown ? (field.getSelected()[0] || '') : (field.getText() || '');
+    // A password is drawn masked, as viewers show it.
+    const value = field instanceof PDFTextField && field.isPassword() ? '•'.repeat(typed.length) : typed;
     for (const widget of field.acroField.getWidgets()) items.push({ field, widget, value });
   }
   const nonEmpty = items.filter((i) => i.value.trim());

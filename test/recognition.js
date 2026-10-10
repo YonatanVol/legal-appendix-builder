@@ -185,6 +185,26 @@ async function leakCases(dir) {
     await fsp.writeFile(file, await d.save());
     out.push({ label: 'a hidden layer on the kept page stays hidden', file, clean: true, secrets: ['SECRET-P0-LAYERS', 'HIDDEN-OCG-P1'], keep: 'PUBLIC-LAYERS' });
   }
+  for (const clean of [true, false]) {
+    // Layers that point at the redacted page: a listed layer with an extra key, the page
+    // itself in the list, a usage entry, a layer named after what only that page holds,
+    // and an unlisted layer used by the kept page.
+    const d = await PDFDocument.create();
+    const f = await d.embedFont(StandardFonts.Helvetica);
+    const ctx = d.context;
+    const p0 = d.addPage([595, 842]);
+    const p1 = d.addPage([595, 842]);
+    p0.drawText('SECRET-LAYER-PAGE', { x: 50, y: 700, size: 14, font: f });
+    const named = ctx.register(ctx.obj({ Type: 'OCG', Name: PDFString.of('SECRET-LAYER-NAME'), Extra: p0.ref }));
+    const loose = ctx.register(ctx.obj({ Type: 'OCG', Name: PDFString.of('SECRET-LOOSE-NAME'), Extra: p0.ref }));
+    d.catalog.set(PDFName.of('OCProperties'), ctx.obj({ OCGs: [named, p0.ref], D: { Order: [named], AS: [{ Event: 'View', OCGs: [named], Category: ['View'], Page: p0.ref }] } }));
+    p0.node.normalizedEntries().Resources.set(PDFName.of('Properties'), ctx.obj({ L0: named }));
+    p1.node.set(PDFName.of('Resources'), ctx.obj({ Font: { F1: f.ref }, Properties: { L1: loose } }));
+    p1.node.set(PDFName.of('Contents'), ctx.register(ctx.flateStream('/OC /L1 BDC BT /F1 14 Tf 50 700 Td (PUBLIC-LAYER-KEPT) Tj ET EMC')));
+    const file = path.join(dir, `layers-point-${clean}.pdf`);
+    await fsp.writeFile(file, await d.save());
+    out.push({ label: `layers pointing at the redacted page, ${clean ? 'removing' : 'keeping'} comments`, file, clean, secrets: ['SECRET-LAYER-PAGE', 'SECRET-LAYER-NAME'], keep: 'PUBLIC-LAYER-KEPT' });
+  }
   return out;
 }
 
@@ -195,6 +215,7 @@ async function leakCases(dir) {
  */
 async function shownPdf(file) {
   const { PDFDocument, StandardFonts, PDFString } = require('pdf-lib');
+  // pdf-lib keeps a page's Resources inline; the third page shares the second's below.
   const d = await PDFDocument.create();
   const f = await d.embedFont(StandardFonts.Helvetica);
   const ctx = d.context;
@@ -222,8 +243,32 @@ async function shownPdf(file) {
   const stampAnnot = ctx.register(ctx.obj({ Type: 'Annot', Subtype: 'Stamp', Rect: [300, 400, 400, 450], AP: { N: stampAp } }));
   const hidden = ctx.register(ctx.obj({ Type: 'Annot', Subtype: 'Stamp', Rect: [300, 300, 400, 350], F: 2, AP: { N: hiddenAp } }));
   const note = ctx.register(ctx.obj({ Type: 'Annot', Subtype: 'Text', Rect: [10, 10, 30, 30], Contents: PDFString.of('a comment') }));
+  // A password field the form leaves for viewers to draw: never drawn in the clear.
+  const secret = form.createTextField('pin');
+  secret.addToPage(p1, { x: 320, y: 600, width: 220, height: 24 });
+  secret.enablePassword();
+  secret.setText('PASSWORDPLAIN');
+  secret.acroField.getWidgets()[0].dict.delete(PDFName.of('AP'));
+  // A hidden layer: a drawing placed whole on it, and a stamp whose drawing is on it.
+  const ocg = ctx.register(ctx.obj({ Type: 'OCG', Name: PDFString.of('internal') }));
+  d.catalog.set(PDFName.of('OCProperties'), ctx.obj({ OCGs: [ocg], D: { OFF: [ocg] } }));
+  const onLayer = ctx.register(ctx.stream('BT /F1 10 Tf 50 520 Td (OFFLAYERFORM) Tj ET', { Type: 'XObject', Subtype: 'Form', BBox: [0, 0, 595, 842], OC: ocg, Resources: { Font: { F1: f.ref } } }));
+  const layerStampAp = ctx.register(ctx.stream('BT /F1 10 Tf 105 120 Td (OFFLAYERSTAMP) Tj ET', { Type: 'XObject', Subtype: 'Form', BBox: [100, 100, 200, 150], OC: ocg, Resources: { Font: { F1: f.ref } } }));
+  const layerStamp = ctx.register(ctx.obj({ Type: 'Annot', Subtype: 'Stamp', Rect: [300, 200, 400, 250], AP: { N: layerStampAp } }));
+  p1.node.normalizedEntries().Resources.set(PDFName.of('XObject'), ctx.obj({ Hid: onLayer }));
+  p1.node.addContentStream(ctx.register(ctx.stream('/Hid Do')));
+  // A comment with its own drawing: removed with the comments, never burned into the page.
+  const freeAp = look('BT /F1 10 Tf 105 120 Td (COMMENT-TEXT) Tj ET');
+  const free = ctx.register(ctx.obj({ Type: 'Annot', Subtype: 'FreeText', Rect: [300, 100, 400, 150], DA: PDFString.of('/Helv 10 Tf 0 g'), Contents: PDFString.of('COMMENT-TEXT'), AP: { N: freeAp } }));
   const annots = p1.node.lookup(PDFName.of('Annots'));
-  p1.node.set(PDFName.of('Annots'), ctx.obj([...annots.asArray(), stampAnnot, hidden, note]));
+  p1.node.set(PDFName.of('Annots'), ctx.obj([...annots.asArray(), stampAnnot, hidden, note, layerStamp, free]));
+  // A third page sharing the second's resources, with a stamp of its own.
+  const p2 = d.addPage([595, 842]);
+  const shared = ctx.register(p1.node.normalizedEntries().Resources);
+  p1.node.set(PDFName.of('Resources'), shared);
+  p2.node.set(PDFName.of('Resources'), shared);
+  const twoAp = look('BT /F1 10 Tf 105 120 Td (STAMPTWO) Tj ET');
+  p2.node.set(PDFName.of('Annots'), ctx.obj([ctx.register(ctx.obj({ Type: 'Annot', Subtype: 'Stamp', Rect: [300, 400, 400, 450], AP: { N: twoAp } }))]));
   await fsp.writeFile(file, await d.save({ updateFieldAppearances: false }));
   return file;
 }
@@ -463,12 +508,20 @@ app.whenReady().then(async () => {
     const late = r.ok ? await valueDrawn(r.display[0], 2, 'LATE-VALUE') : false;
     check('    a value the form left for viewers to draw is drawn too', late);
     check('    and a hidden stamp stays hidden', r.ok && !words.includes('HIDDEN-STAMP'), words);
+    // Read as text, not searched for in the bytes: Chromium writes drawn text as glyph
+    // numbers, so a byte search would pass whether or not the password is on the page.
+    check('    a password is not drawn in the clear', r.ok && !words.includes('PASSWORDPLAIN') && words.includes('FILLED-VALUE-P1'), words);
+    check('    a drawing or a stamp on a hidden layer stays hidden', r.ok && !words.includes('OFFLAYERFORM') && !words.includes('OFFLAYERSTAMP'), words);
+    const third = r.ok ? (await linesOf(r.display[0], 3)).join(' ') : '';
+    check('    a page sharing its resources with another keeps its own stamp', third.includes('STAMPTWO'), third);
+    const freeText = r.ok ? (await linesOf(r.display[0], 2)).join(' ').includes('COMMENT-TEXT') : true;
+    check(`    a comment ${clean ? 'is removed, not burned into the page' : 'stays a comment, not burned into the page'}`, r.ok && !freeText);
     const ink = r.ok ? darkIn(r.display[0], 2, dir) : null;
     check('    each drawn where it was: the stamp\'s box and the checked box are dark, the drawing\'s own corner is not',
       ink && ink.stamp > 0.8 && ink.check > 0.05 && ink.origin < 0.01, JSON.stringify(ink));
     const annots = r.ok ? (await PDFDocument.load(await fsp.readFile(r.display[0]))).getPage(1).node.lookup(PDFName.of('Annots')) : null;
-    check(`    ${clean ? 'no annotation is left' : 'the comment stays a comment, and nothing else stays an annotation'}`,
-      clean ? !annots : annots && annots.size() === 1, annots ? `${annots.size()} annotations` : 'none');
+    check(`    ${clean ? 'no annotation is left' : 'the two comments stay comments, and nothing else stays an annotation'}`,
+      clean ? !annots : annots && annots.size() === 2, annots ? `${annots.size()} annotations` : 'none');
   }
 
   /* ---- PDF to Excel ---- */

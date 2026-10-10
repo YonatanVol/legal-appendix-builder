@@ -111,11 +111,19 @@ app.whenReady().then(async () => {
   check('a conversion as the last step writes its own kind of file', r.ok && /\.md$/.test(r.display[0]) && fs.readFileSync(r.display[0], 'utf8').includes('Alpha 1'), r.error || r.display);
 
   // The last step may rightly make nothing: Compress of a file already as small as it
-  // gets. The numbering before it is still the result, and the message names the file.
-  r = await jobs.start(tools.runnable('workflow'), [a], { name: 'ממוספר', steps: [{ toolId: 'page-numbers', options: { format: 'n' } }, { toolId: 'compress' }] }).promise;
+  // gets, here because the step before it has just compressed it. The numbering and
+  // compressing before it are still the result, and the message names the file.
+  const twice = [{ toolId: 'page-numbers', options: { format: 'n' } }, { toolId: 'compress' }, { toolId: 'compress' }];
+  r = await jobs.start(tools.runnable('workflow'), [a], { name: 'ממוספר', steps: twice }).promise;
+  check('  (the last step here really makes nothing)', /כבר קטן ככל האפשר/.test(r.summary || ''), r.summary);
   const kept = r.ok && r.display.length === 1 ? (await text.documentText(r.display[0])).join(' | ') : '';
   check('when the last step makes nothing, the earlier steps\' result is still written', r.ok && path.basename(r.display[0] || '') === 'מכתב א - ממוספר.pdf' && /Alpha 1\s+1\b/.test(kept), r.error || `${r.display} ${kept}`);
-  check('  and the message names the file, not a working copy', r.ok && !/"\d+\.pdf"/.test(r.summary || ''), r.summary);
+  check('  and the message names the file, not a working copy', r.ok && /"מכתב א\.pdf"/.test(r.summary || ''), r.summary);
+  // A copy of the first letter, for a run without a workflow name.
+  const c3 = path.join(dir, 'מכתב ג.pdf');
+  fs.copyFileSync(a, c3);
+  r = await jobs.start(tools.runnable('workflow'), [c3], { name: '', steps: twice }).promise;
+  check('  without a workflow name, that result is named as the step that made it names its files', r.ok && /כבר קטן/.test(r.summary || '') && path.basename(r.display[0] || '') === 'מכתב ג - מכווץ.pdf', r.error || `${r.display} ${r.summary}`);
 
   let jobId = null;
   const beforeCancel = fs.readdirSync(dir).sort().join('|');

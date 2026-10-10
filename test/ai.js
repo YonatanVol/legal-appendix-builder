@@ -83,7 +83,7 @@ app.whenReady().then(async () => {
   const base = `http://127.0.0.1:${server.address().port}`;
   process.env.OFFICE_AI_TEST_BASE = base;
   // What the SDK would otherwise take from the environment: none of it may be used.
-  process.env.ANTHROPIC_CUSTOM_HEADERS = 'x-from-environment: yes';
+  process.env.ANTHROPIC_CUSTOM_HEADERS = 'x-from-environment: yes\nx-api-key: key-from-environment\nanthropic-version: 1999-01-01';
   process.env.ANTHROPIC_AUTH_TOKEN = 'token-from-environment';
   process.env.ANTHROPIC_BASE_URL = 'http://192.0.2.1:9';
 
@@ -131,7 +131,7 @@ app.whenReady().then(async () => {
   check('the summary is written as a Word file beside the document', r.ok && r.display[0] === path.join(dir, 'החלטה - סיכום.docx'), r.error || r.display);
   check('the request uses Claude Opus 5.5 with the server-side fallback on', sent && sent.body.model === 'claude-opus-5-5' && sent.body.fallbacks === 'default' && /server-side-fallback-2026-07-01/.test(sent.headers['anthropic-beta'] || ''), sent && `${sent.body.model} ${sent.body.fallbacks} ${sent.headers['anthropic-beta']}`);
   check('  with only the office\'s key: no headers or token taken from the environment, and not sent elsewhere',
-    sent && sent.headers['x-api-key'] === realKey && !sent.headers['x-from-environment'] && !sent.headers.authorization, sent && Object.keys(sent.headers).join(','));
+    sent && sent.headers['x-api-key'] === realKey && sent.headers['anthropic-version'] === '2023-06-01' && !sent.headers['x-from-environment'] && !sent.headers.authorization, sent && Object.keys(sent.headers).join(','));
   const docBlock = sent && sent.body.messages[0].content.find((c) => c.type === 'document');
   check('  the PDF itself is sent, unchanged', docBlock && Buffer.from(docBlock.source.data, 'base64').equals(await fsp.readFile(decision)));
   check('  and the instructions ask for Hebrew, short, and only the chosen topics', /Hebrew/.test(sent.body.system) && /חצי עמוד/.test(sent.body.system) && /סכומים/.test(sent.body.system) && !/הצדדים ותפקידם/.test(sent.body.system));

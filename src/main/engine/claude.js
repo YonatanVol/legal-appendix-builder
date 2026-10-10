@@ -39,29 +39,32 @@ function sessionFor() {
   return aiSession;
 }
 
-/** Header names ANTHROPIC_CUSTOM_HEADERS would add to every request; they are removed. */
-function envHeaderNames() {
-  return String(process.env.ANTHROPIC_CUSTOM_HEADERS || '').split('\n')
-    .map((line) => (line.includes(':') ? line.slice(0, line.indexOf(':')).trim().toLowerCase() : ''))
-    .filter((name) => name && name !== 'x-api-key' && name !== 'anthropic-version' && name !== 'anthropic-beta' && name !== 'content-type');
+/**
+ * Headers that ANTHROPIC_CUSTOM_HEADERS would add to every request, each undone: removed,
+ * or for the key and the API version, set back to the app's own value. The SDK applies
+ * these after its own headers, so this is the last word on them.
+ */
+function undoEnvHeaders(apiKey) {
+  const undo = {};
+  for (const line of String(process.env.ANTHROPIC_CUSTOM_HEADERS || '').split('\n')) {
+    const name = line.includes(':') ? line.slice(0, line.indexOf(':')).trim().toLowerCase() : '';
+    if (!name) continue;
+    undo[name] = name === 'x-api-key' ? apiKey : name === 'anthropic-version' ? '2023-06-01' : null;
+  }
+  return undo;
 }
 
 async function client() {
   const apiKey = await settings.getApiKey();
   if (!apiKey) throw new Error('לא הוזן מפתח API של Claude. אפשר להזין אותו בהגדרות.');
   const ses = sessionFor();
-  const foreign = envHeaderNames();
   return new Anthropic({
     apiKey,
     authToken: null,
     baseURL: testBase() || API_BASE,
     logLevel: 'off',
-    fetch: (url, init = {}) => {
-      if (!foreign.length) return ses.fetch(String(url), init);
-      const headers = new Headers(init.headers);
-      for (const name of foreign) headers.delete(name);
-      return ses.fetch(String(url), { ...init, headers });
-    },
+    defaultHeaders: undoEnvHeaders(apiKey),
+    fetch: (url, init) => ses.fetch(String(url), init),
     maxRetries: 2,
     timeout: 10 * 60 * 1000,
   });

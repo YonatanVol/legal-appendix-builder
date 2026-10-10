@@ -42,6 +42,8 @@ async function run({ inputs, options = {}, ctx }) {
   for (let b = 0; b < batches.length; b++) {
     let current = batches[b];
     const original = current[0];
+    // The label of the step whose file is current, for naming it if it becomes the result.
+    let producedBy = '';
     for (let k = 0; k < steps.length; k++) {
       const last = k === steps.length - 1;
       const step = steps[k];
@@ -49,6 +51,7 @@ async function run({ inputs, options = {}, ctx }) {
       const stepDir = path.join(ctx.scratch, `b${b}-s${k}`);
       await fs.mkdir(stepDir, { recursive: true });
       const made = [];
+      const labels = [];
       const inner = {
         ...ctx,
         progress: (fraction, text) => ctx.progress(
@@ -68,6 +71,7 @@ async function run({ inputs, options = {}, ctx }) {
           // knows rather than a working copy.
           const base = path.parse(original).name;
           const file = path.join(stepDir, `${made.length ? `${base} (${made.length + 1})` : base}.${where.ext || 'pdf'}`);
+          if (where.label) labels.push(where.label);
           await fs.writeFile(file, bytes);
           made.push(file);
           return file;
@@ -81,7 +85,7 @@ async function run({ inputs, options = {}, ctx }) {
           // The last step rightly made nothing (Compress of a file already as small as it
           // gets), but the steps before it did: their result is the workflow's result.
           made.push(await ctx.writeOutput(await fs.readFile(current[0]), {
-            source: original, label: label || names[k - 1], ext: path.extname(current[0]).slice(1) || 'pdf',
+            source: original, label: label || producedBy, ext: path.extname(current[0]).slice(1) || 'pdf',
           }));
         }
         display.push(...(result.display && result.display.length ? result.display : made));
@@ -91,7 +95,10 @@ async function run({ inputs, options = {}, ctx }) {
       const next = made.filter((f) => /\.pdf$/i.test(f));
       // A step may rightly make nothing (Compress of a file already as small as it gets);
       // the file goes on to the next step as it was.
-      if (next.length) current = next;
+      if (next.length) {
+        current = next;
+        producedBy = labels[0] || names[k];
+      }
     }
   }
   const tail = notes.length === 1 ? ` ${notes[0]}` : '';
