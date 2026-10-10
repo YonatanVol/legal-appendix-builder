@@ -160,7 +160,7 @@ const shell = (() => {
     if (view.job) return;
     if (view.screen === 'appendix' && window.appendixBusy && window.appendixBusy()) return;
     view.toolId = null;
-    setHeader('כלי המשרד', 'כל כלי ה-PDF של המשרד במקום אחד. שום קובץ לא יוצא מהמחשב.');
+    setHeader('כלי המשרד', 'כל כלי ה-PDF של המשרד במקום אחד. הקבצים נשארים במחשב, חוץ מבשני הכלים שמסומנים "בענן".');
     show('home');
     renderHome();
     loadRecent();
