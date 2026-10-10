@@ -226,6 +226,9 @@ async function refresh() {
 
 function updateBuildState() {
   el.build.disabled = !!blockingReason() || state.building;
+  if (window.shell && window.shell.setBackBlocked) {
+    window.shell.setBackBlocked(state.building ? 'אפשר לחזור אחרי שהתיק ייווצר.' : '');
+  }
   updateRestartButton();
 }
 
@@ -787,6 +790,9 @@ window.api
     announceUpdate(response.justUpdated);
   })
   .catch(() => {});
+
+/** For the shell: leaving this screen mid-build would hide a filing still being written. */
+window.appendixBusy = () => state.building;
 
 /* ---------------- start ---------------- */
 

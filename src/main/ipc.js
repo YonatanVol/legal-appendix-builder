@@ -266,6 +266,7 @@ async function describeAll(filePaths) {
   return files;
 }
 
+
 const activeJobs = new Map(); // job id -> promise, so a cancel can find it
 
 function registerToolIpc() {

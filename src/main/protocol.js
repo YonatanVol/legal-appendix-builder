@@ -131,16 +131,23 @@ function registerAppProtocol(ses, mounts) {
   });
 }
 
+/**
+ * A document, by token. Only PDFs and pictures are ever registered (docs.js), and they
+ * are served as inert data: no scripts, no styles, and the browser told not to guess
+ * another type from the content.
+ */
 async function serveDocument(token) {
   const filePath = docs.resolve(token);
-  if (!filePath) return new Response('unknown document', { status: 404 });
+  if (!filePath || !docs.servable(filePath)) return new Response('unknown document', { status: 404 });
   try {
     const body = await fs.readFile(filePath);
     return new Response(body, {
       status: 200,
       headers: {
-        'content-type': MIME[path.extname(filePath).toLowerCase()] || 'application/octet-stream',
+        'content-type': MIME[path.extname(filePath).toLowerCase()],
         'cache-control': 'no-store',
+        'content-security-policy': "default-src 'none'; sandbox",
+        'x-content-type-options': 'nosniff',
       },
     });
   } catch (err) {

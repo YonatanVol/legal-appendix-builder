@@ -211,8 +211,58 @@ function run() {
     );
     check('the document side still cannot reach the network', blocked === 'blocked', blocked);
 
+    await toolChecks(page, scratch, makePdf);
+
     win.destroy();
     finish();
+  }
+
+  /**
+   * One job through each engine, from wherever the installed program keeps it: Chromium
+   * for stamped text, pdf.js read from inside the package, qpdf and Ghostscript from
+   * resources/vendor, and the PDF/A profile from outside app.asar. Each of these works
+   * from source and can fail only once packaged.
+   */
+  async function toolChecks(page, scratch, makePdf) {
+    const bin = require('./engine/binaries');
+    const grid = await page(`window.shell.ready.then(() => ({
+      tiles: document.querySelectorAll('.tile').length,
+      ranges: typeof window.pageRanges === 'object',
+    }))`);
+    check('the tool grid shows every tool', grid.tiles === 30, `${grid.tiles} tiles`);
+    check('  and the shared page-range parser loaded', grid.ranges);
+
+    const a = await makePdf('tool-a.pdf', 2);
+    const b = await makePdf('tool-b.pdf', 1);
+    const files = await page(`window.api.describeFiles(${JSON.stringify([a])})`);
+    const thumb = files.ok
+      ? await page(`new Promise((resolve) => {
+          const go = () => window.thumbs.render(${JSON.stringify(files.files[0].token)}, 0, 60)
+            .then((c) => resolve(c.width > 0 ? 'drawn' : 'empty')).catch((e) => resolve(String(e && e.message)));
+          if (window.thumbs) go(); else document.addEventListener('thumbs-ready', go, { once: true });
+        })`)
+      : 'not described';
+    check('page thumbnails draw (pdf.js and its worker load)', thumb === 'drawn', thumb);
+
+    if (app.isPackaged) {
+      const inside = (p) => !!p && path.resolve(p).startsWith(path.resolve(process.resourcesPath));
+      check('qpdf is the one shipped with the program', inside(bin.locate('qpdf')), bin.locate('qpdf') || 'not found');
+      check('Ghostscript is the one shipped with the program', inside(bin.locate('gs')), bin.locate('gs') || 'not found');
+    }
+
+    const jobs = [
+      ['merge', [a, b], {}],
+      ['page-numbers', [a], { format: 'page-n-of', position: 'bottom-center' }],
+      ['pdf-to-markdown', [a], {}],
+      ['protect', [a], { password: 'סיסמה 1' }],
+      ['compress', [a], { level: 'strong' }],
+      ['pdfa', [a], { level: '2b' }],
+      ['pdf-to-jpg', [a], { mode: 'pages', dpi: 72 }],
+    ];
+    for (const [toolId, inputs, options] of jobs) {
+      const result = await page(`window.api.startJob(${JSON.stringify({ toolId, inputs, options })})`);
+      check(`the ${toolId} tool runs`, result.ok, result.ok ? result.summary : result.error);
+    }
   }
 
   /* ------------------------------------------------------------ live check ---- */

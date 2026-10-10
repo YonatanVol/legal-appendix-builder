@@ -26,7 +26,8 @@ async function run({ inputs, options = {}, ctx }) {
   const total = doc.getPageCount();
   const mode = options.mode || 'ranges';
 
-  let parts; // [{indices: number[], label: string}]
+  let parts; // [{indices: number[], over?: boolean}]
+  let oversize = 0;
   if (mode === 'every') {
     const n = Math.floor(Number(options.every));
     if (!Number.isFinite(n) || n < 1) throw new Error('יש לבחור כל כמה עמודים לפצל, מספר של 1 ומעלה.');
@@ -42,6 +43,7 @@ async function run({ inputs, options = {}, ctx }) {
     parts = options.extractEach ? indices.map((i) => ({ indices: [i] })) : [{ indices }];
   } else if (mode === 'size') {
     parts = await partsBySize(doc, Number(options.maxMb), ctx);
+    oversize = parts.filter((p) => p.over).length;
   } else {
     const ranges = parseRanges(options.ranges, total);
     parts = options.mergeRanges
@@ -71,8 +73,12 @@ async function run({ inputs, options = {}, ctx }) {
     await ctx.writeOutput(bytes, { dir: folder, name: `${stem} - חלק ${number} (${label(parts[i].indices)})`, ext: 'pdf' });
   }
   ctx.progress(1, 'הסתיים');
+  let summary = `הקובץ פוצל ל-${parts.length} קבצים, בתיקייה חדשה ליד המקור.`;
+  if (oversize) {
+    summary += ` ${oversize === 1 ? 'חלק אחד גדול' : `${oversize} חלקים גדולים`} מהמגבלה, כי ${oversize === 1 ? 'יש בו עמוד אחד' : 'בכל אחד מהם עמוד אחד'} שגדול ממנה בעצמו.`;
+  }
   return {
-    summary: `הקובץ פוצל ל-${parts.length} קבצים, בתיקייה חדשה ליד המקור.`,
+    summary,
     display: [folder],
   };
 }
@@ -104,20 +110,22 @@ async function partsBySize(doc, maxMb, ctx) {
     ctx.progress((i / total) * 0.6, `מודד את עמוד ${i + 1} מתוך ${total}`);
     sizes.push((await partBytes(doc, [i])).length);
   }
+  if (total === 1) throw new Error('בקובץ יש עמוד אחד בלבד, ולכן אי אפשר לפצל אותו.');
   const parts = [];
   let current = [];
   let sum = 0;
+  const close = () => {
+    parts.push({ indices: current, over: sum > limit });
+    current = [];
+    sum = 0;
+  };
   for (let i = 0; i < total; i++) {
-    if (current.length && sum + sizes[i] > limit) {
-      parts.push({ indices: current });
-      current = [];
-      sum = 0;
-    }
+    if (current.length && sum + sizes[i] > limit) close();
     current.push(i);
     sum += sizes[i];
   }
-  if (current.length) parts.push({ indices: current });
-  if (parts.length === 1) throw new Error(`הקובץ כולו קטן מ-${maxMb} MB, ולכן אין מה לפצל.`);
+  if (current.length) close();
+  if (parts.length === 1) throw new Error(`הקובץ כולו קטן מ-\u2066${maxMb} MB\u2069, ולכן אין מה לפצל.`);
   return parts;
 }
 

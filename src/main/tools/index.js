@@ -54,7 +54,7 @@ const TOOLS = [
   { id: 'forms', group: 'edit', name: 'טפסים', description: 'מילוי שדות בטופס קיים, או יצירת שדות חדשים.', accepts: PDF, multiple: false, icon: 'forms' },
 
   { id: 'protect', group: 'security', name: 'הגנה בסיסמה', description: 'הצפנה עם סיסמה לפתיחה, והגבלת הדפסה והעתקה.', accepts: PDF, multiple: true, icon: 'lock' },
-  { id: 'unlock', group: 'security', name: 'הסרת סיסמה', description: 'הסרת ההגנה מקובץ שהסיסמה שלו ידועה לך.', accepts: PDF, multiple: true, icon: 'unlock' },
+  { id: 'unlock', group: 'security', name: 'הסרת סיסמה', description: 'הסרת ההגנה מקובץ שהסיסמה שלו ידועה לך.', accepts: PDF, multiple: true, icon: 'unlock', acceptsEncrypted: true },
 
   { id: 'summarize', group: 'ai', name: 'סיכום מסמך', description: 'סיכום בעברית של המסמך: עובדות, צדדים, תאריכים וסכומים.', accepts: PDF, multiple: false, icon: 'summarize', cloud: true },
   { id: 'translate', group: 'ai', name: 'תרגום PDF', description: 'תרגום המסמך לשפה אחרת, כקובץ Word ו-PDF.', accepts: PDF, multiple: false, icon: 'translate', cloud: true },

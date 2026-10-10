@@ -76,6 +76,14 @@ async function write(entries) {
   }
 }
 
+// Passwords are never written to disk. A repeated run asks for them again.
+const SECRET = /password/i;
+
+function withoutSecrets(options) {
+  if (!options || typeof options !== 'object') return {};
+  return Object.fromEntries(Object.entries(options).filter(([key]) => !SECRET.test(key)));
+}
+
 /**
  * @param {{toolId: string, inputs: string[], options: object, outputs: string[], summary?: string}} run
  */
@@ -86,7 +94,7 @@ async function record(run) {
     savedAt: new Date().toISOString(),
     inputs: run.inputs.slice(),
     inputNames: run.inputs.map((p) => path.basename(p)),
-    options: run.options && typeof run.options === 'object' ? run.options : {},
+    options: withoutSecrets(run.options),
     outputs: run.outputs.slice(),
     outputNames: run.outputs.map((p) => path.basename(p)),
     summary: run.summary || '',
@@ -135,4 +143,4 @@ async function recentFiles(limit = 8) {
   return out;
 }
 
-module.exports = { record, list, get, remove, recentFiles, setStoreFile, storeFile };
+module.exports = { withoutSecrets, record, list, get, remove, recentFiles, setStoreFile, storeFile };

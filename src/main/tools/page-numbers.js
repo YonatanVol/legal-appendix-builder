@@ -29,8 +29,9 @@ const FORMATS = {
  */
 async function run({ inputs, options = {}, ctx }) {
   const format = FORMATS[options.format] || FORMATS.n;
-  const start = Math.floor(Number(options.start ?? 1));
-  if (!Number.isFinite(start)) throw new Error('המספר הראשון אינו תקין.');
+  const raw = options.start === undefined ? 1 : options.start;
+  const start = raw === '' || raw === null ? NaN : Math.floor(Number(raw));
+  if (!Number.isFinite(start)) throw new Error('כתוב את המספר הראשון.');
   const margin = MARGINS[options.margin] || MARGINS.normal;
   const size = Math.min(48, Math.max(6, Number(options.size) || 11));
   const pagesText = String(options.pages || '').trim();

@@ -1,6 +1,7 @@
 'use strict';
 
 const fs = require('fs/promises');
+const { constants } = require('fs');
 const path = require('path');
 
 /**
@@ -9,58 +10,68 @@ const path = require('path');
  * The rule the user can predict: next to the source file, as "<name> - <what>.<ext>",
  * and never over an existing file. If that name is taken, " (2)", " (3)" and so on are
  * added, so running a tool twice leaves two results rather than replacing the first.
+ *
+ * Names are claimed, not checked: a file is placed with an exclusive copy and a folder
+ * made with a non-recursive mkdir, each of which fails if the name exists. Checking
+ * first and writing after would let two runs at the same moment, say two people on a
+ * shared office drive, land on the same name, and a cancelled run then removes what it
+ * made, which would be the other person's work.
  */
 
 /** Windows forbids these in file names; the others are safe. */
 const FORBIDDEN = /[<>:"/\\|?*\u0000-\u001f]/g;
+const MAX_TRIES = 500;
 
 function safeName(name) {
-  return String(name).replace(FORBIDDEN, ' ').replace(/\s+/g, ' ').trim() || 'קובץ';
+  return String(name).replace(FORBIDDEN, ' ').replace(/\s+/g, ' ').trim().replace(/[. ]+$/, '') || 'קובץ';
 }
 
 function baseName(filePath) {
   return path.basename(filePath, path.extname(filePath));
 }
 
-async function exists(filePath) {
-  try {
-    await fs.access(filePath);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-/** First free "<stem>.<ext>", "<stem> (2).<ext>", ... in `dir`. */
-async function unusedPath(dir, stem, ext) {
+function candidates(dir, stem, suffix) {
   const clean = safeName(stem);
+  const list = [];
+  for (let n = 1; n <= MAX_TRIES; n++) list.push(path.join(dir, n === 1 ? `${clean}${suffix}` : `${clean} (${n})${suffix}`));
+  return list;
+}
+
+/** Copy `fromFile` to the first free "<stem>.<ext>", "<stem> (2).<ext>", ... in `dir`. */
+async function placeFile(fromFile, dir, stem, ext) {
   const suffix = ext.startsWith('.') ? ext : `.${ext}`;
-  let candidate = path.join(dir, clean + suffix);
-  for (let n = 2; await exists(candidate); n++) candidate = path.join(dir, `${clean} (${n})${suffix}`);
-  return candidate;
+  await fs.mkdir(dir, { recursive: true });
+  for (const candidate of candidates(dir, stem, suffix)) {
+    try {
+      await fs.copyFile(fromFile, candidate, constants.COPYFILE_EXCL);
+      return candidate;
+    } catch (err) {
+      if (err.code !== 'EEXIST') throw err;
+    }
+  }
+  throw new Error(`יש כבר יותר מדי קבצים בשם "${safeName(stem)}" בתיקייה הזו.`);
 }
 
-/**
- * The output path for a result derived from `sourcePath`.
- * @param {string} sourcePath
- * @param {string} label   what was done, in Hebrew, e.g. "מאוחד"
- * @param {string} ext     "pdf", "docx", ...
- * @param {{folder?: string}} [options]  a folder chosen in settings, instead of the source's
- */
-async function outputFor(sourcePath, label, ext, { folder } = {}) {
-  const dir = folder || path.dirname(sourcePath);
-  const stem = label ? `${baseName(sourcePath)} - ${label}` : baseName(sourcePath);
-  return unusedPath(dir, stem, ext);
+/** Make the first free "<stem>", "<stem> (2)", ... folder in `dir`; it is new and ours. */
+async function makeFolder(dir, stem) {
+  await fs.mkdir(dir, { recursive: true });
+  for (const candidate of candidates(dir, stem, '')) {
+    try {
+      await fs.mkdir(candidate);
+      return candidate;
+    } catch (err) {
+      if (err.code !== 'EEXIST') throw err;
+    }
+  }
+  throw new Error(`יש כבר יותר מדי תיקיות בשם "${safeName(stem)}".`);
 }
 
-/** A folder beside the source for results that are many files (page images, split parts). */
-async function outputFolderFor(sourcePath, label, { folder } = {}) {
-  const dir = folder || path.dirname(sourcePath);
-  const stem = `${baseName(sourcePath)} - ${label}`;
-  let candidate = path.join(dir, safeName(stem));
-  for (let n = 2; await exists(candidate); n++) candidate = path.join(dir, `${safeName(stem)} (${n})`);
-  await fs.mkdir(candidate, { recursive: true });
-  return candidate;
+/** The folder and stem for a result derived from `sourcePath`. */
+function targetFor(sourcePath, label, { folder } = {}) {
+  return {
+    dir: folder || path.dirname(sourcePath),
+    stem: label ? `${baseName(sourcePath)} - ${label}` : baseName(sourcePath),
+  };
 }
 
-module.exports = { outputFor, outputFolderFor, unusedPath, safeName, baseName };
+module.exports = { placeFile, makeFolder, targetFor, safeName, baseName };

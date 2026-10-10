@@ -86,6 +86,9 @@ const shell = (() => {
   }
 
   const tool = (id) => view.tools.find((t) => t.id === id) || null;
+
+  // The file dialog, replaceable in tests: a real dialog would open on screen and wait.
+  let picker = (spec) => window.api.pickFiles(spec);
   const NOT_YET = 'הכלי הזה עדיין לא זמין בגרסה הזו.';
 
   /* ---------------- thumbnails ---------------- */
@@ -140,8 +143,17 @@ const shell = (() => {
     window.scrollTo({ top: 0 });
   }
 
+  /** The back button says why it is waiting rather than ignoring the press. */
+  function setBackBlocked(reason) {
+    const back = $('nav-back');
+    back.disabled = !!reason;
+    back.title = reason || 'חזרה (Esc)';
+  }
+
   function goHome() {
-    if (view.job) return; // the run must finish or be cancelled first
+    // A run must finish or be cancelled first; so must a filing being built.
+    if (view.job) return;
+    if (view.screen === 'appendix' && window.appendixBusy && window.appendixBusy()) return;
     view.toolId = null;
     setHeader('כלי המשרד', 'כל כלי ה-PDF של המשרד במקום אחד. שום קובץ לא יוצא מהמחשב.');
     show('home');
@@ -377,7 +389,7 @@ const shell = (() => {
         const r = await window.api.describeFiles(paths);
         return r.ok ? r.files : [];
       },
-      pick: (spec) => window.api.pickFiles(spec),
+      pick: (spec) => picker(spec),
       run: () => run(),
     };
   }
@@ -431,7 +443,7 @@ const shell = (() => {
 
     state.files.forEach((file, index) => {
       const li = document.createElement('li');
-      li.className = 'file-row' + (file.error ? ' bad' : '');
+      li.className = 'file-row' + (file.error && !(file.encrypted && t.acceptsEncrypted) ? ' bad' : '');
       li.dataset.index = String(index);
 
       if (t.multiple && state.files.length > 1) {
@@ -476,7 +488,9 @@ const shell = (() => {
       text.className = 'file-text';
       const name = nameNode(file.name);
       let meta;
-      if (file.error) {
+      if (file.encrypted && t.acceptsEncrypted) {
+        meta = metaNode(['מוגן בסיסמה', sizeText(file.size)], 'file-meta');
+      } else if (file.error) {
         meta = document.createElement('span');
         meta.className = 'file-error';
         meta.textContent = file.error;
@@ -561,7 +575,8 @@ const shell = (() => {
     const state = current();
     if (!t.available) return t.reason;
     if (!state.files.length) return t.multiple ? 'בחר קבצים כדי להתחיל.' : 'בחר קובץ כדי להתחיל.';
-    const bad = state.files.find((f) => f.error);
+    // Only Unlock takes a password-protected file; for every other tool it is a problem.
+    const bad = state.files.find((f) => f.error && !(f.encrypted && t.acceptsEncrypted));
     if (bad) return `${bad.error} הסר אותו מהרשימה כדי להמשיך.`;
     if (t.min && state.files.length < t.min) {
       const panel = window.panels[view.toolId];
@@ -579,6 +594,7 @@ const shell = (() => {
     $('tool-run').disabled = !!reason || busy;
     $('tool-blocked').textContent = busy ? '' : reason || '';
     for (const id of ['tool-browse', 'tool-add', 'tool-clear']) $(id).disabled = busy;
+    setBackBlocked(busy ? 'אפשר לחזור אחרי שהפעולה תסתיים, או לבטל אותה (Esc).' : '');
     $('tool-options').classList.toggle('locked', busy);
     $('tool-file-list').classList.toggle('locked', busy);
   }
@@ -695,7 +711,7 @@ const shell = (() => {
 
   async function browse() {
     const t = tool(view.toolId);
-    const response = await window.api.pickFiles({ extensions: t.accepts, multiple: t.multiple, title: t.name });
+    const response = await picker({ extensions: t.accepts, multiple: t.multiple, title: t.name });
     if (!response.ok) return showError(response.error);
     if (!response.cancelled) addFiles(response.files);
   }
@@ -843,6 +859,8 @@ const shell = (() => {
     open,
     goHome,
     show,
+    setBackBlocked,
+    setPicker: (fn) => { picker = fn; },
     run,
     cancel,
     addFiles,

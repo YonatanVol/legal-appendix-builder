@@ -10,6 +10,7 @@ directories:
 files:
   - src/**/*
   - assets/fonts/**/*
+  - assets/pdfa/**/*
   - package.json
   - "!**/*.map"
   # pdf.js ships builds and viewers the app never loads.
@@ -19,6 +20,20 @@ files:
   - "!node_modules/pdfjs-dist/image_decoders/**"
 
 npmRebuild: false
+
+# Ghostscript is a separate program and cannot read inside app.asar, so the PDF/A
+# profile it is handed lives beside it, unpacked.
+asarUnpack:
+  - assets/pdfa/**/*
+
+# qpdf and Ghostscript, fetched and checked by scripts/fetch-vendor.js, ship as
+# programs beside the app (resources/vendor), found by src/main/engine/binaries.js.
+extraResources:
+  - from: vendor/win
+    to: vendor
+    filter:
+      - "**/*"
+      - "!**/.version"
 
 # Releases are published by .github/workflows/windows.yml, which builds the installer on
 # a real Windows machine, installs it, launches it and has it produce a filing before

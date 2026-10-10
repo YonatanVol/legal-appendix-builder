@@ -166,6 +166,26 @@ app.whenReady().then(async () => {
     !res.error && ow.join() === '570,570,500,510,520,530,540,550,560' && (await rotations(res.out[0])).join() === '0,0,0,90,0,0,0,0,0',
     res.error || `${ow.join()} / ${(res.out[0] ? await rotations(res.out[0]) : []).join()}`);
 
+  // Undo after "back to the original order" once pages from another file were inserted:
+  // the inserted file must come back with the order.
+  await open('organize');
+  await thumbsDrawn(8);
+  const other = await makePdf(path.join(dir, 'אחר.pdf'), 2);
+  await run(`window.shell.setPicker(async () => ({ ok: true, files: (await window.api.describeFiles([${JSON.stringify(other)}])).files })); true`);
+  // The screen keeps the arrangement left from before, so count from what is there.
+  const startCount = await run(`document.querySelectorAll('.page-grid .page-card').length`);
+  await press(card(1));
+  await run(`[...document.querySelectorAll('#tool-options button')].find(b => b.textContent.startsWith('עמודים מקובץ אחר')).click()`);
+  await until(`document.querySelectorAll('.page-grid .page-card').length === ${startCount + 2}`);
+  await run(`[...document.querySelectorAll('#tool-options button')].find(b => b.textContent === 'חזרה לסדר המקורי').click()`);
+  await until(`document.querySelectorAll('.page-grid .page-card').length === 8`);
+  await run(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', ctrlKey: true, bubbles: true }))`);
+  await settle(300);
+  const back = await run(`({ cards: document.querySelectorAll('.page-grid .page-card').length, inserted: document.querySelectorAll('.page-badge').length, extra: window.shell.view.perTool.get('organize').options.extra.length })`);
+  check('undo after "back to the original order" brings the inserted pages back, working', back.cards === startCount + 2 && back.inserted === 2 && back.extra === 1, JSON.stringify({ ...back, startCount }));
+  await run(`window.shell.setPicker((spec) => window.api.pickFiles(spec)); true`);
+  check('  with no errors on the way', win.consoleErrors.length === 0, win.consoleErrors.slice(0, 2).join(' / '));
+
   /* ---- rotate ---- */
   console.log('\nrotate');
   await open('rotate');
@@ -218,6 +238,9 @@ app.whenReady().then(async () => {
   await settle(400);
   const stamps = await run(`[...document.querySelectorAll('.preview-stage')].map(s => (s.querySelector('.stamp') || {}).textContent || '')`);
   check('skipping the first page shows no number on it and 1 on the second', stamps[0] === '' && stamps[1] === 'עמוד 1 מתוך 7', stamps.join(' | '));
+  await run(`(() => { const i = document.querySelector('#tool-options input[type=number]'); i.value = ''; i.dispatchEvent(new Event('input', { bubbles: true })); })()`);
+  check('an empty first number blocks the run, even with pages chosen', (await disabled('#tool-run')) && /המספר הראשון/.test(await text$('#tool-blocked')), await text$('#tool-blocked'));
+  await run(`(() => { const i = document.querySelector('#tool-options input[type=number]'); i.value = '1'; i.dispatchEvent(new Event('input', { bubbles: true })); })()`);
   res = await runTool();
   const lines = res.out[0] ? await (async () => {
     const d = await text.open(res.out[0]);

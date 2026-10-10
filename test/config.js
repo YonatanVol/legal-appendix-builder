@@ -115,6 +115,20 @@ check('releases are published only from a version tag',
 check('  and only after the Windows install and launch checks pass',
   [].concat(release.needs || []).includes('build-and-verify'));
 
+/* ---- the programs shipped beside the app ---- */
+console.log('\nqpdf and Ghostscript');
+const { PACKAGES } = require('../scripts/fetch-vendor');
+check('both are pinned to an exact download and SHA-256',
+  ['qpdf', 'gs'].every((n) => PACKAGES.some((p) => p.name === n && /^https:\/\//.test(p.url) && /^[0-9a-f]{64}$/.test(p.sha256))));
+const steps = (workflow.jobs['build-and-verify'] || {}).steps || [];
+const fetchAt = steps.findIndex((st) => /fetch-vendor/.test(st.run || ''));
+const buildAt = steps.findIndex((st) => /electron-builder --win/.test(st.run || ''));
+check('the Windows build fetches them before building the installer', fetchAt !== -1 && fetchAt < buildAt, `fetch at ${fetchAt}, build at ${buildAt}`);
+const extra = [].concat(builder.extraResources || []);
+check('the installer carries them as programs beside the app', extra.some((e) => e.from === 'vendor/win' && e.to === 'vendor'));
+check('the PDF/A profile is unpacked, where Ghostscript can read it',
+  [].concat(builder.asarUnpack || []).some((g) => /assets\/pdfa/.test(g)) && (builder.files || []).some((f) => /assets\/pdfa/.test(f)));
+
 /* ---- notes for the version being built ---- */
 console.log('\nthe version');
 const { notesFor } = require('../scripts/release-notes');

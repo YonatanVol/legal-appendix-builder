@@ -65,6 +65,16 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           node test/selftest-verdicts.js
 
+      # qpdf and Ghostscript ship beside the app. The script refuses a download whose
+      # checksum differs from the one pinned in it.
+      - uses: actions/cache@v4
+        with:
+          path: vendor/cache
+          key: vendor-${{ hashFiles('scripts/fetch-vendor.js') }}
+
+      - name: Fetch qpdf and Ghostscript
+        run: node scripts/fetch-vendor.js
+
       - name: Build the installer
         run: npx electron-builder --win nsis --x64 --publish never
 

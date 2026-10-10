@@ -7,7 +7,7 @@
   "scripts": {
     "start": "electron .",
     "split-reference": "node test/split-reference.js",
-    "test": "npm run test:config && npm run test:verdicts && npm run test:build && npm run test:verify && npm run test:edge && npm run test:ui && npm run test:shell && npm run test:page-tools && npm run test:page-panels && npm run test:history && npm run test:history-ui && npm run test:updater-ui && npm run test:security && npm run test:selftest-failure && npm run test:selftest",
+    "test": "npm run test:config && npm run test:verdicts && npm run test:build && npm run test:verify && npm run test:edge && npm run test:ui && npm run test:shell && npm run test:page-tools && npm run test:page-panels && npm run test:engine-tools && npm run test:history && npm run test:history-ui && npm run test:updater-ui && npm run test:security && npm run test:selftest-failure && npm run test:selftest",
     "test:build": "electron test/build-headless.js",
     "test:verify": "node test/verify.js",
     "test:edge": "electron test/edge-cases.js",
@@ -23,12 +23,14 @@
     "test:verdicts": "node test/selftest-verdicts.js",
     "test:shell": "electron test/shell.js",
     "test:page-tools": "electron test/page-tools.js",
-    "test:page-panels": "electron test/page-panels.js"
+    "test:page-panels": "electron test/page-panels.js",
+    "test:engine-tools": "electron test/engine-tools.js"
   },
   "dependencies": {
     "electron-updater": "6.3.9",
     "pdf-lib": "^1.17.1",
-    "pdfjs-dist": "4.10.38"
+    "pdfjs-dist": "4.10.38",
+    "pptxgenjs": "4.0.1"
   },
   "devDependencies": {
     "electron": "^33.0.0",

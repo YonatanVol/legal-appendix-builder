@@ -85,21 +85,22 @@ function start(tool, inputs, options, hooks = {}) {
        */
       async writeOutput(bytes, { source, label, ext = 'pdf', name, dir }) {
         throwIfAborted(controller.signal);
-        let finalPath;
-        if (dir) finalPath = await output.unusedPath(dir, name, ext);
-        else if (name) finalPath = await output.unusedPath(hooks.outputFolder || path.dirname(source), name, ext);
-        else finalPath = await output.outputFor(source, label, ext, { folder: hooks.outputFolder });
         const temp = path.join(scratch, `out-${job.outputs.length}.${ext}`);
         await fs.writeFile(temp, bytes);
         throwIfAborted(controller.signal);
-        await fs.mkdir(path.dirname(finalPath), { recursive: true });
-        await moveFile(temp, finalPath);
+        let target;
+        if (dir) target = { dir, stem: name };
+        else if (name) target = { dir: hooks.outputFolder || path.dirname(source), stem: name };
+        else target = output.targetFor(source, label, { folder: hooks.outputFolder });
+        const finalPath = await output.placeFile(temp, target.dir, target.stem, ext);
         job.outputs.push(finalPath);
+        await fs.rm(temp, { force: true });
         return finalPath;
       },
       async outputFolder(source, label) {
         throwIfAborted(controller.signal);
-        const folder = await output.outputFolderFor(source, label, { folder: hooks.outputFolder });
+        const target = output.targetFor(source, label, { folder: hooks.outputFolder });
+        const folder = await output.makeFolder(target.dir, target.stem);
         job.outputs.push(folder);
         return folder;
       },
@@ -142,17 +143,6 @@ function clamp(n) {
   const x = Number(n);
   if (!Number.isFinite(x)) return 0;
   return Math.min(1, Math.max(0, x));
-}
-
-/** rename() fails across drives on Windows; copy and delete is the fallback. */
-async function moveFile(from, to) {
-  try {
-    await fs.rename(from, to);
-  } catch (err) {
-    if (err.code !== 'EXDEV') throw err;
-    await fs.copyFile(from, to);
-    await fs.rm(from, { force: true });
-  }
 }
 
 async function removeAll(paths) {

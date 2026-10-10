@@ -479,3 +479,6 @@ button.small { padding: 4px 10px; font-size: 12.5px; }
 .h-nw { top: -8px; left: -8px; cursor: nwse-resize; }
 .h-se { bottom: -8px; right: -8px; cursor: nwse-resize; }
 .h-sw { bottom: -8px; left: -8px; cursor: nesw-resize; }
+
+.password-row { display: flex; gap: 6px; align-items: center; }
+.password-row input { flex: 1; min-width: 0; font: inherit; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; }

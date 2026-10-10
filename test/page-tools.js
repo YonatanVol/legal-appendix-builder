@@ -91,6 +91,8 @@ app.on('window-all-closed', () => {});
 app.whenReady().then(async () => {
   lockDownNetwork();
   const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'page-tools-'));
+  const scratchRoot = path.join(os.tmpdir(), 'rotem-office');
+  const scratchBefore = fs.existsSync(scratchRoot) ? fs.readdirSync(scratchRoot).length : 0;
   const six = await makePdf(path.join(dir, 'שישה עמודים.pdf'), 6);
   const two = await makePdf(path.join(dir, 'other.pdf'), 2, { base: 700 });
 
@@ -181,6 +183,17 @@ app.whenReady().then(async () => {
     const fullH = angle ? 500 : 800;
     check(`page turned ${angle}: the shown page shrinks by the margins`, vp && Math.abs(vp.width - fullW * 0.9) < 1 && Math.abs(vp.height - fullH * 0.88) < 1,
       vp ? `${Math.round(vp.width)}x${Math.round(vp.height)}` : r.error);
+    // Everything left inside the frame moves exactly as the margins say, in the page as
+    // shown, whichever way the page is turned: this is what catches margins applied to
+    // the wrong sides.
+    const before = await shownLines(marked, 1);
+    const inside = before.filter((l) => l.fx > 0.12 && l.fr < 0.98 && l.fy > 0.14 && l.fy < 0.98);
+    const moves = inside.map((b) => {
+      const a = after.find((l) => l.text === b.text);
+      return a && Math.abs(a.fx - (b.fx - 0.1) / 0.9) < 0.02 && Math.abs(a.fy - (b.fy - 0.12) / 0.88) < 0.02;
+    });
+    check(`  page turned ${angle}: text inside the frame lands where the margins put it`, inside.length > 0 && moves.every(Boolean),
+      `${inside.length} lines: ${inside.map((l) => l.text).join(', ')}`);
     if (angle === 0) {
       const top = after.find((l) => l.text === 'TOPMARK');
       const left = after.find((l) => l.text === 'LEFTMARK');
@@ -229,7 +242,9 @@ app.whenReady().then(async () => {
 
   r = await runTool('watermark', [six], { kind: 'text', text: 'COPY', layer: 'under' });
   const streams = r.ok ? await contentOf(r.display[0], 0) : [];
-  check('under the content: the watermark is drawn first', r.ok && /Do/.test(streams[0] || '') && !/P1/.test(streams[0] || ''), streams.map((s) => s.slice(0, 30)).join(' | '));
+  const wmAt = streams.findIndex((x) => / Do/.test(x));
+  const textAt = streams.findIndex((x) => /\bBT\b/.test(x) && !/ Do/.test(x));
+  check('under the content: the watermark is drawn before the page\'s own text', r.ok && wmAt === 0 && textAt > wmAt, `watermark in stream ${wmAt}, text in stream ${textAt}`);
 
   r = await runTool('watermark', [six], { kind: 'text', text: 'X', position: 'tile' });
   const tiles = r.ok ? (await contentOf(r.display[0], 0)).join('\n').match(/ Do/g) || [] : [];
@@ -296,9 +311,39 @@ app.whenReady().then(async () => {
   check('a file with nothing recoverable says so', !r.ok && /junk\.pdf/.test(r.error), r.error);
 
   /* ---- every output is beside its source and nothing is left in the scratch area ---- */
-  const scratchRoot = path.join(os.tmpdir(), 'rotem-office');
+  /* ---- a cancelled split removes only what it made ---- */
+  console.log('\ncancelling a split');
+  const theirs = path.join(dir, 'שישה עמודים - מפוצל');
+  await fsp.mkdir(theirs, { recursive: true });
+  await fsp.writeFile(path.join(theirs, 'someone else.pdf'), 'keep me');
+  const foldersBefore = fs.readdirSync(dir).filter((n) => n.startsWith('שישה עמודים - מפוצל')).sort().join(' | ');
+  let splitId = null;
+  const splitting = jobs.start(tools.runnable('split'), [six], { mode: 'every', every: 1 }, {
+    onProgress: (p) => { if (p.fraction > 0.3) jobs.cancel(splitId); },
+  });
+  splitId = splitting.id;
+  const stopped = await splitting.promise;
+  const folders = fs.readdirSync(dir).filter((n) => n.startsWith('שישה עמודים - מפוצל')).sort().join(' | ');
+  check('a cancelled split removes the folder it made, and only that', stopped.cancelled && folders === foldersBefore, `${foldersBefore} -> ${folders}`);
+  check('  and never touches a folder that was there before', fs.existsSync(path.join(theirs, 'someone else.pdf')));
+
+  /* ---- two results claim different names ---- */
+  const [x, y] = await Promise.all([runTool('rotate', [six], { angle: 90 }), runTool('rotate', [six], { angle: 180 })]);
+  check('two runs at once never land on the same name', x.ok && y.ok && x.display[0] !== y.display[0] &&
+    (await rotations(x.display[0]))[0] !== (await rotations(y.display[0]))[0], `${path.basename(x.display[0])} / ${path.basename(y.display[0])}`);
+
+  /* ---- a re-saved file is a new document to the page ---- */
+  const docs = require('../src/main/docs');
+  const t1 = docs.register(six);
+  await new Promise((res) => setTimeout(res, 20));
+  await fsp.appendFile(six, '\n');
+  const t2 = docs.register(six);
+  check('a file saved again gets a new token, so its thumbnails are drawn afresh', t1 && t2 && t1 !== t2);
+  check('only PDFs and pictures can be read back by the page', docs.register(path.join(dir, 'runs.txt')) === null &&
+    docs.register(pngFile) !== null);
+
   const leftovers = fs.existsSync(scratchRoot) ? fs.readdirSync(scratchRoot).length : 0;
-  check('no scratch folders are left behind', jobs.running() === 0 && leftovers === 0, `${leftovers} left`);
+  check('no scratch folders are left behind', jobs.running() === 0 && leftovers <= scratchBefore, `${leftovers} now, ${scratchBefore} before`);
 
   disposeRenderer();
   await fsp.rm(dir, { recursive: true, force: true });

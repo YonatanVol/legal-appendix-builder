@@ -99,8 +99,8 @@ app.whenReady().then(async () => {
     groups: document.querySelectorAll('.tool-group').length,
     merge: !document.querySelector('.tile[data-tool="merge"]').classList.contains('unavailable'),
     appendix: !document.querySelector('.tile[data-tool="appendix"]').classList.contains('unavailable'),
-    split: (document.querySelector('.tile[data-tool="compress"] .tile-soon') || {}).textContent,
-    splitDesc: document.querySelector('.tile[data-tool="compress"] .tile-desc').textContent,
+    split: (document.querySelector('.tile[data-tool="ocr"] .tile-soon') || {}).textContent,
+    splitDesc: document.querySelector('.tile[data-tool="ocr"] .tile-desc').textContent,
     firstTile: document.querySelector('.tile').dataset.tool,
     removed: ['jpg-to-pdf', 'html-to-pdf', 'compare'].filter(id => document.querySelector('.tile[data-tool="' + id + '"]')),
     cloud: document.querySelectorAll('.tile .tile-cloud').length,
@@ -112,7 +112,7 @@ app.whenReady().then(async () => {
   check('  without the three tools that were crossed out', grid.removed.length === 0, grid.removed.join(', '));
   check('merge and the appendix builder are available', grid.merge && grid.appendix);
   check('a tool not built yet is marked "soon" on its tile', grid.split === 'בקרוב', grid.split);
-  check('  and still says what it will do', /קטן יותר/.test(grid.splitDesc), grid.splitDesc);
+  check('  and still says what it will do', /לחפש/.test(grid.splitDesc), grid.splitDesc);
   check('the appendix builder is the first tile', grid.firstTile === 'appendix', grid.firstTile);
   check('the two cloud tools are marked as cloud', grid.cloud === 2, String(grid.cloud));
   check('home has no back button', grid.screen === 'home' && grid.back);
@@ -128,7 +128,7 @@ app.whenReady().then(async () => {
 
   /* ---- a tool that is not built yet ---- */
   console.log('\na tool not built yet');
-  await press('.tile[data-tool="compress"]');
+  await press('.tile[data-tool="ocr"]');
   check('opens with a notice saying why', !(await hidden('tool-unavailable')) && /עדיין לא זמין/.test(await text('#tool-unavailable')));
   check('  and its button stays disabled with the same reason',
     (await run(`document.getElementById('tool-run').disabled`)) && /עדיין לא זמין/.test(await text('#tool-blocked')));
@@ -279,6 +279,25 @@ app.whenReady().then(async () => {
   check('  with its history tab, which is hidden elsewhere', !(await hidden('history-tab')));
   await key('Escape');
   check('  and Esc returns home', (await run('document.body.dataset.screen')) === 'home' && (await hidden('history-tab')));
+
+  /* ---- what the page may read ---- */
+  console.log('\nwhat the page may read');
+  const txtToken = await run(`window.api.describeFiles(${JSON.stringify([TXT])}).then(r => r.files[0].token)`);
+  check('a file that is not a PDF or picture gets no way to be read back', txtToken === null);
+  const bogus = await run(`fetch('/doc/0123456789abcdef0123456789abcdef').then(r => r.status)`);
+  check('  and a made-up document link finds nothing', bogus === 404);
+  const headers = await run(`window.api.describeFiles(${JSON.stringify([A])}).then(r => fetch('/doc/' + r.files[0].token)).then(r => r.headers.get('content-security-policy') + ' | ' + r.headers.get('x-content-type-options'))`);
+  check('  and a real one is served as inert data', /sandbox/.test(headers) && /nosniff/.test(headers), headers);
+
+  /* ---- leaving the appendix builder mid-build ---- */
+  await press('.tile[data-tool="appendix"]');
+  await run(`state.building = true; updateBuildState(); true`);
+  await key('Escape');
+  check('while a filing is being built, Esc and Back stay on the screen and say why',
+    (await run('document.body.dataset.screen')) === 'appendix' && (await run(`document.getElementById('nav-back').disabled`)) &&
+    /אחרי שהתיק/.test(await run(`document.getElementById('nav-back').title`)));
+  await run(`state.building = false; updateBuildState(); true`);
+  await key('Escape');
 
   /* ---- the job runner on its own ---- */
   console.log('\nthe job runner');

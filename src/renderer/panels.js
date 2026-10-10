@@ -244,6 +244,33 @@ const ui = {
     return page;
   },
 
+  /** A password field with a show/hide button. Never filled in from history. */
+  password(box, { label, value, onInput, autofocus = false }) {
+    const wrap = ui.field(box, label);
+    const row = document.createElement('span');
+    row.className = 'password-row';
+    const input = document.createElement('input');
+    input.type = 'password';
+    input.value = value || '';
+    input.autocomplete = 'new-password';
+    input.spellcheck = false;
+    input.dir = 'auto';
+    input.addEventListener('input', () => onInput(input.value));
+    const eye = document.createElement('button');
+    eye.type = 'button';
+    eye.className = 'ghost small';
+    eye.textContent = 'הצג';
+    eye.addEventListener('click', () => {
+      const show = input.type === 'password';
+      input.type = show ? 'text' : 'password';
+      eye.textContent = show ? 'הסתר' : 'הצג';
+    });
+    row.append(input, eye);
+    wrap.append(row);
+    if (autofocus) setTimeout(() => input.focus(), 0);
+    return input;
+  },
+
   swatches(box, { label, value, colors, onChange }) {
     const wrap = ui.field(box, label);
     const row = document.createElement('span');
@@ -293,6 +320,9 @@ function rangesError(text, total) {
     return hebrewOr(err, 'לא ניתן לקרוא את רשימת העמודים.');
   }
 }
+
+/** A Latin measure inside a Hebrew sentence keeps its order: "4.1 MB", not "MB 4.1". */
+const ltr = (text) => `\u2066${text}\u2069`;
 
 const pagesWord = (n) => (n === 1 ? 'עמוד אחד' : `${n} עמודים`);
 const filesWord = (n) => (n === 1 ? 'קובץ אחד' : `${n} קבצים`);
@@ -421,7 +451,7 @@ const panels = {
         ui.check(box, { label: 'כל עמוד כקובץ נפרד', value: o.extractEach, onChange: (v) => { view.set('extractEach', v); refresh(); } });
       } else {
         ui.number(box, { label: 'גודל מרבי לכל חלק', value: o.maxMb, min: 0.1, step: 0.5, suffix: 'MB', onInput: (v) => { view.set('maxMb', v); refresh(); } });
-        if (file) ui.note(box, `גודל הקובץ עכשיו: ${(file.size / 1024 / 1024).toFixed(1)} MB.`, 'muted');
+        if (file) ui.note(box, `גודל הקובץ עכשיו: ${ltr(`${(file.size / 1024 / 1024).toFixed(1)} MB`)}.`, 'muted');
       }
 
       preview = ui.note(box, '');
@@ -468,9 +498,11 @@ const panels = {
         'לחיצה בוחרת עמוד, Ctrl מוסיף לבחירה ו-Shift בוחר טווח. גרירה מזיזה את העמודים הנבחרים. Delete מוחק, Ctrl+Z מבטל.');
       if (!file || !file.token) return;
 
+      // Keyed by the file's token, which changes when the file is saved again, so a
+      // re-saved letter starts fresh instead of reusing the old page count.
       let st = mem.organize;
-      if (!st || st.forPath !== file.path) {
-        st = mem.organize = { forPath: file.path, seq: pagesOf(file).map((p) => ({ key: p.key, f: 0, p: p.index, r: 0 })), extra: [], undo: [], nextKey: 0 };
+      if (!st || st.forToken !== file.token) {
+        st = mem.organize = { forToken: file.token, seq: pagesOf(file).map((p) => ({ key: p.key, f: 0, p: p.index, r: 0 })), extra: [], undo: [], nextKey: 0 };
         // A repeated run brings its sequence back.
         if (Array.isArray(view.options.pages) && view.options.pages.length && !(view.options.extra || []).length) {
           st.seq = view.options.pages.map((it, i) => ({ ...it, key: `r:${i}` }));
@@ -485,8 +517,10 @@ const panels = {
       const toPages = () => st.seq.map((it) => (it.blank
         ? { key: it.key, blank: true }
         : { key: it.key, token: tokenOf(it.f), index: it.p, turn: it.r, label: it.f ? `מקובץ ${it.f + 1}` : '', tone: it.f }));
+      // Undo restores the inserted files with the order: without them, pages taken
+      // from another file would point at nothing.
       const save = () => {
-        st.undo.push(st.seq.map((x) => ({ ...x })));
+        st.undo.push({ seq: st.seq.map((x) => ({ ...x })), extra: st.extra.slice() });
         if (st.undo.length > 100) st.undo.shift();
       };
       const apply = (next) => {
@@ -589,7 +623,8 @@ const panels = {
       function undoLast() {
         const prev = st.undo.pop();
         if (!prev) return;
-        st.seq = prev;
+        st.seq = prev.seq;
+        st.extra = prev.extra;
         grid.setPages(toPages());
         sync();
         paint();
@@ -602,7 +637,7 @@ const panels = {
     blocked(view) {
       const st = mem.organize;
       const file = firstFile(view);
-      if (!file || !st || st.forPath !== file.path) return null;
+      if (!file || !st || st.forToken !== file.token) return null;
       if (!st.seq.length) return 'לא נשאר אף עמוד. בטל את המחיקה (Ctrl+Z) או בחר קובץ אחר.';
       const unchanged = st.seq.length === file.pageCount && st.seq.every((x, i) => !x.blank && x.f === 0 && x.p === i && !x.r);
       if (unchanged) return 'עוד לא שונה דבר בסדר העמודים.';
@@ -658,6 +693,11 @@ const panels = {
         }
       }
 
+      if (single && o.forToken !== file.token) {
+        // A selection made on another file means nothing on this one.
+        if (o.forToken) view.set('pages', '');
+        view.set('forToken', file.token);
+      }
       if (single) {
         const preselected = o.pages && !rangesError(o.pages, file.pageCount)
           ? R().indicesOf(R().parseRanges(o.pages, file.pageCount)).map((i) => `0:${i}`) : [];
@@ -695,6 +735,14 @@ const panels = {
 
       if (!file || !file.token) return;
       const total = file.pageCount;
+      if (o.forToken !== file.token) {
+        // A frame drawn on another file is not a frame for this one.
+        if (o.forToken) {
+          view.set('margins', { top: 0, right: 0, bottom: 0, left: 0 });
+          o.page = 0;
+        }
+        view.set('forToken', file.token);
+      }
       if (o.page >= total) o.page = 0;
 
       const nav = document.createElement('div');
@@ -949,8 +997,11 @@ const panels = {
       const file = firstFile(view);
       const o = view.options;
       if (o.pagesMode === 'custom' && !String(o.pages || '').trim()) return 'כתוב אילו עמודים למספר.';
-      if (file && o.pages) return rangesError(o.pages, file.pageCount);
-      if (o.start === '' || !Number.isFinite(Number(o.start))) return 'כתוב את המספר הראשון.';
+      if (file && o.pages) {
+        const err = rangesError(o.pages, file.pageCount);
+        if (err) return err;
+      }
+      if (o.start === '' || o.start === null || !Number.isFinite(Number(o.start))) return 'כתוב את המספר הראשון.';
       return null;
     },
   },
@@ -1097,6 +1148,133 @@ const panels = {
     blocked: () => null,
   },
 
+  protect: {
+    defaults: () => ({ password: '', passwordConfirm: '', allowPrint: true, allowCopy: true, allowEdit: false }),
+    render(container, view) {
+      const o = view.options;
+      const box = ui.section(container, 'סיסמה לפתיחת הקובץ', 'מי שאין לו את הסיסמה לא יוכל לפתוח את הקובץ בכלל. ההצפנה היא AES-256.');
+      ui.password(box, { label: 'סיסמה', value: o.password, onInput: (v) => view.set('password', v), autofocus: true });
+      ui.password(box, { label: 'שוב, לאימות', value: o.passwordConfirm, onInput: (v) => view.set('passwordConfirm', v) });
+      ui.note(box, 'שמור את הסיסמה במקום בטוח. אם היא תאבד, אין דרך לפתוח את הקובץ, גם לא בתוכנה הזו.', 'muted');
+
+      const limits = ui.section(container, 'מה מותר למי שפותח', 'ההגבלות נשמרות על ידי תוכנות קריאת PDF. ההגנה האמיתית היא הסיסמה.');
+      ui.check(limits, { label: 'הדפסה', value: o.allowPrint, onChange: (v) => view.set('allowPrint', v) });
+      ui.check(limits, { label: 'העתקת טקסט', value: o.allowCopy, onChange: (v) => view.set('allowCopy', v) });
+      ui.check(limits, { label: 'עריכה', value: o.allowEdit, onChange: (v) => view.set('allowEdit', v) });
+    },
+    blocked(view) {
+      const o = view.options;
+      if (!o.password) return 'כתוב סיסמה.';
+      if (o.password !== o.passwordConfirm) return o.passwordConfirm ? 'הסיסמאות לא זהות. כתוב אותה שוב לאימות.' : 'כתוב את הסיסמה פעם נוספת, לאימות.';
+      return null;
+    },
+  },
+
+  unlock: {
+    defaults: () => ({ password: '' }),
+    render(container, view) {
+      const box = ui.section(container, 'הסיסמה של הקובץ',
+        'אם הקובץ נפתח בלי סיסמה ורק אוסר הדפסה או העתקה, אפשר להשאיר ריק.');
+      ui.password(box, { label: 'סיסמה', value: view.options.password, onInput: (v) => view.set('password', v), autofocus: true });
+      ui.note(box, 'הכלי מיועד לקבצים שהסיסמה שלהם ידועה לך. הוא לא מנחש סיסמאות.', 'muted');
+    },
+    blocked: () => null,
+  },
+
+  compress: {
+    defaults: () => ({ level: 'recommended', gray: false }),
+    render(container, view) {
+      const box = ui.section(container, 'רמת הכיווץ');
+      ui.choice(box, {
+        value: view.options.level,
+        vertical: true,
+        choices: [
+          { value: 'recommended', label: 'מומלץ: איכות טובה, קובץ קטן', title: 'תמונות ב-150 DPI. מתאים להגשה ולמייל.' },
+          { value: 'strong', label: 'חזק: הקובץ הכי קטן', title: 'תמונות ב-72 DPI. טוב לצפייה במסך, פחות להדפסה.' },
+          { value: 'light', label: 'קל: כמעט בלי שינוי באיכות', title: 'תמונות ב-300 DPI. להדפסה.' },
+        ],
+        onChange: (v) => view.set('level', v),
+      });
+      ui.check(box, { label: 'גם להפוך לשחור-לבן (גווני אפור)', value: view.options.gray, onChange: (v) => view.set('gray', v) });
+      ui.note(box, 'הטקסט נשאר טקסט: אפשר לחפש ולהעתיק ממנו גם אחרי הכיווץ. אם הקובץ כבר קטן ככל האפשר, לא ייווצר עותק.', 'muted');
+      const total = view.files.reduce((n, f) => n + (f.size || 0), 0);
+      if (total) ui.note(box, `גודל עכשיו: ${ltr(`${(total / 1024 / 1024).toFixed(1)} MB`)}.`, 'muted');
+    },
+    blocked: () => null,
+  },
+
+  pdfa: {
+    defaults: () => ({ level: '2b' }),
+    render(container, view) {
+      const box = ui.section(container, 'גרסת התקן', 'PDF/A הוא תקן לשמירה לטווח ארוך: כל הגופנים בתוך הקובץ, וצבעים מוגדרים.');
+      ui.choice(box, {
+        value: view.options.level,
+        vertical: true,
+        choices: [
+          { value: '2b', label: 'PDF/A-2b (מומלץ)' },
+          { value: '1b', label: 'PDF/A-1b (למערכות ישנות שדורשות אותו)' },
+          { value: '3b', label: 'PDF/A-3b' },
+        ],
+        onChange: (v) => view.set('level', v),
+      });
+      ui.note(box, 'ההמרה לא נבדקת בכלי אימות רשמי. אם הגורם המקבל דורש אישור תקינות, יש לבדוק את הקובץ בכלי שלו.', 'muted');
+    },
+    blocked: () => null,
+  },
+
+  'pdf-to-jpg': {
+    defaults: () => ({ mode: 'pages', format: 'jpg', dpi: 150, pages: '' }),
+    render(container, view) {
+      const o = view.options;
+      const box = ui.section(container, 'מה להוציא');
+      ui.choice(box, {
+        value: o.mode,
+        vertical: true,
+        choices: [
+          { value: 'pages', label: 'כל עמוד כתמונה' },
+          { value: 'images', label: 'התמונות שבתוך הקובץ, כמו שהן' },
+        ],
+        onChange: (v) => { view.set('mode', v); view.rerender(); },
+      });
+      if (o.mode === 'pages') {
+        const look = ui.section(container, 'איכות');
+        ui.choice(look, { label: 'סוג קובץ', value: o.format, choices: [{ value: 'jpg', label: 'JPG' }, { value: 'png', label: 'PNG' }], onChange: (v) => view.set('format', v) });
+        ui.choice(look, {
+          label: 'רזולוציה',
+          value: o.dpi,
+          choices: [{ value: 72, label: 'למסך' }, { value: 150, label: 'רגילה' }, { value: 300, label: 'להדפסה' }],
+          onChange: (v) => view.set('dpi', v),
+        });
+        if (view.files.length === 1) {
+          ui.text(look, { label: 'עמודים (ריק לכולם)', value: o.pages, placeholder: 'למשל 1-3', dir: 'ltr', onInput: (v) => view.set('pages', v) });
+        }
+      } else {
+        ui.note(box, 'תמונות שנשמרו כ-JPEG יוצאות בדיוק כפי שהן, בלי איבוד איכות. בסריקות זו בדרך כלל תמונה אחת לכל עמוד.', 'muted');
+      }
+    },
+    blocked(view) {
+      const o = view.options;
+      const file = firstFile(view);
+      if (o.mode === 'pages' && o.pages && file && view.files.length === 1) return rangesError(o.pages, file.pageCount);
+      return null;
+    },
+  },
+
+  'pdf-to-ppt': {
+    defaults: () => ({ quality: 'normal' }),
+    render(container, view) {
+      const box = ui.section(container, 'איך זה נראה',
+        'כל עמוד הופך לשקופית, כתמונה של העמוד. השקופיות נראות בדיוק כמו המסמך, אבל אי אפשר לערוך בהן את הטקסט.');
+      ui.choice(box, {
+        label: 'איכות',
+        value: view.options.quality,
+        choices: [{ value: 'normal', label: 'רגילה' }, { value: 'high', label: 'גבוהה' }],
+        onChange: (v) => view.set('quality', v),
+      });
+    },
+    blocked: () => null,
+  },
+
   repair: {
     defaults: () => ({}),
     render(container) {
@@ -1134,7 +1312,7 @@ function splitPlan(o, total) {
     if (o.mode === 'size') {
       const mb = Number(o.maxMb);
       if (!Number.isFinite(mb) || mb <= 0) return { error: 'כתוב גודל מרבי לכל חלק, במגה-בייט.' };
-      return { text: `כל חלק יהיה עד ${mb} MB. מספר החלקים ייקבע לפי העמודים.` };
+      return { text: `כל חלק יהיה עד ${ltr(`${mb} MB`)}. מספר החלקים ייקבע לפי העמודים.` };
     }
     if (!String(o.ranges || '').trim()) return { error: 'כתוב את הטווחים, למשל 1-3, 4-6. כל טווח יהפוך לקובץ.' };
     const ranges = R().parseRanges(o.ranges, total);
