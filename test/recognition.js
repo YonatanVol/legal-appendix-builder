@@ -86,6 +86,73 @@ async function secretsPdf(file) {
   return file;
 }
 
+/** PDFs built the ways a redacted page's content could ride along on another page. */
+async function leakCases(dir) {
+  const { PDFDocument, StandardFonts, PDFName, PDFString } = require('pdf-lib');
+  const out = [];
+  {
+    // Shared resources inherited from the page tree; a form used only by page 1; an
+    // unused secret form inside a form page 2 does draw; a pattern holding another.
+    const d = await PDFDocument.create();
+    const f = await d.embedFont(StandardFonts.Helvetica);
+    const ctx = d.context;
+    const form = (content, res) => ctx.register(ctx.flateStream(content, { Type: 'XObject', Subtype: 'Form', BBox: [0, 0, 600, 800], Resources: res }));
+    const nested = form('BT /F1 12 Tf 50 600 Td (SECRET-NESTED) Tj ET', { Font: { F1: f.ref } });
+    const inherited = form('BT /F1 12 Tf 50 600 Td (SECRET-INHERITED) Tj ET', { Font: { F1: f.ref } });
+    const used = form('BT /F1 12 Tf 50 650 Td (PUBLIC-FORM) Tj ET', { Font: { F1: f.ref }, XObject: { Sx: nested } });
+    const pattern = ctx.register(ctx.flateStream('0 0 10 10 re f', { Type: 'Pattern', PatternType: 1, PaintType: 1, TilingType: 1, BBox: [0, 0, 10, 10], XStep: 10, YStep: 10, Resources: { XObject: { Sp: nested } } }));
+    const p0 = d.addPage([595, 842]);
+    const p1 = d.addPage([595, 842]);
+    d.catalog.Pages().set(PDFName.of('Resources'), ctx.obj({ Font: { F1: f.ref }, XObject: { Si: inherited, Cf: used }, Pattern: { P1: pattern } }));
+    for (const p of [p0, p1]) p.node.delete(PDFName.of('Resources'));
+    p0.node.set(PDFName.of('Contents'), ctx.register(ctx.flateStream('/Si Do')));
+    p1.node.set(PDFName.of('Contents'), ctx.register(ctx.flateStream('/Cf Do /Pattern cs /P1 scn 0 0 50 50 re f')));
+    const file = path.join(dir, 'inherited.pdf');
+    await fsp.writeFile(file, await d.save());
+    out.push({ label: 'inherited, nested and pattern resources', file, clean: true, secrets: ['SECRET-INHERITED', 'SECRET-NESTED'], keep: 'PUBLIC-FORM' });
+  }
+  {
+    // Damaged content on the page that is kept, with the secret inherited beside it.
+    const d = await PDFDocument.create();
+    const f = await d.embedFont(StandardFonts.Helvetica);
+    const ctx = d.context;
+    const secret = ctx.register(ctx.flateStream('BT /F1 12 Tf 50 600 Td (SECRET-DAMAGED) Tj ET', { Type: 'XObject', Subtype: 'Form', BBox: [0, 0, 600, 800], Resources: { Font: { F1: f.ref } } }));
+    const p0 = d.addPage([595, 842]);
+    const p1 = d.addPage([595, 842]);
+    d.catalog.Pages().set(PDFName.of('Resources'), ctx.obj({ Font: { F1: f.ref }, XObject: { Si: secret } }));
+    for (const p of [p0, p1]) p.node.delete(PDFName.of('Resources'));
+    p0.node.set(PDFName.of('Contents'), ctx.register(ctx.flateStream('/Si Do')));
+    p1.node.set(PDFName.of('Contents'), ctx.register(ctx.flateStream('BT /F1 12 Tf 50 600 Td (PUBLIC-KEPT) Tj ET (unterminated')));
+    const file = path.join(dir, 'damaged.pdf');
+    await fsp.writeFile(file, await d.save());
+    out.push({ label: 'damaged content on the kept page', file, clean: true, secrets: ['SECRET-DAMAGED'], keep: 'PUBLIC-KEPT' });
+  }
+  {
+    // Keeping annotations: a field with a box on both pages, and a reply to a note on
+    // the redacted page.
+    const d = await PDFDocument.create();
+    const f = await d.embedFont(StandardFonts.Helvetica);
+    const p0 = d.addPage([595, 842]);
+    const p1 = d.addPage([595, 842]);
+    p0.drawText('SECRET-WIDGET-PAGE', { x: 50, y: 700, size: 14, font: f });
+    p1.drawText('PUBLIC-ANNOTS', { x: 50, y: 700, size: 14, font: f });
+    const field = d.getForm().createTextField('name');
+    field.setText('x');
+    field.addToPage(p0, { x: 50, y: 500 });
+    field.addToPage(p1, { x: 50, y: 500 });
+    const note = d.context.register(d.context.obj({ Type: 'Annot', Subtype: 'Text', Rect: [10, 10, 30, 30], P: p0.ref, Contents: PDFString.of('SECRET-NOTE-ON-1') }));
+    const old = p0.node.lookup(PDFName.of('Annots'));
+    p0.node.set(PDFName.of('Annots'), d.context.obj([...(old ? old.asArray() : []), note]));
+    const reply = d.context.register(d.context.obj({ Type: 'Annot', Subtype: 'Text', Rect: [10, 10, 30, 30], IRT: note, Contents: PDFString.of('a public reply') }));
+    const old1 = p1.node.lookup(PDFName.of('Annots'));
+    p1.node.set(PDFName.of('Annots'), d.context.obj([...(old1 ? old1.asArray() : []), reply]));
+    const file = path.join(dir, 'annots.pdf');
+    await fsp.writeFile(file, await d.save());
+    out.push({ label: 'kept annotations pointing back at the redacted page', file, clean: false, secrets: ['SECRET-WIDGET-PAGE', 'SECRET-NOTE-ON-1'], keep: 'PUBLIC-ANNOTS' });
+  }
+  return out;
+}
+
 /** Every object of a PDF, streams decompressed, as one string. */
 function expanded(file, dir) {
   const out = path.join(dir, `expanded-${Math.random().toString(36).slice(2)}.pdf`);
@@ -161,6 +228,19 @@ app.whenReady().then(async () => {
   check('the Word file holds the text, set right to left', xml.includes('בית הדין האזורי לעבודה') && /<w:bidi\/>|<w:bidi /.test(xml) && /<w:rtl\/>|<w:rtl /.test(xml));
   const txt = r.ok && r.display.find((p) => p.endsWith('.txt'));
   check('the text file holds it too', txt && fs.readFileSync(txt, 'utf8').includes('תעודת זהות 024624470'));
+
+  // A scan with a few typed words (a stamped header) that share a word with the scan's own
+  // text: the scan's line must still be searchable whole.
+  const stamped = path.join(dir, 'סריקה עם כותרת.pdf');
+  {
+    const d = await PDFDocument.load(await fsp.readFile(await scannedPdf(path.join(dir, 'tmp-scan.pdf'), png, [0])));
+    const [head] = await stamp.embedStamps(d, ['בית משפט השלום'], { size: 12 });
+    stamp.drawAt(d.getPage(0), head, { vx: 60, vy: 30, w: head.width, h: head.height });
+    await fsp.writeFile(stamped, await d.save());
+  }
+  r = await runTool('ocr', [stamped], { langs: 'heb' });
+  const stampedLines = r.ok && r.display[0] ? await linesOf(r.display[0], 1) : [];
+  check('OCR of a scan with a typed header keeps every scanned word, even ones the header shares', stampedLines.includes('בית הדין האזורי לעבודה'), r.error || stampedLines.slice(0, 3).join(' / '));
 
   r = await runTool('ocr', [vector], {});
   check('a file that already has text is left alone, and says so', r.ok && r.display.length === 0 && /כבר יש טקסט/.test(r.summary), r.summary);
@@ -244,6 +324,18 @@ app.whenReady().then(async () => {
   const rawOcr = r.ok ? expanded(r.display[0], dir) : '';
   check('  and the same holds after OCR of the redacted pages', r.ok && !['SECRET-ID-4711', 'SECRET-XOBJ', 'SECRET-NOTE'].some((x) => rawOcr.includes(x)), r.error);
 
+  // The ways a copied page can carry a redacted page's content, each found by review:
+  // resources inherited from the page tree, an unused form nested in a used one, a
+  // pattern's own resources, damaged content on another page, and (when keeping
+  // annotations) a form field or a reply note that points back at the redacted page.
+  const cases = await leakCases(dir);
+  for (const c of cases) {
+    r = await runTool('redact', [c.file], { marks: [{ page: 0, x: 0.05, y: 0.05, w: 0.9, h: 0.9 }], clean: c.clean });
+    const rawCase = r.ok ? expanded(r.display[0], dir) : '';
+    const leaks = c.secrets.filter((x) => rawCase.includes(x));
+    check(`  ${c.label}: nothing of the redacted page survives`, r.ok && leaks.length === 0 && rawCase.includes(c.keep), r.error || `still inside: ${leaks.join(', ')}`);
+  }
+
   /* ---- PDF to Excel ---- */
   console.log('\nPDF to Excel');
   const table = await vectorPdf(path.join(dir, 'טבלה.pdf'), `
@@ -266,6 +358,21 @@ app.whenReady().then(async () => {
   check('  the header row has its columns in Hebrew order', JSON.stringify(row(2)) === '["תאריך","תיאור","סכום"]', JSON.stringify(row(2)));
   check('  amounts become numbers, dates stay as written', JSON.stringify(row(3)) === '["07/08/2026","שכר טרחה",1250.5]' && row(4)[2] === 300, `${JSON.stringify(row(3))} ${JSON.stringify(row(4))}`);
   check('  a small amount like 12.50 is a number too, and a dotted date stays a date', JSON.stringify(row(5)) === '["20.08.2026","צילומים",12.5]', JSON.stringify(row(5)));
+
+  // Long descriptions in every row must stay their own column, with the amounts beside.
+  const { layout } = require('../src/main/tools/pdf-to-excel');
+  const longRows = [0, 1, 2].map((r) => [
+    { str: `Consulting services for the month of March 2026 part ${r}`, x: 40, width: 330, y: 100 + r * 20, height: 10, rtl: false },
+    { str: `${1250 + r}.00`, x: 450, width: 40, y: 100 + r * 20, height: 10, rtl: false },
+  ]).flat();
+  const longLayout = layout(longRows);
+  check('a two-column table with long descriptions keeps the amounts in their own column, as numbers',
+    longLayout.tables === 1 && longLayout.rows.every((row) => row.length === 2 && typeof row[1] === 'number'), JSON.stringify(longLayout.rows[0]));
+  const headed = layout([
+    { str: 'Payments for case 4521, all amounts in shekels', x: 40, width: 440, y: 80, height: 10, rtl: false },
+    ...longRows,
+  ]);
+  check('  while a heading across the whole table does not merge its columns', headed.rows.slice(-3).every((row) => row.length === 2 && typeof row[1] === 'number'), JSON.stringify(headed.rows));
 
   const english = await vectorPdf(path.join(dir, 'english.pdf'), `
     <table cellpadding="6" style="direction:ltr"><tr><td>Item</td><td style="padding-left:40px">Qty</td></tr><tr><td>Paper</td><td style="padding-left:40px">12</td></tr></table>`,

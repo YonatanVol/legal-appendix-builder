@@ -20,24 +20,45 @@ function storeFile() {
   return override || path.join(app.getPath('userData'), 'signatures.json');
 }
 
+// Saves and removals run one at a time, so two at once cannot overwrite each other.
+let queue = Promise.resolve();
+const serial = (fn) => {
+  const next = queue.then(fn, fn);
+  queue = next.catch(() => {});
+  return next;
+};
+
 async function list() {
+  let raw;
   try {
-    const parsed = JSON.parse(await fsp.readFile(storeFile(), 'utf8'));
-    return (parsed.signatures || []).filter((s) => s && typeof s.id === 'string' && /^data:image\/png;base64,/.test(s.dataUrl));
-  } catch {
-    return [];
+    raw = await fsp.readFile(storeFile(), 'utf8');
+  } catch (err) {
+    if (err.code === 'ENOENT') return [];
+    throw err;
   }
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    // A damaged file is not treated as empty: the next save would erase every signature.
+    throw new Error('קובץ החתימות השמורות פגום, ולכן לא נשמר בו דבר. החתימות לא נמחקו.');
+  }
+  return (parsed.signatures || []).filter((s) => s && typeof s.id === 'string' && /^data:image\/png;base64,/.test(s.dataUrl));
 }
 
 async function write(signatures) {
   const file = storeFile();
   await fsp.mkdir(path.dirname(file), { recursive: true });
-  const temp = `${file}.${process.pid}.tmp`;
+  const temp = `${file}.${process.pid}.${crypto.randomBytes(4).toString('hex')}.tmp`;
   await fsp.writeFile(temp, JSON.stringify({ version: 1, signatures }), 'utf8');
   await fsp.rename(temp, file);
 }
 
-async function save({ dataUrl, kind }) {
+function save(spec) {
+  return serial(() => saveNow(spec));
+}
+
+async function saveNow({ dataUrl, kind }) {
   if (!/^data:image\/png;base64,[A-Za-z0-9+/=]+$/.test(String(dataUrl)) || dataUrl.length > 4 * 1024 * 1024) {
     throw new Error('החתימה אינה תמונה תקינה.');
   }
@@ -47,10 +68,12 @@ async function save({ dataUrl, kind }) {
   return entry;
 }
 
-async function remove(id) {
-  const rest = (await list()).filter((s) => s.id !== id);
-  await write(rest);
-  return true;
+function remove(id) {
+  return serial(async () => {
+    const rest = (await list()).filter((s) => s.id !== id);
+    await write(rest);
+    return true;
+  });
 }
 
 module.exports = { list, save, remove, setStoreFile, storeFile };

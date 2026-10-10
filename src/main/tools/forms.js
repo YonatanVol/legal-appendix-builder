@@ -87,13 +87,20 @@ async function run({ inputs, options = {}, ctx }) {
   }
 
   ctx.progress(0.4, 'מצייר את הערכים…');
-  await drawAppearances(doc, textual);
+  // Every text field and dropdown that holds a value gets its own drawing, not only the
+  // ones filled now: a form saved asking viewers to draw its fields would otherwise show
+  // the untouched ones blank once that request is withdrawn, or lose them when flattened.
+  const withValues = form.getFields().filter((f) =>
+    (f instanceof PDFTextField && (f.getText() || '').trim()) || (f instanceof PDFDropdown && f.getSelected().length));
+  await drawAppearances(doc, [...new Set([...textual, ...withValues])]);
 
   if (options.flatten) {
-    form.flatten({ updateFieldAppearances: false });
+    try {
+      form.flatten({ updateFieldAppearances: false });
+    } catch {
+      throw new Error('לא ניתן היה להשטיח את הטופס: אחד השדות בו בנוי באופן שהכלי לא מכיר. אפשר לשמור בלי השטחה.');
+    }
   } else {
-    // Viewers that can, redraw the fields themselves; the appearances above are for those
-    // that do not.
     form.acroForm.dict.set(PDFName.of('NeedAppearances'), doc.context.obj(false));
   }
 
@@ -105,6 +112,20 @@ async function run({ inputs, options = {}, ctx }) {
   if (created.length) parts.push(created.length === 1 ? 'שדה אחד נוסף' : `${created.length} שדות נוספו`);
   if (!parts.length) parts.push('הטופס נשמר בלי שינויים');
   return { summary: `${parts.join(', ')}.${options.flatten ? ' השדות הפכו לחלק מהעמוד ואי אפשר לערוך אותם עוד.' : ''}`, display: [out] };
+}
+
+/** The page a widget sits on: its /P, or the page whose annotations list it. */
+function pageOf(doc, widget) {
+  const pages = doc.getPages();
+  const p = widget.P();
+  if (p) {
+    const found = pages.find((page) => page.ref === p || page.ref.toString() === p.toString());
+    if (found) return found;
+  }
+  return pages.find((page) => {
+    const annots = page.node.Annots();
+    return annots && annots.asArray().some((ref) => doc.context.lookup(ref) === widget.dict);
+  }) || null;
 }
 
 /** A box in fractions of the shown page, in the page's own coordinates. */
@@ -129,24 +150,34 @@ async function drawAppearances(doc, fields) {
   const stamps = nonEmpty.length ? await embedStamps(doc, nonEmpty.map((i) => i.value.replace(/\n/g, ' ')), { size: 11 }) : [];
   for (const item of items) {
     const rect = item.widget.getRectangle();
+    // On a page turned by 90 or 270 degrees the field is drawn turned too, so the value
+    // reads upright on screen: the drawing is made in the shown orientation, then turned
+    // by the page's angle (/Matrix), with width and height swapped to match.
+    const page = pageOf(doc, item.widget);
+    const angle = page ? visualFrame(page).angle : 0;
+    const sideways = angle === 90 || angle === 270;
+    const bw = sideways ? rect.height : rect.width;
+    const bh = sideways ? rect.width : rect.height;
+    const matrix = { 0: [1, 0, 0, 1, 0, 0], 90: [0, 1, -1, 0, rect.width, 0], 180: [-1, 0, 0, -1, rect.width, rect.height], 270: [0, -1, 1, 0, 0, rect.height] }[angle] || [1, 0, 0, 1, 0, 0];
     const k = nonEmpty.indexOf(item);
     const ops = [];
     const resources = {};
     if (k !== -1) {
       const stamp = stamps[k];
-      const scale = Math.min(1, (rect.width - 4) / stamp.width, (rect.height - 2) / stamp.height);
+      const scale = Math.min(1, (bw - 4) / stamp.width, (bh - 2) / stamp.height);
       const w = stamp.width * scale;
       const h = stamp.height * scale;
       const alignRight = HEBREW.test(item.value) || (item.field instanceof PDFTextField && item.field.getAlignment() === TextAlignment.Right);
-      const dx = alignRight ? rect.width - w - 2 : 2;
-      const dy = (rect.height - h) / 2;
+      const dx = alignRight ? bw - w - 2 : 2;
+      const dy = (bh - h) / 2;
       resources.XObject = { V: stamp.page.ref };
       ops.push(`q ${scale} 0 0 ${scale} ${dx} ${dy} cm /V Do Q`);
     }
     const stream = doc.context.stream(ops.join('\n'), {
       Type: 'XObject',
       Subtype: 'Form',
-      BBox: [0, 0, rect.width, rect.height],
+      BBox: [0, 0, bw, bh],
+      Matrix: matrix,
       Resources: resources,
     });
     item.widget.setNormalAppearance(doc.context.register(stream));

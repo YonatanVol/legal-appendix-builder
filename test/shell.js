@@ -51,6 +51,7 @@ app.on('window-all-closed', () => {});
 app.whenReady().then(async () => {
   const scratch = await fsp.mkdtemp(path.join(os.tmpdir(), 'office-shell-'));
   runs.setStoreFile(path.join(scratch, 'runs.json'));
+  require('../src/main/settings').setStoreFile(path.join(scratch, 'settings.json'));
   registerIpc();
 
   const docs = path.join(scratch, 'מסמכים');
@@ -99,9 +100,10 @@ app.whenReady().then(async () => {
     groups: document.querySelectorAll('.tool-group').length,
     merge: !document.querySelector('.tile[data-tool="merge"]').classList.contains('unavailable'),
     appendix: !document.querySelector('.tile[data-tool="appendix"]').classList.contains('unavailable'),
-    soonId: (document.querySelector('.tile.unavailable') || { dataset: {} }).dataset.tool || null,
-    split: (document.querySelector('.tile.unavailable .tile-soon') || {}).textContent,
-    splitDesc: (document.querySelector('.tile.unavailable .tile-desc') || {}).textContent,
+    ...(() => {
+      const t = [...document.querySelectorAll('.tile.unavailable')].find((x) => (x.querySelector('.tile-soon') || {}).textContent === 'בקרוב');
+      return { soonId: t ? t.dataset.tool : null, split: t ? t.querySelector('.tile-soon').textContent : '', splitDesc: t ? t.querySelector('.tile-desc').textContent : '' };
+    })(),
     firstTile: document.querySelector('.tile').dataset.tool,
     removed: ['jpg-to-pdf', 'html-to-pdf', 'compare'].filter(id => document.querySelector('.tile[data-tool="' + id + '"]')),
     cloud: document.querySelectorAll('.tile .tile-cloud').length,

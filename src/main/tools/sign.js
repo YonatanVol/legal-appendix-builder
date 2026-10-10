@@ -20,6 +20,13 @@ const { drawObjects } = require('../pdf/draw');
  * since, and any change after it breaks the signature visibly in Acrobat.
  */
 async function run({ inputs, options = {}, ctx }) {
+  // A file that is already signed digitally (by a court, the other side, a colleague)
+  // would have that signature broken: Acrobat appends a new signature to the end of the
+  // file, while this tool writes the file anew. So it says so, and how to sign instead.
+  const original = await fs.readFile(inputs[0]);
+  if (/\/ByteRange\s*\[/.test(original.toString('latin1'))) {
+    throw new Error(`הקובץ "${path.basename(inputs[0])}" כבר חתום חתימה דיגיטלית. חתימה כאן הייתה מבטלת את החתימה הקיימת, ולכן היא לא נעשתה. כדי להוסיף חתימה בלי לפגוע בקיימת, חתום ב-Adobe Acrobat Reader ("מילוי וחתימה").`);
+  }
   const doc = await loadPdf(inputs[0]);
   ctx.progress(0.2, 'מציב את החתימה…');
   const placed = await drawObjects(doc, options.objects || []);
@@ -53,6 +60,13 @@ async function signDigitally(doc, certificate, password, ctx) {
     throw new Error(`לא ניתן לקרוא את קובץ התעודה "${path.basename(certificate)}".`);
   }
   ctx.progress(0.6, 'חותם חתימה דיגיטלית…');
+  // The signing library replaces an indirect /Fields array with a new one holding only
+  // the signature, which would drop every existing form field; a direct copy keeps them.
+  const { PDFName } = require('pdf-lib');
+  const acro = doc.catalog.lookup(PDFName.of('AcroForm'));
+  if (acro && acro.get && acro.get(PDFName.of('Fields'))) {
+    acro.set(PDFName.of('Fields'), acro.lookup(PDFName.of('Fields')));
+  }
   pdflibAddPlaceholder({
     pdfDoc: doc,
     reason: 'Signed',

@@ -10,6 +10,7 @@ const { stage } = require('../engine/stage');
 const { renderPages } = require('../engine/render');
 const { ocrFile } = require('./ocr');
 const { loadPdf } = require('../pdf/inspect');
+const { samePages } = require('../engine/verify');
 
 const DPI = 200;
 
@@ -96,16 +97,24 @@ async function run({ inputs, options = {}, ctx }) {
   ctx.progress(0.75, 'שומר…');
   let bytes = await out.save({ useObjectStreams: true });
 
-  // Resources a page inherits from the document can list pictures and forms that only a
-  // redacted page used; copied along, they would carry its content. qpdf removes from
-  // each page whatever its own drawing does not use, and writes only what remains.
-  if (bin.locate('qpdf')) {
-    await fs.writeFile(path.join(ctx.scratch, 'built.pdf'), bytes);
-    const r = await bin.run('qpdf', ['--remove-unreferenced-resources=yes', '--object-streams=generate', '--', 'built.pdf', 'pruned.pdf'], { cwd: ctx.scratch, signal: ctx.signal });
-    ctx.throwIfCancelled();
-    if (r.code !== 0 && r.code !== 3) throw new Error('הניקוי האחרון של הקובץ המושחר נכשל, ולכן לא נוצר עותק.');
-    bytes = await fs.readFile(path.join(ctx.scratch, 'pruned.pdf'));
-  }
+  // Then Ghostscript draws every page of the new document and writes a PDF of only what
+  // was drawn. A copied page can carry more than it draws: resources inherited from the
+  // page tree, a picture used only by a redacted page, an unused form nested inside a
+  // form the page does draw, a pattern's own resources. Nothing a page does not draw
+  // survives this, whatever the structure that carried it, so the result holds the
+  // redacted pages as pictures and the others as what they show, nothing else.
+  await fs.writeFile(path.join(ctx.scratch, 'built.pdf'), bytes);
+  const r = await bin.run('gs', [
+    '-dNOPAUSE', '-dBATCH', '-dSAFER', '-sDEVICE=pdfwrite',
+    '-dAutoRotatePages=/None', '-dCompatibilityLevel=1.7',
+    `-dPreserveAnnots=${options.clean === false ? 'true' : 'false'}`,
+    '-dPreserveMarkedContent=false', '-dPassThroughJPEGImages=true', '-dDetectDuplicateImages=true',
+    '-sOutputFile=pruned.pdf', 'built.pdf',
+  ], { cwd: ctx.scratch, signal: ctx.signal });
+  ctx.throwIfCancelled();
+  if (r.code !== 0) throw new Error('הבנייה האחרונה של הקובץ המושחר נכשלה, ולכן לא נוצר עותק. אפשר לנסות קודם את "תיקון PDF".');
+  await samePages(path.join(ctx.scratch, 'pruned.pdf'), total, path.basename(source));
+  bytes = await fs.readFile(path.join(ctx.scratch, 'pruned.pdf'));
   let searchable = '';
   if (options.ocr && bin.locate('gs')) {
     const temp = path.join(ctx.scratch, 'redacted.pdf');
@@ -136,17 +145,28 @@ function valid(m) {
  */
 function strip(page, clean) {
   const node = page.node;
+  const ctxt = page.doc.context;
   const annots = node.lookup(PDFName.of('Annots'));
   if (annots && typeof annots.asArray === 'function') {
-    const keep = clean ? [] : annots.asArray().filter((ref) => {
-      const a = page.doc.context.lookup(ref);
-      const sub = a && a.get ? a.get(PDFName.of('Subtype')) : null;
-      return sub && sub.toString() !== '/Link' && !a.get(PDFName.of('Dest')) && !a.get(PDFName.of('A'));
-    });
-    if (keep.length) node.set(PDFName.of('Annots'), page.doc.context.obj(keep));
+    const keep = [];
+    if (!clean) {
+      for (const ref of annots.asArray()) {
+        const a = ctxt.lookup(ref);
+        if (!a || !a.get) continue;
+        const sub = a.get(PDFName.of('Subtype'));
+        if (!sub || ['/Link', '/Widget', '/Popup'].includes(sub.toString()) || a.get(PDFName.of('Dest')) || a.get(PDFName.of('A'))) continue;
+        // A shallow copy without its references to other objects: its page (/P), a
+        // field (/Parent), the note it answers (/IRT) and its popup. Any of those could
+        // lead to a redacted page and bring it into the new file whole.
+        const copy = a.clone(ctxt);
+        for (const key of ['P', 'Parent', 'IRT', 'Popup', 'AP', 'StructParent']) copy.delete(PDFName.of(key));
+        keep.push(ctxt.register(copy));
+      }
+    }
+    if (keep.length) node.set(PDFName.of('Annots'), ctxt.obj(keep));
     else node.delete(PDFName.of('Annots'));
   }
-  for (const key of ['B', 'Thumb', 'AA', 'PieceInfo', 'Metadata', 'StructParents', 'Tabs']) node.delete(PDFName.of(key));
+  for (const key of ['B', 'Thumb', 'AA', 'PieceInfo', 'Metadata', 'StructParents', 'Tabs', 'AF']) node.delete(PDFName.of(key));
 }
 
-module.exports = { run, availability: () => bin.availability('gs') };
+module.exports = { run, strip, availability: () => bin.availability('gs') };

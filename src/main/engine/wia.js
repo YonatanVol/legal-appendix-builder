@@ -60,6 +60,9 @@ $caps = Prop $dev.Properties 3087
 $state = Prop $dev.Properties 3085
 $feeder = $false
 if ($caps -and ($caps.Value -band 1) -and $state -and ($state.Value -band 1)) { $feeder = $true }
+# A scanner with a feeder and no glass has nowhere else to scan from, whether or not its
+# driver reports paper.
+if ($caps -and ($caps.Value -band 1) -and -not ($caps.Value -band 2)) { $feeder = $true }
 if ($feeder) {
   SetProp $dev.Properties 3088 1
   SetProp $dev.Properties 3096 1

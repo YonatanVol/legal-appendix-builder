@@ -80,9 +80,37 @@ async function write(entries) {
 // per session and per file version, so a recorded one would only mislead a later run.
 const SECRET = /password|token/i;
 
+// Pictures (a signature, an inserted image) travel as long data: strings. They are not
+// recorded: a signature does not belong in a history file, and they would make it huge.
+// An object that held one is left out of a recorded list as a whole.
+const LONG = 4096;
+
+function clean(value) {
+  if (typeof value === 'string') return value.length > LONG ? undefined : value;
+  if (Array.isArray(value)) {
+    return value.map(clean).filter((v, i) => v !== undefined && !(value[i] && typeof value[i] === 'object' && hasLong(value[i])));
+  }
+  if (value && typeof value === 'object') {
+    const out = {};
+    for (const [k, v] of Object.entries(value)) {
+      if (SECRET.test(k)) continue;
+      const c = clean(v);
+      if (c !== undefined) out[k] = c;
+    }
+    return out;
+  }
+  return value;
+}
+
+function hasLong(value) {
+  if (typeof value === 'string') return value.length > LONG;
+  if (value && typeof value === 'object') return Object.values(value).some(hasLong);
+  return false;
+}
+
 function withoutSecrets(options) {
   if (!options || typeof options !== 'object') return {};
-  return Object.fromEntries(Object.entries(options).filter(([key]) => !SECRET.test(key)));
+  return clean(options);
 }
 
 /**

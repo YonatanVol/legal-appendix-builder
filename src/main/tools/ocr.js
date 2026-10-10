@@ -70,10 +70,13 @@ async function ocrFile(input, { langs = 'heb' } = {}, ctx, progress = () => {}) 
   // Which pages already carry text: those are left alone unless asked.
   const reader = await text.open(input);
   const existing = [];
+  const existingBoxes = [];
   try {
     for (let p = 1; p <= total; p++) {
-      const { lines } = await text.pageLines(reader, p);
+      const { lines, width, height } = await text.pageLines(reader, p);
       existing.push(lines.map((l) => l.text).join('\n'));
+      // Where the page's own words already are, as fractions of the shown page.
+      existingBoxes.push(lines.flatMap((l) => l.items.map((it) => ({ x0: it.x / width, x1: (it.x + it.width) / width, y0: (it.y - it.height) / height, y1: it.y / height }))));
     }
   } finally {
     await reader.destroy();
@@ -104,11 +107,19 @@ async function ocrFile(input, { langs = 'heb' } = {}, ctx, progress = () => {}) 
       progress(0.05 + (k / todo.length) * 0.93, `מזהה טקסט: עמוד ${i + 1} מתוך ${total}`);
       const result = await ocr.recognise({ file: files[k], langs, dpi: DPI }, ctx.signal);
       ctx.throwIfCancelled();
-      // A page that already had a few words keeps them; the scan's words are added beside
-      // them. Words the page already carries are skipped so a search does not find them twice.
-      if (existing[i]) {
-        const have = new Set(existing[i].split(/\s+/).filter(Boolean));
-        result.words = result.words.filter((w) => !have.has(w.text.trim()));
+      // A page that already had a few words keeps them, and the scan's words are added
+      // beside them. A recognised word lying where the page already has text is skipped,
+      // so a search does not find it twice; the same word elsewhere on the page is kept.
+      if (existingBoxes[i] && existingBoxes[i].length) {
+        const png = pngSize(await fs.readFile(files[k]));
+        result.words = result.words.filter((w) => {
+          const b = { x0: w.bbox.x0 / png.width, x1: w.bbox.x1 / png.width, y0: w.bbox.y0 / png.height, y1: w.bbox.y1 / png.height };
+          return !existingBoxes[i].some((e) => {
+            const ix = Math.max(0, Math.min(b.x1, e.x1) - Math.max(b.x0, e.x0));
+            const iy = Math.max(0, Math.min(b.y1, e.y1) - Math.max(b.y0, e.y0));
+            return ix * iy > 0.3 * (b.x1 - b.x0) * (b.y1 - b.y0);
+          });
+        });
       }
       const size = pngSize(await fs.readFile(files[k]));
       images[i] = { ...size, dpi: DPI, file: files[k] };

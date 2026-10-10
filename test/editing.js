@@ -148,6 +148,9 @@ app.whenReady().then(async () => {
   }
   r = await runTool('sign', [contract], { objects: [{ type: 'image', page: 0, x: 0.1, y: 0.1, w: 0.2, h: 0.08, src: sig }], certificate: p12, certPassword: 'wrong' });
   check('a wrong certificate password says so', !r.ok && /סיסמה/.test(r.error), r.error);
+  const signedOnce = (await runTool('sign', [contract], { objects: [], certificate: p12, certPassword: 'secret123' })).display[0];
+  r = await runTool('sign', [signedOnce], { objects: [{ type: 'image', page: 0, x: 0.1, y: 0.1, w: 0.2, h: 0.08, src: sig }] });
+  check('a file already signed digitally is not re-signed, which would break the first signature, and the reason is said', !r.ok && /כבר חתום/.test(r.error), r.error);
 
   /* ---- forms ---- */
   console.log('\nPDF Forms');
@@ -163,6 +166,11 @@ app.whenReady().then(async () => {
     city.addToPage(page, { x: 300, y: 640, width: 220, height: 24 });
     await fsp.writeFile(formFile, await doc.save());
   }
+  // Signing a form keeps its fields (the signing library used to drop an indirect list).
+  r = await runTool('sign', [formFile], { objects: [], certificate: p12, certPassword: 'secret123' });
+  const signedForm = r.ok ? (await PDFDocument.load(await fsp.readFile(r.display[0]))).getForm().getFields().map((f) => f.getName()) : [];
+  check('signing a form digitally keeps every one of its fields', ['name', 'agree', 'city'].every((n) => signedForm.includes(n)), signedForm.join(', '));
+
   const fields = await readFields(formFile);
   const nameField = fields.find((f) => f.name === 'name');
   check('the form\'s fields are read with their types and places', fields.length === 3 && nameField && nameField.type === 'text' &&
@@ -183,12 +191,43 @@ app.whenReady().then(async () => {
   r = await runTool('forms', [formFile], { values: { name: 'רון קלנר' }, flatten: true });
   const flat = r.ok ? await PDFDocument.load(await fsp.readFile(r.display[0])) : null;
   check('flattening turns the fields into page content', flat && flat.getForm().getFields().length === 0 && (await text.documentText(r.display[0]))[0].includes('רון קלנר'), r.error);
+  // A form that asks viewers to draw its fields, with a value already in one of them:
+  // filling another must not leave the first blank.
+  const asking = path.join(dir, 'טופס שמבקש ציור.pdf');
+  {
+    const doc = await PDFDocument.load(await fsp.readFile(formFile));
+    const form = doc.getForm();
+    form.getDropdown('city').select('חיפה');
+    form.acroForm.dict.set(require('pdf-lib').PDFName.of('NeedAppearances'), doc.context.obj(true));
+    // No drawing for the city yet, as a form filled elsewhere and saved that way would have.
+    form.getDropdown('city').acroField.getWidgets()[0].dict.delete(require('pdf-lib').PDFName.of('AP'));
+    await fsp.writeFile(asking, await doc.save({ updateFieldAppearances: false }));
+  }
+  r = await runTool('forms', [asking], { values: { name: 'רון' } });
+  const apx = r.ok ? pixels(r.display[0], 1, dir) : () => [255, 255, 255];
+  const cityInked = (() => { for (let x = 0.51; x <= 0.87; x += 0.004) if (isDark(apx(x, (842 - 652) / 842))) return true; return false; })();
+  check('a value that was already in a field is still shown after another field is filled', r.ok && cityInked, r.error);
+  r = await runTool('forms', [asking], { values: { name: 'רון' }, flatten: true });
+  check('  and flattening such a form works', r.ok && (await text.documentText(r.display[0]))[0].includes('חיפה'), r.error);
+
   const rotatedForm = await pagesPdf(path.join(dir, 'טופס מסובב.pdf'), [90]);
   r = await runTool('forms', [rotatedForm], { create: [{ type: 'text', name: 'שם מלא', page: 0, x: 0.2, y: 0.3, w: 0.4, h: 0.05 }] });
   const back = r.ok ? (await readFields(r.display[0]))[0] : null;
   check('a new field on a turned page lands where it was drawn on the shown page', back && back.name === 'שם מלא' &&
     Math.abs(back.boxes[0].x - 0.2) < 0.01 && Math.abs(back.boxes[0].y - 0.3) < 0.01 && Math.abs(back.boxes[0].w - 0.4) < 0.01,
     back ? JSON.stringify(back.boxes[0]) : r.error);
+  // On a turned page a filled value must read upright: its ink runs across the field,
+  // not down it.
+  r = await runTool('forms', [r.display[0]], { values: { 'שם מלא': 'רון קלנר עורך דין' } });
+  const rpx = r.ok ? pixels(r.display[0], 1, dir) : () => [255, 255, 255];
+  let minX = 1, maxX = 0, minY = 1, maxY = 0;
+  for (let x = 0.2; x <= 0.6; x += 0.003) {
+    for (let y = 0.3; y <= 0.35; y += 0.002) {
+      if (isDark(rpx(x, y))) { minX = Math.min(minX, x); maxX = Math.max(maxX, x); minY = Math.min(minY, y); maxY = Math.max(maxY, y); }
+    }
+  }
+  check('a value in a field on a turned page is drawn upright, running along the field', r.ok && maxX > minX && (maxX - minX) > 3 * (maxY - minY), `${(maxX - minX).toFixed(3)} wide, ${(maxY - minY).toFixed(3)} tall`);
+
   r = await runTool('forms', [formFile], { create: [{ type: 'text', name: 'name', page: 0, x: 0.1, y: 0.1, w: 0.2, h: 0.05 }] });
   check('a new field with a taken name is refused, naming it', !r.ok && /name/.test(r.error), r.error);
 
@@ -241,6 +280,14 @@ app.whenReady().then(async () => {
   await page(`(() => { const el = document.querySelector('.obj-text.editing'); el.textContent = 'שלום עולם'; el.dispatchEvent(new FocusEvent('blur')); return true; })()`);
   objs = await objectsNow();
   check('  clicking with the text tool and typing adds Hebrew text', objs.some((o) => o.type === 'text' && o.text === 'שלום עולם'), JSON.stringify(objs.map((o) => o.type + ':' + (o.text || ''))));
+  // A text box left empty disappears without leaving an undo step behind.
+  const stepsBefore = await page(`window.panelHelpers.mem.editor.undoStack.length`);
+  await page(`document.querySelector('.editor-tool[data-tool="text"]').click()`);
+  await drag([0.5, 0.7], [0.5, 0.7]);
+  await until(`document.querySelector('.obj-text.editing')`);
+  await page(`(() => { const el = document.querySelector('.obj-text.editing'); el.dispatchEvent(new FocusEvent('blur')); return true; })()`);
+  check('  a text box left empty disappears, leaving no undo step', (await page(`window.panelHelpers.mem.editor.undoStack.length`)) === stepsBefore &&
+    !(await objectsNow()).some((o) => o.type === 'text' && !o.text));
   await page(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', ctrlKey: true, bubbles: true }))`);
   check('  Ctrl+Z takes the last change back', (await objectsNow()).every((o) => o.text !== 'שלום עולם'));
   await page(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'y', ctrlKey: true, bubbles: true }))`);
@@ -286,6 +333,15 @@ app.whenReady().then(async () => {
   await page(`document.getElementById('tool-run').click()`);
   await until(`!window.shell.busy() && !document.getElementById('tool-result').classList.contains('hidden')`, 30000);
   check('  signing from the screen writes a visual signature', /חזותית/.test(await page(`document.getElementById('tool-result-title').textContent`)));
+  const history = fs.readFileSync(runs.storeFile(), 'utf8');
+  check('  and the signature picture is not kept in the run history', history.includes('"sign"') && !/data:image\/png;base64/.test(history));
+
+  await Promise.all([signatures.save({ dataUrl: sig, kind: 'draw' }), signatures.save({ dataUrl: sig, kind: 'type' })]);
+  check('two signatures saved at the same moment are both kept', (await signatures.list()).length === 3);
+  fs.writeFileSync(signatures.storeFile(), '{ broken');
+  let lost = null;
+  try { await signatures.save({ dataUrl: sig, kind: 'draw' }); } catch (e) { lost = e; }
+  check('a damaged signature file is reported, never overwritten with nothing', lost && /פגום/.test(lost.message) && fs.readFileSync(signatures.storeFile(), 'utf8') === '{ broken');
 
   await openTool('forms', [formFile]);
   await until(`document.querySelectorAll('#tool-options .field-row').length === 3`);
@@ -366,8 +422,11 @@ function verifySignature(bytes, certFile, dir) {
   const [a, b, c, d] = m.slice(1).map(Number);
   if (c + d !== bytes.length) return { ok: false, detail: 'the signature does not cover the whole file' };
   const signed = Buffer.concat([bytes.subarray(a, a + b), bytes.subarray(c, c + d)]);
-  const hex = s.slice(a + b + 1, c - 1).replace(/0+$/, '');
-  const der = Buffer.from(hex.length % 2 ? `${hex}0` : hex, 'hex');
+  if (a !== 0) return { ok: false, detail: 'the signed range does not start at the beginning of the file' };
+  // The signature is padded with zeros; its own length is in its DER header.
+  const padded = Buffer.from(s.slice(a + b + 1, c - 1), 'hex');
+  const len = padded[1] & 0x80 ? padded.subarray(2, 2 + (padded[1] & 0x7f)).reduce((n, x) => n * 256 + x, 0) + 2 + (padded[1] & 0x7f) : padded[1] + 2;
+  const der = padded.subarray(0, len);
   const content = path.join(dir, 'signed.bin');
   const sig = path.join(dir, 'sig.der');
   fs.writeFileSync(content, signed);

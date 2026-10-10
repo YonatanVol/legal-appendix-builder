@@ -152,18 +152,24 @@ function layout(items) {
     if (j - i >= 2) {
       tables++;
       const block = lines.slice(i, j);
-      // A cell spanning most of the table (a wrapped description, a heading inside it)
-      // would overlap every column and merge them into one, so it does not shape the
-      // columns; it is placed in the nearest one afterwards.
+      // A cell that spans two or more cells of some other row (a heading across the
+      // table, a note under it) would merge their columns, so it does not shape the
+      // columns. A long description that only overlaps the descriptions above and below
+      // it is an ordinary cell of its column.
       const all = block.flatMap((l) => l.cells);
-      const left = Math.min(...all.map((c) => c.x0));
-      const right = Math.max(...all.map((c) => c.x1));
-      const wide = new Set(all.filter((c) => c.x1 - c.x0 > (right - left) * 0.45));
+      const rowOf = new Map();
+      block.forEach((l, r) => l.cells.forEach((c) => rowOf.set(c, r)));
+      const overlaps = (a, b) => a.x0 < b.x1 - 1 && b.x0 < a.x1 - 1;
+      const wide = new Set(all.filter((c) => block.some((l, r) => r !== rowOf.get(c) && l.cells.filter((o) => overlaps(c, o)).length >= 2)));
       const columns = clusterColumns(all.filter((c) => !wide.has(c)));
       for (const c of wide) {
+        // Into the nearest column its own row has not used.
+        const taken = new Set(block[rowOf.get(c)].cells.filter((o) => o !== c).map((o) => columns.find((col) => col.members.has(o))));
         const mid = (c.x0 + c.x1) / 2;
-        let best = columns[0];
-        for (const col of columns) if (Math.abs((col.x0 + col.x1) / 2 - mid) < Math.abs((best.x0 + best.x1) / 2 - mid)) best = col;
+        const free = columns.filter((col) => !taken.has(col));
+        const pool = free.length ? free : columns;
+        let best = pool[0];
+        for (const col of pool) if (Math.abs((col.x0 + col.x1) / 2 - mid) < Math.abs((best.x0 + best.x1) / 2 - mid)) best = col;
         if (best) best.members.add(c);
         else columns.push({ x0: c.x0, x1: c.x1, members: new Set([c]) });
       }

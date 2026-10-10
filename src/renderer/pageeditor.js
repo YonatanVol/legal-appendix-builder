@@ -450,17 +450,23 @@ class PageEditor {
       const value = el.innerText.replace(/\n$/, '');
       const lines = Math.max(1, value.split('\n').length);
       if (!value.trim()) {
-        this.snapshot();
+        // A text box left empty is taken away as if it had never been made: no undo step
+        // that would bring back an empty box.
+        if (o._fresh) this.undoStack.pop();
+        else this.snapshot();
         this.objects = this.objects.filter((x) => x.id !== o.id);
         this.selected = null;
         this.commit();
       } else if (value !== o.text) {
+        // The first text typed into a new box is part of the same step as making it.
+        const fresh = o._fresh;
         this.update(o.id, (x) => {
+          delete x._fresh;
           x.text = value;
           x.h = (lines * (x.size || 14) * 1.45) / this.pageH;
           const longest = Math.max(...value.split('\n').map((l) => l.length));
           x.w = Math.min(1 - x.x, Math.max(x.w, (longest * (x.size || 14) * 0.6) / this.pageW));
-        });
+        }, { record: !fresh });
       }
       this.paint();
     };
@@ -548,6 +554,7 @@ class PageEditor {
       if (this.tool === 'text') {
         const size = this.style.size;
         const o = this.add({ type: 'text', x: Math.min(start.x, 0.7), y: start.y, w: 0.3, h: (size * 1.45) / this.pageH, text: '', size, color: this.style.color, bold: this.style.bold, align: 'right' });
+        o._fresh = true;
         this.setTool('select');
         requestAnimationFrame(() => {
           const el = this.layer.querySelector(`[data-id="${o.id}"]`);
