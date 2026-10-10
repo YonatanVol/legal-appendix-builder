@@ -50,6 +50,14 @@ contextBridge.exposeInMainWorld('api', {
     ipcRenderer.on('job:started', listener);
     return () => ipcRenderer.removeListener('job:started', listener);
   },
+  scanAvailable: () => ipcRenderer.invoke('scan:available'),
+  scanAcquire: (spec) => ipcRenderer.invoke('scan:acquire', spec),
+  scanCancel: () => ipcRenderer.invoke('scan:cancel'),
+  onScanPage: (callback) => {
+    const listener = (_event, n) => callback(n);
+    ipcRenderer.on('scan:page', listener);
+    return () => ipcRenderer.removeListener('scan:page', listener);
+  },
   runsList: () => ipcRenderer.invoke('runs:list'),
   runsRemove: (id) => ipcRenderer.invoke('runs:remove', id),
   recentFiles: () => ipcRenderer.invoke('runs:recent'),

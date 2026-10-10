@@ -86,6 +86,47 @@ async function pageText(token, pageIndex) {
   return { items: content.items, width: viewport.width, height: viewport.height };
 }
 
+/**
+ * Every piece of text on a page with its box, as fractions of the page as shown
+ * (top-left origin), whichever way the page is turned. Used by Redact to find and
+ * mark text. The box is found from the run's four corners, so it is right on pages
+ * turned by 90 or 270 degrees too.
+ */
+async function textBoxes(token, pageIndex) {
+  const doc = await load(token);
+  const page = await doc.getPage(pageIndex + 1);
+  const viewport = page.getViewport({ scale: 1 });
+  const content = await page.getTextContent();
+  const boxes = [];
+  for (const item of content.items) {
+    if (!item.str || !item.str.trim()) continue;
+    const [a, b, c, d, e, f] = item.transform;
+    const ul = Math.hypot(a, b) || 1;
+    const vl = Math.hypot(c, d) || 1;
+    const ux = a / ul, uy = b / ul, vx = c / vl, vy = d / vl;
+    const w = item.width;
+    const h = item.height || vl;
+    // A little below the baseline, for descenders.
+    const ox = e - vx * h * 0.25, oy = f - vy * h * 0.25;
+    const corners = [[ox, oy], [ox + ux * w, oy + uy * w], [ox + vx * h * 1.2, oy + vy * h * 1.2], [ox + ux * w + vx * h * 1.2, oy + uy * w + vy * h * 1.2]]
+      .map(([x, y]) => viewport.convertToViewportPoint(x, y));
+    const xs = corners.map((p) => p[0]);
+    const ys = corners.map((p) => p[1]);
+    const left = Math.min(...xs), right = Math.max(...xs), top = Math.min(...ys), bottom = Math.max(...ys);
+    boxes.push({
+      str: item.str,
+      rtl: item.dir === 'rtl',
+      vertical: right - left < bottom - top && item.str.length > 1,
+      x: left / viewport.width,
+      y: top / viewport.height,
+      w: (right - left) / viewport.width,
+      h: (bottom - top) / viewport.height,
+    });
+  }
+  page.cleanup();
+  return boxes;
+}
+
 async function close(token) {
   const promise = open.get(token);
   open.delete(token);
@@ -97,5 +138,5 @@ async function close(token) {
   }
 }
 
-window.thumbs = { render, pageCount, pageSizes, pageText, close, version: pdfjs.version };
+window.thumbs = { render, pageCount, pageSizes, pageText, textBoxes, close, version: pdfjs.version };
 document.dispatchEvent(new Event('thumbs-ready'));

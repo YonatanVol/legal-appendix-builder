@@ -259,9 +259,23 @@ function run() {
       ['pdfa', [a], { level: '2b' }],
       ['pdf-to-jpg', [a], { mode: 'pages', dpi: 72 }],
     ];
+    const outputsOf = {};
     for (const [toolId, inputs, options] of jobs) {
       const result = await page(`window.api.startJob(${JSON.stringify({ toolId, inputs, options })})`);
       check(`the ${toolId} tool runs`, result.ok, result.ok ? result.summary : result.error);
+      if (result.ok) outputsOf[toolId] = result.display || result.outputs;
+    }
+
+    // Recognition from inside the package: Hebrew stamped by Chromium, drawn as a picture
+    // by Ghostscript, then scanned back, cleaned and read by Tesseract in its own process.
+    const numbered = (outputsOf['page-numbers'] || [])[0];
+    if (numbered) {
+      const pictures = await page(`window.api.startJob(${JSON.stringify({ toolId: 'pdf-to-jpg', inputs: [numbered], options: { mode: 'pages', dpi: 300, format: 'png', pages: '1' } })})`);
+      const picture = pictures.ok && (pictures.display || [])[0];
+      const scanned = picture
+        ? await page(`window.api.startJob(${JSON.stringify({ toolId: 'scan', inputs: [picture], options: { mode: 'gray', ocr: true } })})`)
+        : { ok: false, error: pictures.error };
+      check('a picture of a Hebrew page is scanned to PDF and its text recognised', scanned.ok && /זוהה/.test(scanned.summary || ''), scanned.ok ? scanned.summary : scanned.error);
     }
   }
 

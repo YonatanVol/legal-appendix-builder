@@ -11,6 +11,7 @@ const runs = require('./runs');
 const docs = require('./docs');
 const jobs = require('./jobs');
 const tools = require('./tools');
+const wia = require('./engine/wia');
 // Read from the manifest rather than app.getVersion(): that only resolves the app's
 // own package.json in some launch contexts, and reports Electron's version otherwise.
 const { version } = require('../../package.json');
@@ -348,6 +349,32 @@ function registerToolIpc() {
   });
 
   ipcMain.handle('job:cancel', (_event, id) => ({ ok: true, cancelled: jobs.cancel(id) }));
+
+  // The office scanner (Windows only). Pages come back described, like a drop.
+  let scanning = null;
+  ipcMain.handle('scan:available', () => ({ ok: true, ...wia.available() }));
+  ipcMain.handle('scan:acquire', async (event, { dpi, mode } = {}) => {
+    if (scanning) return fail(new Error('כבר מתבצעת סריקה.'));
+    const sender = event.sender;
+    scanning = new AbortController();
+    try {
+      const { files, device } = await wia.acquire({
+        dpi: [150, 200, 300].includes(Number(dpi)) ? Number(dpi) : 300,
+        mode,
+        signal: scanning.signal,
+        onPage: (n) => { if (!sender.isDestroyed()) sender.send('scan:page', n); },
+      });
+      return { ok: true, device, files: await describeAll(files) };
+    } catch (err) {
+      return fail(err);
+    } finally {
+      scanning = null;
+    }
+  });
+  ipcMain.handle('scan:cancel', () => {
+    if (scanning) scanning.abort();
+    return { ok: true };
+  });
 
   ipcMain.handle('runs:list', async () => {
     try {

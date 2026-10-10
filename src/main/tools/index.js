@@ -9,7 +9,8 @@
  */
 
 const PDF = ['pdf'];
-const IMAGES = ['jpg', 'jpeg', 'png', 'tif', 'tiff', 'bmp', 'webp', 'heic'];
+// Pictures the app can read itself. Phone photos arrive as JPEG; scanners save PNG.
+const IMAGES = ['jpg', 'jpeg', 'png'];
 
 const GROUPS = [
   { id: 'organize', name: 'סידור' },

@@ -11,6 +11,7 @@ files:
   - src/**/*
   - assets/fonts/**/*
   - assets/pdfa/**/*
+  - assets/tessdata/**/*
   - package.json
   - "!**/*.map"
   # pdf.js ships builds and viewers the app never loads.
@@ -18,6 +19,10 @@ files:
   - "!node_modules/pdfjs-dist/web/**"
   - "!node_modules/pdfjs-dist/types/**"
   - "!node_modules/pdfjs-dist/image_decoders/**"
+  # OCR runs in a Node utility process, which loads tesseract.js-core's .js and .wasm
+  # pair. The browser builds with the WebAssembly inlined (*.wasm.js) are never loaded;
+  # the self-test runs a real recognition from the installed program.
+  - "!node_modules/tesseract.js-core/*.wasm.js"
 
 npmRebuild: false
 

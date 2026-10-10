@@ -48,7 +48,11 @@ if (process.env.APPENDIX_BUILDER_SELFTEST) {
     });
   });
 
-  app.on('before-quit', disposeRenderer);
+  app.on('before-quit', () => {
+    disposeRenderer();
+    require('./engine/ocr').shutdown();
+    require('./engine/imaging').dispose();
+  });
 }
 
 module.exports = { APP_ID };

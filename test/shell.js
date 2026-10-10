@@ -99,8 +99,9 @@ app.whenReady().then(async () => {
     groups: document.querySelectorAll('.tool-group').length,
     merge: !document.querySelector('.tile[data-tool="merge"]').classList.contains('unavailable'),
     appendix: !document.querySelector('.tile[data-tool="appendix"]').classList.contains('unavailable'),
-    split: (document.querySelector('.tile[data-tool="ocr"] .tile-soon') || {}).textContent,
-    splitDesc: document.querySelector('.tile[data-tool="ocr"] .tile-desc').textContent,
+    soonId: (document.querySelector('.tile.unavailable') || { dataset: {} }).dataset.tool || null,
+    split: (document.querySelector('.tile.unavailable .tile-soon') || {}).textContent,
+    splitDesc: (document.querySelector('.tile.unavailable .tile-desc') || {}).textContent,
     firstTile: document.querySelector('.tile').dataset.tool,
     removed: ['jpg-to-pdf', 'html-to-pdf', 'compare'].filter(id => document.querySelector('.tile[data-tool="' + id + '"]')),
     cloud: document.querySelectorAll('.tile .tile-cloud').length,
@@ -111,8 +112,11 @@ app.whenReady().then(async () => {
   check('  in eight groups', grid.groups === 8, String(grid.groups));
   check('  without the three tools that were crossed out', grid.removed.length === 0, grid.removed.join(', '));
   check('merge and the appendix builder are available', grid.merge && grid.appendix);
-  check('a tool not built yet is marked "soon" on its tile', grid.split === 'בקרוב', grid.split);
-  check('  and still says what it will do', /לחפש/.test(grid.splitDesc), grid.splitDesc);
+  const soon = grid.soonId;
+  if (soon) {
+    check('a tool not built yet is marked "soon" on its tile', grid.split === 'בקרוב', `${soon}: ${grid.split}`);
+    check('  and still says what it will do', (grid.splitDesc || '').length > 10, grid.splitDesc);
+  }
   check('the appendix builder is the first tile', grid.firstTile === 'appendix', grid.firstTile);
   check('the two cloud tools are marked as cloud', grid.cloud === 2, String(grid.cloud));
   check('home has no back button', grid.screen === 'home' && grid.back);
@@ -128,11 +132,16 @@ app.whenReady().then(async () => {
 
   /* ---- a tool that is not built yet ---- */
   console.log('\na tool not built yet');
-  await press('.tile[data-tool="ocr"]');
-  check('opens with a notice saying why', !(await hidden('tool-unavailable')) && /עדיין לא זמין/.test(await text('#tool-unavailable')));
-  check('  and its button stays disabled with the same reason',
-    (await run(`document.getElementById('tool-run').disabled`)) && /עדיין לא זמין/.test(await text('#tool-blocked')));
-  await press('#nav-back');
+  if (soon) {
+    await press(`.tile[data-tool="${soon}"]`);
+    check('opens with a notice saying why', !(await hidden('tool-unavailable')) && /עדיין לא זמין/.test(await text('#tool-unavailable')));
+    check('  and its button stays disabled with the same reason',
+      (await run(`document.getElementById('tool-run').disabled`)) && /עדיין לא זמין/.test(await text('#tool-blocked')));
+    await press('#nav-back');
+  } else {
+    await press('.tile[data-tool="merge"]');
+    await press('#nav-back');
+  }
   check('the back button returns home', (await run('document.body.dataset.screen')) === 'home');
 
   /* ---- merge ---- */

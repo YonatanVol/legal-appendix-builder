@@ -102,7 +102,10 @@ const shell = (() => {
   const thumbCache = new Map(); // token -> Promise<dataURL>
 
   function thumbnail(file, width = 56) {
-    if (!file.token || file.ext !== 'pdf' || file.error) return Promise.resolve(null);
+    if (!file.token || file.error) return Promise.resolve(null);
+    // A picture is its own thumbnail.
+    if (['jpg', 'jpeg', 'png'].includes(file.ext)) return Promise.resolve(`/doc/${encodeURIComponent(file.token)}`);
+    if (file.ext !== 'pdf') return Promise.resolve(null);
     return pageThumb(file.token, 0, width, file.name);
   }
 

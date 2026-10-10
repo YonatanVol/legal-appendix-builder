@@ -482,3 +482,18 @@ button.small { padding: 4px 10px; font-size: 12.5px; }
 
 .password-row { display: flex; gap: 6px; align-items: center; }
 .password-row input { flex: 1; min-width: 0; font: inherit; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; }
+
+/* ---------------- redact ---------------- */
+.redact-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 10px 12px; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; }
+.redact-bar input[type="search"] { flex: 1 1 220px; font: inherit; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; }
+.redact-presets { display: flex; flex-wrap: wrap; gap: 6px; }
+.redact-presets .chip { padding: 4px 10px; }
+.redact-found { font-size: 12.5px; color: var(--muted); }
+.redact-hint { text-align: center; margin: 0; }
+.redact-stage { cursor: crosshair; touch-action: none; user-select: none; }
+.redact-mark { position: absolute; background: rgba(0, 0, 0, .82); outline: 1px solid #000; cursor: pointer; }
+.redact-mark:hover { background: rgba(179, 38, 30, .85); }
+.redact-mark.drawing { background: rgba(0, 0, 0, .5); pointer-events: none; }
+.redact-hit { position: absolute; background: rgba(255, 213, 0, .35); outline: 2px solid #e0a800; pointer-events: none; }
+.mark-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.mark-list:empty { display: none; }

@@ -1275,6 +1275,343 @@ const panels = {
     blocked: () => null,
   },
 
+  ocr: {
+    defaults: () => ({ langs: 'heb', alsoWord: false, alsoText: false }),
+    render(container, view) {
+      const box = ui.section(container, 'שפת המסמך');
+      ui.choice(box, {
+        value: view.options.langs,
+        vertical: true,
+        choices: [
+          { value: 'heb', label: 'עברית (מספרים וסימנים כלולים)' },
+          { value: 'heb+eng', label: 'עברית ואנגלית' },
+          { value: 'eng', label: 'אנגלית' },
+        ],
+        onChange: (v) => view.set('langs', v),
+      });
+      ui.note(box, 'עברית לבדה מהירה ומדויקת יותר. כדאי להוסיף אנגלית רק כשיש במסמך מילים באנגלית.', 'muted');
+      const more = ui.section(container, 'מה עוד לשמור', 'הקובץ נשאר בדיוק כפי שהוא נראה, ומקבל שכבת טקסט שאפשר לחפש בה ולהעתיק ממנה. עמודים שכבר יש בהם טקסט נשארים כמו שהם.');
+      ui.check(more, { label: 'גם קובץ Word עם הטקסט', value: view.options.alsoWord, onChange: (v) => view.set('alsoWord', v) });
+      ui.check(more, { label: 'גם קובץ טקסט פשוט', value: view.options.alsoText, onChange: (v) => view.set('alsoText', v) });
+    },
+    blocked: () => null,
+  },
+
+  scan: {
+    defaults: () => ({ mode: 'gray', enhance: true, straighten: true, pageSize: 'a4', ocr: true, dpi: 300 }),
+    render(container, view) {
+      const o = view.options;
+      const device = ui.section(container, 'מהסורק של המשרד');
+      const row = ui.row(device);
+      const scanButton = ui.button(row, { label: 'סריקה', kind: 'secondary' });
+      const status = ui.note(device, '', 'muted');
+      ui.choice(device, {
+        label: 'רזולוציה',
+        value: o.dpi,
+        choices: [{ value: 200, label: 'רגילה' }, { value: 300, label: 'גבוהה' }],
+        onChange: (v) => view.set('dpi', v),
+      });
+      window.api.scanAvailable().then((r) => {
+        if (!r.available) {
+          scanButton.disabled = true;
+          scanButton.title = r.reason;
+          status.textContent = r.reason;
+        } else {
+          status.textContent = 'עם מזין דפים כל הדפים נסרקים ברצף. במשטח זכוכית, כל לחיצה סורקת דף אחד.';
+        }
+      });
+      let off = null;
+      scanButton.addEventListener('click', async () => {
+        scanButton.disabled = true;
+        status.textContent = 'סורק…';
+        off = window.api.onScanPage((n) => { status.textContent = `נסרקו ${pagesWord(n)}…`; });
+        const r = await window.api.scanAcquire({ dpi: o.dpi, mode: o.mode });
+        if (off) off();
+        scanButton.disabled = false;
+        if (!r.ok) {
+          status.textContent = r.error;
+          return;
+        }
+        status.textContent = `נסרקו ${pagesWord(r.files.length)}${r.device ? ` מ-${r.device}` : ''}. אפשר לסרוק עוד או להפיק PDF.`;
+        window.shell.addFiles(r.files);
+      });
+
+      const look = ui.section(container, 'ניקוי התמונה');
+      ui.choice(look, {
+        value: o.mode,
+        choices: [{ value: 'bw', label: 'שחור-לבן' }, { value: 'gray', label: 'גווני אפור' }, { value: 'color', label: 'צבע' }],
+        onChange: (v) => view.set('mode', v),
+      });
+      ui.check(look, { label: 'יישור דף עקום', value: o.straighten, onChange: (v) => view.set('straighten', v) });
+      ui.check(look, { label: 'חידוד הניגודיות', value: o.enhance, onChange: (v) => view.set('enhance', v) });
+      ui.choice(look, {
+        label: 'גודל העמוד',
+        value: o.pageSize,
+        choices: [{ value: 'a4', label: 'A4' }, { value: 'image', label: 'כגודל התמונה' }],
+        onChange: (v) => view.set('pageSize', v),
+      });
+      ui.check(look, { label: 'זיהוי טקסט, כדי שאפשר יהיה לחפש בקובץ', value: o.ocr, onChange: (v) => view.set('ocr', v) });
+      ui.note(look, 'לחיתוך צילום טלפון לפי פינות הדף, השתמש בתוכנת סורק המסמכים. כאן מתקנים כיוון, עקמומיות קלה וניגודיות.', 'muted');
+    },
+    blocked: (view) => (view.files.length ? null : 'סרוק דפים או גרור תמונות JPG או PNG.'),
+  },
+
+  redact: {
+    defaults: () => ({ marks: [], clean: true, ocr: false }),
+    render(container, view) {
+      const o = view.options;
+      const file = firstFile(view);
+      const list = ui.section(container, 'מה יושחר');
+      const summary = ui.note(list, '');
+      const marksBox = document.createElement('ul');
+      marksBox.className = 'mark-list';
+      list.append(marksBox);
+      const clearRow = ui.row(list);
+      const clearAll = ui.button(clearRow, { label: 'ניקוי כל הסימונים', kind: 'ghost', onClick: () => setMarks([]) });
+
+      const after = ui.section(container, 'עוד');
+      ui.check(after, { label: 'הסרת פרטי המסמך, הערות וקבצים מצורפים', value: o.clean, onChange: (v) => view.set('clean', v) });
+      ui.check(after, { label: 'זיהוי טקסט מחדש בעמודים המושחרים', value: o.ocr, onChange: (v) => view.set('ocr', v) });
+      ui.note(after, 'עמוד שיש בו סימון הופך לתמונה, ומה שהושחר נמחק ממנו באמת: אי אפשר להעתיק אותו, לחפש אותו או לשחזר אותו. שאר העמודים נשארים כמו שהם.', 'muted');
+
+      if (!file || !file.token) return;
+      if (o.forToken && o.forToken !== file.token) o.marks = [];
+      view.set('forToken', file.token);
+      const total = file.pageCount;
+      let pageIndex = 0;
+      let found = [];
+
+      // Search bar and page navigation, above the page.
+      const bar = document.createElement('div');
+      bar.className = 'redact-bar';
+      const search = document.createElement('input');
+      search.type = 'search';
+      search.placeholder = 'חיפוש טקסט להשחרה';
+      const presets = document.createElement('div');
+      presets.className = 'redact-presets';
+      const PATTERNS = [
+        // Israeli ID numbers are nine digits, often written as eight without the leading zero.
+        { label: 'מספרי זהות', re: /\b\d{8,9}\b|\b\d{7,8}-\d\b/g },
+        { label: 'טלפונים', re: /\b0\d{1,2}-?\d{7}\b|\b0\d{1,2}-\d{3}-?\d{4}\b/g },
+        { label: 'דוא"ל', re: /[\w.+-]+@[\w-]+(\.[\w-]+)+/g },
+        { label: 'כרטיסי אשראי', re: /\b(?:\d[ -]?){12,15}\d\b/g },
+      ];
+      const markFound = document.createElement('button');
+      markFound.type = 'button';
+      markFound.className = 'primary small';
+      markFound.disabled = true;
+      markFound.hidden = true;
+      const foundNote = document.createElement('span');
+      foundNote.className = 'redact-found';
+      bar.append(search);
+      for (const pattern of PATTERNS) {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'chip';
+        b.textContent = pattern.label;
+        b.addEventListener('click', () => findAll(pattern.re, pattern.label));
+        presets.append(b);
+      }
+      bar.append(presets, foundNote, markFound);
+      view.pagesHost.append(bar);
+
+      const nav = document.createElement('div');
+      nav.className = 'crop-nav';
+      const prev = document.createElement('button');
+      prev.type = 'button';
+      prev.className = 'ghost icon';
+      prev.textContent = '›';
+      prev.setAttribute('aria-label', 'העמוד הקודם');
+      const label = document.createElement('span');
+      const next = document.createElement('button');
+      next.type = 'button';
+      next.className = 'ghost icon';
+      next.textContent = '‹';
+      next.setAttribute('aria-label', 'העמוד הבא');
+      nav.append(prev, label, next);
+      view.pagesHost.append(nav);
+      const hint = document.createElement('p');
+      hint.className = 'opt-hint redact-hint';
+      hint.textContent = 'גרור על העמוד כדי לסמן אזור להשחרה. לחיצה על סימון מסירה אותו.';
+      view.pagesHost.append(hint);
+
+      const holder = document.createElement('div');
+      holder.className = 'crop-holder';
+      view.pagesHost.append(holder);
+      let stage = null;
+
+      const setMarks = (marks) => {
+        o.marks = marks;
+        view.set('marks', marks);
+        paintMarks();
+        paintList();
+      };
+
+      function draw() {
+        holder.replaceChildren();
+        stage = previewPage(holder, view, file, pageIndex, 520);
+        stage.classList.add('redact-stage');
+        label.textContent = `עמוד ${pageIndex + 1} מתוך ${total}`;
+        prev.disabled = pageIndex === 0;
+        next.disabled = pageIndex === total - 1;
+        wireDraw();
+        paintMarks();
+      }
+
+      function paintMarks() {
+        if (!stage) return;
+        stage.querySelectorAll('.redact-mark, .redact-hit').forEach((el) => el.remove());
+        for (const hit of found.filter((h) => h.page === pageIndex)) {
+          const el = box('redact-hit', hit);
+          stage.append(el);
+        }
+        o.marks.forEach((m, k) => {
+          if (m.page !== pageIndex) return;
+          const el = box('redact-mark', m);
+          el.title = 'לחיצה מסירה את הסימון';
+          el.addEventListener('pointerdown', (e) => e.stopPropagation());
+          el.addEventListener('click', () => setMarks(o.marks.filter((_, i) => i !== k)));
+          stage.append(el);
+        });
+      }
+
+      function box(cls, m) {
+        const el = document.createElement('div');
+        el.className = cls;
+        el.style.left = `${m.x * 100}%`;
+        el.style.top = `${m.y * 100}%`;
+        el.style.width = `${m.w * 100}%`;
+        el.style.height = `${m.h * 100}%`;
+        return el;
+      }
+
+      function paintList() {
+        const pages = new Set(o.marks.map((m) => m.page));
+        summary.textContent = o.marks.length
+          ? `${o.marks.length === 1 ? 'סימון אחד' : `${o.marks.length} סימונים`} ב-${pages.size === 1 ? 'עמוד אחד' : `${pages.size} עמודים`}.`
+          : 'עוד לא סומן דבר. גרור על העמוד, או חפש טקסט.';
+        clearAll.disabled = !o.marks.length;
+        marksBox.replaceChildren();
+        [...pages].sort((a, b) => a - b).forEach((p) => {
+          const li = document.createElement('li');
+          const go = document.createElement('button');
+          go.type = 'button';
+          go.className = 'link';
+          const n = o.marks.filter((m) => m.page === p).length;
+          go.textContent = `עמוד ${p + 1}: ${n === 1 ? 'סימון אחד' : `${n} סימונים`}`;
+          go.addEventListener('click', () => { pageIndex = p; draw(); });
+          li.append(go);
+          marksBox.append(li);
+        });
+      }
+
+      function wireDraw() {
+        stage.addEventListener('pointerdown', (e) => {
+          if (e.button !== 0) return;
+          e.preventDefault();
+          const rect = stage.getBoundingClientRect();
+          const sx = (e.clientX - rect.left) / rect.width;
+          const sy = (e.clientY - rect.top) / rect.height;
+          const ghost = box('redact-mark drawing', { x: sx, y: sy, w: 0, h: 0 });
+          stage.append(ghost);
+          try { stage.setPointerCapture(e.pointerId); } catch {}
+          let cur = { x: sx, y: sy, w: 0, h: 0 };
+          const move = (ev) => {
+            const ex = Math.max(0, Math.min(1, (ev.clientX - rect.left) / rect.width));
+            const ey = Math.max(0, Math.min(1, (ev.clientY - rect.top) / rect.height));
+            cur = { x: Math.min(sx, ex), y: Math.min(sy, ey), w: Math.abs(ex - sx), h: Math.abs(ey - sy) };
+            Object.assign(ghost.style, { left: `${cur.x * 100}%`, top: `${cur.y * 100}%`, width: `${cur.w * 100}%`, height: `${cur.h * 100}%` });
+          };
+          const up = () => {
+            stage.removeEventListener('pointermove', move);
+            stage.removeEventListener('pointerup', up);
+            ghost.remove();
+            if (cur.w > 0.005 && cur.h > 0.004) setMarks([...o.marks, { page: pageIndex, ...cur }]);
+          };
+          stage.addEventListener('pointermove', move);
+          stage.addEventListener('pointerup', up);
+        });
+      }
+
+      /** Where a match sits inside a run of text, by its share of the characters. */
+      function subBox(b, start, end) {
+        const len = b.str.length || 1;
+        if (b.vertical) return { x: b.x, y: b.y + (b.h * start) / len, w: b.w, h: (b.h * (end - start)) / len };
+        const from = b.rtl ? 1 - end / len : start / len;
+        return { x: b.x + b.w * from, y: b.y, w: (b.w * (end - start)) / len, h: b.h };
+      }
+
+      async function findAll(re, what) {
+        foundNote.textContent = 'מחפש…';
+        markFound.disabled = true;
+        const thumbs = await view.thumbs();
+        const hits = [];
+        for (let p = 0; p < total; p++) {
+          const boxes = await thumbs.textBoxes(file.token, p);
+          for (const b of boxes) {
+            re.lastIndex = 0;
+            let m;
+            while ((m = re.exec(b.str))) {
+              if (!m[0]) { re.lastIndex++; continue; }
+              hits.push({ page: p, ...subBox(b, m.index, m.index + m[0].length), text: m[0] });
+              if (!re.global) break;
+            }
+          }
+        }
+        found = hits;
+        const pages = new Set(hits.map((h) => h.page));
+        foundNote.textContent = hits.length
+          ? `${hits.length === 1 ? 'נמצאה תוצאה אחת' : `נמצאו ${hits.length} תוצאות`} ל${what} ב-${pages.size === 1 ? 'עמוד אחד' : `${pages.size} עמודים`}.`
+          : `לא נמצאו ${what}. בקובץ סרוק בלי טקסט, הפעל קודם זיהוי טקסט (OCR).`;
+        markFound.textContent = hits.length === 1 ? 'סמן להשחרה' : `סמן את כל ${hits.length}`;
+        markFound.disabled = !hits.length;
+        markFound.hidden = !hits.length;
+        if (hits.length && !pages.has(pageIndex)) pageIndex = hits[0].page;
+        draw();
+      }
+
+      markFound.addEventListener('click', () => {
+        const pad = 0.002;
+        setMarks([...o.marks, ...found.map((h) => ({ page: h.page, x: h.x - pad, y: h.y - pad, w: h.w + pad * 2, h: h.h + pad * 2 }))]);
+        found = [];
+        foundNote.textContent = '';
+        markFound.disabled = true;
+        markFound.hidden = true;
+        markFound.textContent = '';
+        paintMarks();
+      });
+      search.addEventListener('keydown', (e) => {
+        if (e.key !== 'Enter' || !search.value.trim()) return;
+        const escaped = search.value.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        findAll(new RegExp(escaped, 'gi'), `"${search.value.trim()}"`);
+      });
+      prev.addEventListener('click', () => { pageIndex = Math.max(0, pageIndex - 1); draw(); });
+      next.addEventListener('click', () => { pageIndex = Math.min(total - 1, pageIndex + 1); draw(); });
+
+      mem.redactFind = findAll;
+      draw();
+      paintList();
+    },
+    blocked(view) {
+      return (view.options.marks || []).length ? null : 'סמן מה להשחיר: גרור על העמוד, או חפש טקסט וסמן את התוצאות.';
+    },
+  },
+
+  'pdf-to-excel': {
+    defaults: () => ({ layout: 'page' }),
+    render(container, view) {
+      const box = ui.section(container, 'איך לסדר',
+        'טבלאות הופכות לשורות ועמודות, ושאר הטקסט נכנס לעמודה הראשונה, כך ששום דבר לא הולך לאיבוד. טבלאות בעברית נשמרות מימין לשמאל.');
+      ui.choice(box, {
+        value: view.options.layout,
+        choices: [{ value: 'page', label: 'גיליון לכל עמוד' }, { value: 'one', label: 'הכל בגיליון אחד' }],
+        onChange: (v) => view.set('layout', v),
+      });
+      ui.note(box, 'עמודים סרוקים עוברים קודם זיהוי טקסט. במקרה כזה כדאי לבדוק את המספרים מול המקור.', 'muted');
+    },
+    blocked: () => null,
+  },
+
   repair: {
     defaults: () => ({}),
     render(container) {
