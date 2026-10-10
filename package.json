@@ -1,13 +1,13 @@
 {
   "name": "rotem-office",
-  "version": "1.3.2",
+  "version": "2.0.0",
   "description": "Builds a court-ready PDF bundle: pleading + appendices, with dividers, table of contents and running page numbers.",
   "main": "src/main/index.js",
   "private": true,
   "scripts": {
     "start": "electron .",
     "split-reference": "node test/split-reference.js",
-    "test": "npm run test:config && npm run test:verdicts && npm run test:build && npm run test:verify && npm run test:edge && npm run test:ui && npm run test:shell && npm run test:page-tools && npm run test:page-panels && npm run test:engine-tools && npm run test:recognition && npm run test:editing && npm run test:office && npm run test:ai && npm run test:history && npm run test:history-ui && npm run test:updater-ui && npm run test:security && npm run test:selftest-failure && npm run test:selftest",
+    "test": "npm run test:config && npm run test:verdicts && npm run test:build && npm run test:verify && npm run test:edge && npm run test:ui && npm run test:shell && npm run test:page-tools && npm run test:page-panels && npm run test:engine-tools && npm run test:recognition && npm run test:editing && npm run test:office && npm run test:ai && npm run test:workflows && npm run test:history && npm run test:history-ui && npm run test:updater-ui && npm run test:security && npm run test:selftest-failure && npm run test:selftest",
     "test:build": "electron test/build-headless.js",
     "test:verify": "node test/verify.js",
     "test:edge": "electron test/edge-cases.js",
@@ -28,7 +28,8 @@
     "test:recognition": "electron test/recognition.js",
     "test:editing": "electron test/editing.js",
     "test:office": "electron test/office.js",
-    "test:ai": "electron test/ai.js"
+    "test:ai": "electron test/ai.js",
+    "test:workflows": "electron test/workflows.js"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "0.133.0",

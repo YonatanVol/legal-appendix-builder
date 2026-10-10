@@ -14,6 +14,7 @@ const tools = require('./tools');
 const wia = require('./engine/wia');
 const signatures = require('./signatures');
 const settings = require('./settings');
+const workflowStore = require('./workflows');
 // Read from the manifest rather than app.getVersion(): that only resolves the app's
 // own package.json in some launch contexts, and reports Electron's version otherwise.
 const { version } = require('../../package.json');
@@ -405,6 +406,22 @@ function registerToolIpc() {
       return fail(err);
     }
   });
+
+  ipcMain.handle('workflows:save', async (_event, spec) => {
+    try {
+      return { ok: true, workflow: await workflowStore.save(spec || {}) };
+    } catch (err) {
+      return fail(err);
+    }
+  });
+  ipcMain.handle('workflows:remove', async (_event, id) => {
+    try {
+      return { ok: true, removed: await workflowStore.remove(String(id)) };
+    } catch (err) {
+      return fail(err);
+    }
+  });
+  ipcMain.handle('workflows:steps', () => ({ ok: true, steps: workflowStore.STEP_TOOLS, last: workflowStore.LAST_ONLY }));
 
   ipcMain.handle('signatures:list', async () => {
     try {

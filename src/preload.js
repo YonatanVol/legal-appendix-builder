@@ -58,6 +58,9 @@ contextBridge.exposeInMainWorld('api', {
     ipcRenderer.on('scan:page', listener);
     return () => ipcRenderer.removeListener('scan:page', listener);
   },
+  workflowsSave: (spec) => ipcRenderer.invoke('workflows:save', spec),
+  workflowsRemove: (id) => ipcRenderer.invoke('workflows:remove', id),
+  workflowsSteps: () => ipcRenderer.invoke('workflows:steps'),
   settingsGet: () => ipcRenderer.invoke('settings:get'),
   settingsSetKey: (key) => ipcRenderer.invoke('settings:setKey', key),
   settingsClearKey: () => ipcRenderer.invoke('settings:clearKey'),

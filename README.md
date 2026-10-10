@@ -1,19 +1,91 @@
-# Legal Appendix Builder
+# Office PDF tools (כלי המשרד)
 
-A Windows desktop app that assembles a legal filing: it takes the pleading and the
-exhibit PDFs and produces one court-ready document, with a divider page before each
-exhibit, a generated table of contents, and continuous page numbering across the whole
-bundle.
+A Windows desktop app that replaces iLovePDF for a six-person Israeli law office: thirty
+PDF tools behind one home screen, in Hebrew, working on the PC itself. It grew out of the
+office's appendix builder, which is now one of its tools and works exactly as before.
+[README בעברית](README.he.md).
 
-Built for an Israeli law practice, so the interface and the generated pages are in
-Hebrew. [README בעברית](README.he.md).
+## The tools
 
-Documents never leave the machine. The app handles medical records, so the part that
-touches documents has no network access at all, blocked at the session layer rather than
-merely avoided in code. The single exception is the updater, which may reach GitHub's
-release hosts over HTTPS and nothing else. See [Updates and what they change](#updates-and-what-they-change).
+| Group | Tools |
+|---|---|
+| Organize | Appendix builder, Merge, Split, Organize pages, Rotate, Crop |
+| Optimize | Compress, Repair, OCR (Hebrew and English), PDF/A |
+| To PDF | Word, PowerPoint, Excel, Scan (office scanner or phone photos) |
+| From PDF | Word, PowerPoint, Excel, JPG, Markdown |
+| Edit | Edit PDF, Page numbers, Watermark, Sign (with an optional .pfx digital signature), Redact, Forms |
+| Security | Protect, Unlock |
+| AI | Summarize, Translate (Claude; off until a key is entered) |
+| Workflows | Chains of tools saved as tiles of their own |
 
-## The problem
+Every tool has the same screen: drop or pick files, thumbnails, the tool's options with a
+preview of the result where there is one, one button, progress with Esc to cancel, and a
+result card that opens the file, shows it in its folder, or continues with another tool.
+Results go beside the source, as `<name> - <what>.pdf`, and never over an existing file.
+
+## Where documents go
+
+Documents never leave the PC, with two exceptions, each in a network session of its own
+whose only permitted destination is enforced by a rule on that session:
+
+- **Updates** may reach GitHub's release hosts over HTTPS. No document travels this way.
+- **Summarize and Translate** may reach `api.anthropic.com` over HTTPS, and only after the
+  office has entered an API key, and only when one of those two tools is run. The screen
+  says before the button is pressed that the document goes to Anthropic.
+
+The session that handles documents reaches nothing. `test/security.js` and `test/ai.js`
+prove each rule against a control session that does reach the same addresses, so a
+"blocked" result means the rule worked, not that the machine was offline.
+
+The Claude API key is stored encrypted with Windows' protection for the signed-in user
+(DPAPI, through Electron's safeStorage), shown only as a hint, and never sent to the page
+or written to the run history. That keeps it from other users of the PC and from a copied
+file; a program already running as the same Windows user can still ask Windows to decrypt
+it, as this app does.
+
+Passwords (Protect, Unlock, a certificate's) reach qpdf through its standard input, never a
+command line, and are never recorded. Saved signatures are pictures in the app's data
+folder on this PC.
+
+## The engines
+
+| Engine | Used for | Licence | How it ships |
+|---|---|---|---|
+| pdf-lib | Page operations, forms, drawing | MIT | Inside the app |
+| pdf.js | Thumbnails, text with positions | Apache 2.0 | Inside the app |
+| Chromium (Electron) | Hebrew text typeset onto pages, image work | BSD | The app itself |
+| qpdf 12.4.2 | Encryption, decryption, repair | Apache 2.0 | Beside the app, checksum-pinned |
+| Ghostscript 10.08.0 | Compression, PDF/A, page images, redaction rebuild | AGPL 3.0 | Beside the app, checksum-pinned |
+| Tesseract (tesseract.js 7) | OCR, Hebrew and English | Apache 2.0 | Inside the app, language data included |
+| Microsoft Office | Word, Excel, PowerPoint conversions | | Already on the PC |
+| LibreOffice | The same, when Office is missing | MPL 2.0 | Not shipped; used if installed |
+| Claude Opus 5.5 | Summaries and translations | | Anthropic's API, with the office's key |
+
+Ghostscript is AGPL: the app is used within one office, and its source is available to
+that office. `scripts/fetch-vendor.js` downloads qpdf and Ghostscript for the Windows build
+and refuses a file whose SHA-256 differs from the one pinned in it.
+
+## What is verified where
+
+- **Here, on every change:** 21 test suites, from the tool grid to each tool's output read
+  back independently (pdf.js, qpdf, OpenSSL, exceljs, pixels drawn by Ghostscript).
+- **On Windows, in GitHub Actions:** the installer is built, installed the way a user
+  installs it, and the installed program runs its self-test, which includes a job through
+  every engine (pdf.js, Chromium stamping, qpdf, Ghostscript, PDF/A, OCR from inside the
+  package). The PowerShell scripts for Office and the scanner are parsed by Windows'
+  PowerShell parser.
+- **Only on an office PC:** Microsoft Office conversions and the office scanner. GitHub's
+  machines have neither. The LibreOffice route of the same tools is tested here.
+- **Not yet with a real key:** Summarize and Translate are tested against a local stand-in
+  for Anthropic's API, which checks exactly what is sent. Their first live run is the
+  office's.
+
+## The appendix builder
+
+The sections below describe the appendix builder, the app's first tool, and then the
+installing, updating and release process, which is the same for the whole app.
+
+### The problem
 
 Assembling a filing by hand is mechanical and brittle. The pleading is merged with the
 scanned exhibits, a divider page is inserted before each one, a contents page lists the
@@ -95,7 +167,7 @@ That document is a client record and **is not in this repository**, so `test/fix
 is empty on a fresh clone and the suite will not run without it. Point
 `npm run split-reference` at a comparable filing to regenerate the fixtures.
 
-160 checks across six suites:
+The suites, all run by `npm test`:
 
 | Suite | Covers |
 |---|---|
@@ -108,6 +180,15 @@ is empty on a fresh clone and the suite will not run without it. Point
 | `test:updater-ui` | The update notices, the restart button, and the main process refusing to restart during a real build |
 | `test:security` | Both network rules are real and attached to the sessions actually used, and neither breaks page generation |
 | `test:selftest` | The app's own self-test, run from source; the Windows workflow runs the same one against the installed program |
+| `test:shell` | The tool grid and the shared tool screen in the real window: search, coming-soon tiles, drop and reorder, run, cancel, results, continuing into another tool, recent runs, what the page may read |
+| `test:page-tools` | Split, Organize, Rotate, Crop, Page numbers, Watermark, Markdown and Repair, each output read back: order, rotation, crop boxes, where stamped Hebrew lands on pages turned every way |
+| `test:page-panels` | The same tools' screens: Explorer-style selection, drag to reorder, Delete and Ctrl+Z, the crop frame and margin detection, live previews |
+| `test:engine-tools` | Protect, Unlock, Compress, PDF/A, PDF to JPG and PowerPoint, Repair with qpdf and Ghostscript; passwords never on a command line; a Hebrew temp folder |
+| `test:recognition` | OCR on pages turned every way, Scan to PDF, Redact (a secret hidden in every place a PDF can hold one, searched for in every object of the result), PDF to Excel |
+| `test:editing` | Edit PDF checked by pixels on turned pages, signatures verified with OpenSSL, forms filled, created and flattened |
+| `test:office` | Word, PowerPoint and Excel to PDF and PDF to Word, through LibreOffice |
+| `test:ai` | Summarize and Translate against a local stand-in for the API, the key store, and the network fence |
+| `test:workflows` | Building, saving and running chains of tools, passwords asked for at run time |
 
 ## Installing
 
@@ -233,7 +314,16 @@ window title, in the app header, and in the installer's file name.
 | `src/main/updater.js` | Checking, downloading and installing updates |
 | `src/main/selftest.js` | The self-test the Windows workflow runs inside the installed program |
 | `src/main/window.js` | The one window, shared by the app and the self-test |
-| `scripts/` | Windows package check, self-test runner, local update feed, release notes |
+| `scripts/` | Windows package check, self-test runner, local update feed, release notes, vendor fetch, PowerShell syntax check |
+| `src/main/tools/` | One module per tool: `run({ inputs, options, ctx })`, and the registry (`index.js`) |
+| `src/main/jobs.js` | Running a tool: progress, Esc, scratch folders, results written beside the source under names claimed atomically |
+| `src/main/engine/` | qpdf and Ghostscript (`binaries.js`), OCR process, image work, Office and scanner scripts, Claude |
+| `src/main/pdf/stamp.js` | Placing things on pages by where they appear, on pages of any rotation; Hebrew typeset by Chromium |
+| `src/main/pdf/text.js` | Reading text with positions, ordered by Unicode bidirectional rules |
+| `src/main/protocol.js` | Serving the page on app://office, and documents by token only |
+| `src/renderer/shell.js` | The home grid, the shared tool screen, settings, the workflow builder |
+| `src/renderer/panels.js` | Each tool's options and previews |
+| `src/renderer/pagegrid.js`, `pageeditor.js` | The page grid and the page editor |
 
 ## Things that cost real time
 
@@ -252,9 +342,30 @@ window title, in the app header, and in the installer's file name.
   reason the templates carry no `@page { margin }` rule, because it would override the margins
   the engine is given.
 
+## Things that cost real time, in the suite
+
+- **pdf-lib keeps every object it read.** Removing a page and saving leaves the page,
+  its fonts and its text in the file, unreferenced and invisible. Redaction therefore
+  builds a new document and has Ghostscript write only what is drawn.
+- **qpdf's `--remove-unreferenced-resources` does nothing** unless pages are being selected
+  with `--pages`. A test that hides content in inherited resources is what showed it.
+- **A top-level `const api` in a page script collides with `window.api`** from the preload
+  bridge, and the whole script silently fails to load. Shared scripts declare nothing at
+  the top level.
+- **pdf.js gives a Latin run inside a Hebrew line in visual order**, so a sentence's full
+  stop arrives glued to the front of an English word, and a date split into two runs comes
+  back scrambled. `text.js` orders runs and punctuation by the Unicode bidirectional rules.
+- **pdf.js 6 needs a newer Chromium than Electron 33 has** (`Uint8Array.toHex`); 4.10 is
+  pinned.
+- **Ghostscript turns pure junk into a blank page and reports success**, and qpdf writes a
+  cut-off file back without its catalogue. Results are accepted only when a strict reader
+  opens them with the expected pages.
+
 ## Licence
 
-The code is MIT (see [LICENSE](LICENSE)).
+The code is MIT (see [LICENSE](LICENSE)). The engines it ships or uses are listed with their
+licences under [The engines](#the-engines); `assets/tessdata/` and `assets/pdfa/` say where
+their files come from.
 
 `assets/fonts/` contains the David typeface from the Culmus project, under GPL v2 with
 the font exception: embedding it in a document does not place that document under the

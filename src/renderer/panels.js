@@ -2195,6 +2195,61 @@ const panels = {
     blocked: () => null,
   },
 
+  // The panel every saved workflow's tile opens with.
+  __workflow: {
+    defaults: () => ({ steps: [], name: '', secrets: {} }),
+    render(container, view) {
+      const meta = window.shell.view.tools.find((t) => t.id === window.shell.view.toolId);
+      const wf = meta && meta.workflow;
+      if (!wf) return;
+      view.set('steps', wf.steps);
+      view.set('name', wf.name);
+      if (!view.options.secrets) view.set('secrets', {});
+      const box = ui.section(container, 'השלבים', 'כל קובץ עובר את השלבים לפי הסדר. רק התוצאה האחרונה נשמרת, ליד הקובץ המקורי.');
+      const list = document.createElement('ol');
+      list.className = 'wf-summary';
+      for (const step of wf.steps) {
+        const t = window.shell.view.tools.find((x) => x.id === step.toolId);
+        const li = document.createElement('li');
+        li.textContent = t ? t.name : step.toolId;
+        list.append(li);
+      }
+      box.append(list);
+      // Passwords for steps that need one, entered now and never saved.
+      wf.steps.forEach((step, k) => {
+        if (step.toolId !== 'protect' && step.toolId !== 'unlock') return;
+        const s = ui.section(container, step.toolId === 'protect' ? `סיסמה להגנה (שלב ${k + 1})` : `סיסמת הקבצים (שלב ${k + 1})`);
+        const set = (key, v) => {
+          const all = { ...(view.options.secrets || {}) };
+          all[k] = { ...(all[k] || {}), [key]: v };
+          view.set('secrets', all);
+        };
+        ui.password(s, { label: 'סיסמה', value: '', onInput: (v) => set('password', v) });
+        if (step.toolId === 'protect') ui.password(s, { label: 'שוב, לאימות', value: '', onInput: (v) => set('passwordConfirm', v) });
+      });
+      const row = ui.row(ui.section(container));
+      ui.button(row, { label: 'עריכת התהליך', onClick: () => window.shell.openBuilder(wf) });
+      ui.button(row, { label: 'מחיקה', kind: 'ghost', onClick: async () => {
+        if (!window.confirm(`למחוק את התהליך "${wf.name}"? קבצים שכבר נוצרו בו לא יימחקו.`)) return;
+        await window.api.workflowsRemove(wf.id);
+        await window.shell.refreshTools();
+        window.shell.goHome();
+      } });
+    },
+    blocked(view) {
+      const steps = view.options.steps || [];
+      for (const [k, step] of steps.entries()) {
+        const sec = (view.options.secrets || {})[k] || {};
+        if (step.toolId === 'protect') {
+          if (!sec.password) return `כתוב את הסיסמה להגנה (שלב ${k + 1}).`;
+          if (sec.password !== sec.passwordConfirm) return `הסיסמאות של שלב ${k + 1} לא זהות.`;
+        }
+      }
+      if (steps[0] && steps[0].toolId === 'merge' && view.files.length < 2) return 'התהליך מתחיל באיחוד: הוסף לפחות שני קבצים.';
+      return null;
+    },
+  },
+
   repair: {
     defaults: () => ({}),
     render(container) {

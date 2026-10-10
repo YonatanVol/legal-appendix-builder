@@ -64,7 +64,7 @@ const TOOLS = [
 ];
 
 // Tools with their own screen rather than the shared one, once that screen exists.
-const SCREENS_BUILT = new Set(['appendix']);
+const SCREENS_BUILT = new Set(['appendix', 'workflow']);
 
 const modules = new Map();
 
@@ -87,6 +87,10 @@ function get(id) {
 
 /** Runnable tool: metadata plus its run(). Null when the module is not there yet. */
 function runnable(id) {
+  // A saved workflow runs through the workflow runner; its steps arrive in the options.
+  if (/^wf:[0-9a-f]+$/.test(String(id))) {
+    return { id, name: 'תהליך עבודה', accepts: PDF, multiple: true, run: require('./workflow').run };
+  }
   const meta = get(id);
   if (!meta) return null;
   const mod = implementation(id);
@@ -115,6 +119,28 @@ async function list(env = {}) {
       reason = status.reason || '';
     }
     result.push({ ...meta, available, reason });
+  }
+  // Each saved workflow is a tile of its own, beside "new workflow".
+  let saved = [];
+  try {
+    saved = await require('../workflows').list();
+  } catch {
+    saved = [];
+  }
+  for (const w of saved) {
+    const names = w.steps.map((s) => (get(s.toolId) || {}).name || s.toolId);
+    result.push({
+      id: `wf:${w.id}`,
+      group: 'workflows',
+      name: w.name,
+      description: names.join(' ← '),
+      accepts: PDF,
+      multiple: true,
+      icon: 'workflow',
+      available: true,
+      reason: '',
+      workflow: { id: w.id, name: w.name, steps: w.steps },
+    });
   }
   return result;
 }

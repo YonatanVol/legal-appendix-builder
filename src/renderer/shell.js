@@ -86,6 +86,8 @@ const shell = (() => {
   }
 
   const tool = (id) => view.tools.find((t) => t.id === id) || null;
+  // A saved workflow's tile shares one panel; every other tool has its own.
+  const panelFor = (id) => window.panels[id] || (String(id).startsWith('wf:') ? window.panels.__workflow : null);
 
   // The file dialog, replaceable in tests: a real dialog would open on screen and wait.
   let picker = (spec) => window.api.pickFiles(spec);
@@ -177,9 +179,13 @@ const shell = (() => {
       show('appendix');
       return;
     }
+    if (t.screen === 'workflow') {
+      openBuilder(null);
+      return;
+    }
 
     view.toolId = id;
-    const panel = window.panels[id];
+    const panel = panelFor(id);
     let state = view.perTool.get(id);
     if (!state) {
       state = { files: [], options: panel ? panel.defaults() : {} };
@@ -429,7 +435,7 @@ const shell = (() => {
     const host = $('tool-options');
     host.replaceChildren();
     $('tool-pages').replaceChildren();
-    const panel = window.panels[view.toolId];
+    const panel = panelFor(view.toolId);
     currentPanelView = panelView();
     if (panel) panel.render(host, currentPanelView);
     updateRun();
@@ -591,11 +597,11 @@ const shell = (() => {
     const bad = state.files.find((f) => f.error && !(f.encrypted && t.acceptsEncrypted));
     if (bad) return `${bad.error} הסר אותו מהרשימה כדי להמשיך.`;
     if (t.min && state.files.length < t.min) {
-      const panel = window.panels[view.toolId];
+      const panel = panelFor(view.toolId);
       const said = panel && panel.blocked && panel.blocked(panelView());
       return said || `נדרשים לפחות ${t.min} קבצים.`;
     }
-    const panel = window.panels[view.toolId];
+    const panel = panelFor(view.toolId);
     return (panel && panel.blocked && panel.blocked(panelView())) || null;
   }
 
@@ -635,7 +641,7 @@ const shell = (() => {
     updateRun();
     if (typeof updateRestartButton === 'function') updateRestartButton();
 
-    const panel = window.panels[t.id];
+    const panel = panelFor(t.id);
     const inputs = panel && panel.inputs ? panel.inputs(panelView()) : state.files.map((f) => f.path);
     const response = await window.api.startJob({
       toolId: t.id,
@@ -796,7 +802,7 @@ const shell = (() => {
         e.preventDefault();
         return;
       }
-      const panel = view.screen === 'tool' ? window.panels[view.toolId] : null;
+      const panel = view.screen === 'tool' ? panelFor(view.toolId) : null;
       if (panel && panel.onEscape && currentPanelView && panel.onEscape(currentPanelView)) {
         e.preventDefault();
         return;
@@ -832,6 +838,147 @@ const shell = (() => {
 
   $('nav-back').addEventListener('click', goHome);
   $('nav-settings').addEventListener('click', openSettings);
+
+  /* ---------------- workflow builder ---------------- */
+
+  const builder = { id: null, steps: [] };
+
+  /** Build a new workflow, or edit a saved one (`saved` is its tile's workflow). */
+  async function openBuilder(saved) {
+    if (view.job) return;
+    builder.id = saved ? saved.id : null;
+    builder.steps = saved ? saved.steps.map((s) => ({ toolId: s.toolId, options: JSON.parse(JSON.stringify(s.options || {})) })) : [];
+    $('wf-name').value = saved ? saved.name : '';
+    $('wf-error').textContent = '';
+    setHeader(saved ? `עריכת ${saved.name}` : 'תהליך עבודה חדש', 'כמה כלים ברצף, לפעולה אחת שחוזרת על עצמה. התוצאה של כל שלב עוברת לשלב הבא.');
+    show('workflow');
+    const r = await window.api.workflowsSteps();
+    builder.allowed = r.ok ? [...r.steps, ...r.last] : [];
+    builder.last = r.ok ? r.last : [];
+    const pickTool = $('wf-add-tool');
+    pickTool.replaceChildren();
+    for (const id of builder.allowed) {
+      const t = tool(id);
+      if (!t) continue;
+      const opt = document.createElement('option');
+      opt.value = id;
+      opt.textContent = t.name + (builder.last.includes(id) ? ' (שלב אחרון)' : '');
+      pickTool.append(opt);
+    }
+    renderBuilder();
+    $('wf-name').focus();
+  }
+
+  function renderBuilder() {
+    const host = $('wf-steps');
+    host.replaceChildren();
+    $('wf-empty').classList.toggle('hidden', builder.steps.length > 0);
+    builder.steps.forEach((step, i) => {
+      const t = tool(step.toolId);
+      const card = document.createElement('section');
+      card.className = 'wf-step';
+      const head = document.createElement('div');
+      head.className = 'wf-step-head';
+      const num = document.createElement('span');
+      num.className = 'step';
+      num.textContent = String(i + 1);
+      const name = document.createElement('h3');
+      name.textContent = t ? t.name : step.toolId;
+      head.append(num, window.icons.toolIcon(t || { id: 'file', icon: 'file' }, 26), name);
+      const buttons = document.createElement('div');
+      buttons.className = 'row-buttons';
+      buttons.append(
+        iconButton('▲', 'הזז למעלה', i === 0, () => { builder.steps.splice(i - 1, 0, builder.steps.splice(i, 1)[0]); renderBuilder(); }),
+        iconButton('▼', 'הזז למטה', i === builder.steps.length - 1, () => { builder.steps.splice(i + 1, 0, builder.steps.splice(i, 1)[0]); renderBuilder(); }),
+        iconButton('✕', 'הסר שלב', false, () => { builder.steps.splice(i, 1); renderBuilder(); }, 'remove'),
+      );
+      head.append(buttons);
+      const body = document.createElement('div');
+      body.className = 'wf-step-body tool-options';
+      card.append(head, body);
+      host.append(card);
+      renderStepOptions(step, body);
+    });
+    const why = problemOf(builder.steps);
+    $('wf-error').textContent = builder.steps.length ? why || '' : '';
+  }
+
+  /** A step's options, drawn by the tool's own panel, without files or passwords. */
+  function renderStepOptions(step, body) {
+    body.replaceChildren();
+    const panel = panelFor(step.toolId);
+    if (!panel) return;
+    if (!step.options || !Object.keys(step.options).length) step.options = panel.defaults();
+    const stepView = {
+      files: [],
+      options: step.options,
+      set(key, value) { step.options[key] = value; },
+      rerender: () => renderStepOptions(step, body),
+      pagesHost: document.createElement('div'),
+      pageThumb: () => Promise.resolve(null),
+      thumbs: () => new Promise(() => {}),
+      error: (message) => { $('wf-error').textContent = message; },
+      clearError: () => { $('wf-error').textContent = ''; },
+      busy: () => false,
+      describe: async () => [],
+      pick: (spec) => picker(spec),
+      sortFiles: () => {},
+      run: () => {},
+    };
+    panel.render(body, stepView);
+    // Passwords are asked for each time the workflow runs; they are never saved.
+    body.querySelectorAll('input[type=password]').forEach((el) => {
+      const field = el.closest('.field');
+      if (field) field.remove();
+    });
+    if (/password/i.test(JSON.stringify(panel.defaults()))) {
+      const note = document.createElement('p');
+      note.className = 'opt-preview muted';
+      note.textContent = 'הסיסמה לא נשמרת בתהליך: היא תתבקש בכל הפעלה.';
+      body.prepend(note);
+    }
+  }
+
+  function problemOf(steps) {
+    if (!steps.length) return 'הוסף לפחות שלב אחד.';
+    for (let i = 0; i < steps.length; i++) {
+      if (builder.last.includes(steps[i].toolId) && i !== steps.length - 1) return 'פיצול, או המרה לקובץ שאינו PDF, יכולים להיות רק השלב האחרון.';
+      if (steps[i].toolId === 'merge' && i !== 0) return 'איחוד יכול להיות רק השלב הראשון.';
+      if (steps[i].toolId === 'protect' && i !== steps.length - 1) return 'הגנה בסיסמה יכולה להיות רק השלב האחרון: אחריה אף כלי לא יוכל לפתוח את הקובץ.';
+      if (steps[i].toolId === 'unlock' && i !== 0) return 'הסרת סיסמה יכולה להיות רק השלב הראשון.';
+      if (steps[i].toolId === 'protect' && i !== steps.length - 1) return 'הגנה בסיסמה יכולה להיות רק השלב האחרון: אחריה אף כלי לא יוכל לפתוח את הקובץ.';
+      if (steps[i].toolId === 'unlock' && i !== 0) return 'הסרת סיסמה יכולה להיות רק השלב הראשון.';
+    }
+    return null;
+  }
+
+  $('wf-add').addEventListener('click', () => {
+    const id = $('wf-add-tool').value;
+    const panel = panelFor(id);
+    builder.steps.push({ toolId: id, options: panel ? panel.defaults() : {} });
+    renderBuilder();
+  });
+  $('wf-save').addEventListener('click', async () => {
+    const name = $('wf-name').value.trim();
+    if (!name) {
+      $('wf-error').textContent = 'תן שם לתהליך.';
+      $('wf-name').focus();
+      return;
+    }
+    const why = problemOf(builder.steps);
+    if (why) {
+      $('wf-error').textContent = why;
+      return;
+    }
+    const r = await window.api.workflowsSave({ id: builder.id, name, steps: builder.steps });
+    if (!r.ok) {
+      $('wf-error').textContent = r.error;
+      return;
+    }
+    await refreshTools();
+    open(`wf:${r.workflow.id}`);
+  });
+  $('wf-cancel').addEventListener('click', () => goHome());
 
   /* ---------------- settings ---------------- */
 
@@ -935,6 +1082,7 @@ const shell = (() => {
     open,
     goHome,
     openSettings,
+    openBuilder,
     refreshTools,
     show,
     setBackBlocked,

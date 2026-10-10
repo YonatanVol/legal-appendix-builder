@@ -13,6 +13,26 @@ Decisions taken with Yonatan on 2026-10-07, not to be reopened:
 | Deployment | One self-updating Windows app per PC, like today. No server. |
 | Scope | Every iLovePDF tool except the three crossed out: JPG to PDF, HTML to PDF, Compare PDF. |
 
+## Status, 2026-10-10
+
+All eight phases are built, tested and reviewed, as version 2.0.0 on this branch. Where the
+build differs from the plan below, it is because the plan's version did not hold up:
+
+- **Crop's "find margins"** reads the drawn pages in the window instead of asking
+  Ghostscript, which is instant and needs no file round trip.
+- **Scan to PDF** applies the phone's orientation, straightens up to six degrees, and sets
+  contrast and black and white. Cropping a photo to the page's corners stays in the
+  document scanner app, as the plan said.
+- **Redact** rebuilds the whole document through Ghostscript after the marked pages become
+  pictures. The plan's per-page approach left recoverable content in the file; two rounds of
+  review found the ways.
+- **Sign** refuses a file that is already signed digitally, because rewriting it would break
+  that signature; Acrobat Reader appends instead, and the message says so.
+- **Workflows**: Merge and Unlock only first; Protect, Split and conversions only last.
+- **Not verified on real hardware yet:** Microsoft Office conversions and the office scanner
+  (GitHub's Windows machines have neither), and Summarize and Translate with a real key
+  (tested against a local stand-in of the API).
+
 ## In plain words
 
 Today each person opens a website, uploads a client's document to someone else's server,

@@ -1,5 +1,5 @@
 appId: com.rotem.office.appendixbuilder
-productName: בונה תיקי נספחים
+productName: כלי המשרד
 copyright: ""
 
 directories:
@@ -72,6 +72,8 @@ nsis:
   runAfterFinish: true
   createDesktopShortcut: true
   createStartMenuShortcut: true
-  shortcutName: בונה תיקי נספחים
+  shortcutName: כלי המשרד
+  # Removes the shortcuts earlier versions made under the old name (assets/installer.nsh).
+  include: assets/installer.nsh
   deleteAppDataOnUninstall: false   # keep her history if she reinstalls
   artifactName: "AppendixBuilder-Setup-${version}.${ext}"

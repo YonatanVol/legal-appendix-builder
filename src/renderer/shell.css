@@ -564,3 +564,16 @@ button.small { padding: 4px 10px; font-size: 12.5px; }
 .settings-status.on { background: #e8f5ee; color: var(--ok); }
 .opt-preview.good { color: var(--ok); }
 .cloud-notice { padding: 10px 12px; border-radius: 10px; background: #efeafd; color: #3f2a8c; font-size: 13px; }
+
+/* ---------------- workflows ---------------- */
+body[data-screen="workflow"] main { max-width: 860px; }
+.wf-card { display: flex; flex-direction: column; gap: 14px; }
+.wf-card .field input { font: inherit; font-size: 15px; padding: 9px 11px; border: 1px solid var(--line); border-radius: 8px; }
+.wf-steps { display: flex; flex-direction: column; gap: 10px; }
+.wf-step { border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; background: #fafbfc; }
+.wf-step-head { display: flex; align-items: center; gap: 10px; }
+.wf-step-head h3 { margin: 0; font-size: 14.5px; flex: 1; }
+.wf-step-body { margin-top: 10px; }
+.wf-step-body .opt-title { font-size: 12.5px; }
+.wf-add-row select { font: inherit; padding: 7px 9px; border: 1px solid var(--line); border-radius: 8px; min-width: 240px; }
+.wf-summary { margin: 0; padding-inline-start: 20px; display: flex; flex-direction: column; gap: 4px; }

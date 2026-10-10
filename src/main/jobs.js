@@ -154,6 +154,9 @@ async function removeAll(paths) {
 function describe(err) {
   const message = err && err.message ? err.message : String(err);
   if (/[֐-׿]/.test(message)) return message;
+  if ((err && err.name === 'PasswordException') || /No password given|Incorrect Password/i.test(message)) {
+    return 'הקובץ מוגן בסיסמה, ולכן אי אפשר לעבוד עליו. הסר אותה בכלי "הסרת סיסמה" ונסה שוב.';
+  }
   if (/ENOENT/.test(message)) return 'הקובץ לא נמצא. ייתכן שהוזז או נמחק.';
   if (/EACCES|EPERM|EBUSY/.test(message)) {
     return 'אין הרשאה לכתוב לתיקייה הזו, או שהקובץ פתוח בתוכנה אחרת. סגור אותו ונסה שוב.';

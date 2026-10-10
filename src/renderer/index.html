@@ -108,6 +108,25 @@
     </div>
   </section>
 
+  <!-- ============ workflow builder ============ -->
+  <section class="screen hidden" id="screen-workflow" data-screen="workflow">
+    <section class="card wf-card">
+      <label class="field"><span class="field-label">שם התהליך</span>
+        <input type="text" id="wf-name" maxlength="60" placeholder="למשל: כיווץ, מספור והגנה לשליחה ללקוח"></label>
+      <p class="opt-hint hidden" id="wf-empty">הוסף שלבים לפי הסדר שבו הם ירוצו. כל שלב מקבל את הקובץ שהשלב שלפניו יצר.</p>
+      <div class="wf-steps" id="wf-steps"></div>
+      <div class="opt-row wf-add-row">
+        <select id="wf-add-tool"></select>
+        <button type="button" class="secondary" id="wf-add">הוספת שלב</button>
+      </div>
+      <p class="opt-preview bad" id="wf-error"></p>
+      <div class="opt-row">
+        <button type="button" class="primary" id="wf-save">שמירת התהליך</button>
+        <button type="button" class="ghost" id="wf-cancel">ביטול</button>
+      </div>
+    </section>
+  </section>
+
   <!-- ============ settings ============ -->
   <section class="screen hidden" id="screen-settings" data-screen="settings">
     <section class="card settings-card">

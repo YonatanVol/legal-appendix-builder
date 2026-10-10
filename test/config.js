@@ -115,6 +115,13 @@ check('releases are published only from a version tag',
 check('  and only after the Windows install and launch checks pass',
   [].concat(release.needs || []).includes('build-and-verify'));
 
+/* ---- the name ---- */
+console.log('\nthe name');
+check('the app is named "כלי המשרד" on its shortcuts', builder.productName === 'כלי המשרד' && nsis.shortcutName === 'כלי המשרד');
+const nsh = fs.existsSync(path.join(ROOT, nsis.include || '')) ? fs.readFileSync(path.join(ROOT, nsis.include), 'utf8') : '';
+check('  and installing over an earlier version removes the shortcuts made under the old name',
+  nsh.charCodeAt(0) === 0xfeff && /Delete "\$DESKTOP\\בונה תיקי נספחים\.lnk"/.test(nsh) && /Delete "\$SMPROGRAMS\\בונה תיקי נספחים\.lnk"/.test(nsh));
+
 /* ---- the programs shipped beside the app ---- */
 console.log('\nqpdf and Ghostscript');
 const { PACKAGES } = require('../scripts/fetch-vendor');
