@@ -3,14 +3,18 @@
 /*
  * The options side of each tool screen.
  *
- * A panel is { defaults(), render(container, view), blocked(view) }. `view` carries
- * the files and the options object, and `view.set(key, value)` changes an option and
- * re-checks the run button. Options are plain data on purpose: a saved workflow and a
- * repeated run both replay exactly this object.
+ * A panel is { defaults(), render(container, view), blocked(view), inputs?(view),
+ * onEscape?(view) }. `view` carries the files and the options object, and
+ * `view.set(key, value)` changes an option and re-checks the run button. Options are
+ * plain data on purpose: a repeated run replays exactly this object.
  *
- * Panels build their DOM with the helpers below so every tool's controls look and
- * behave alike.
+ * Panels build their controls with the helpers in `ui` so every tool looks and
+ * behaves alike, and show what will happen before the button is pressed: Split
+ * labels each page with the file it will land in, Page numbers and Watermark draw
+ * the result over the real first page.
  */
+
+const R = () => window.pageRanges;
 
 const ui = {
   section(container, title, hint) {
@@ -32,7 +36,7 @@ const ui = {
     return box;
   },
 
-  text(box, { label, value, placeholder, onInput }) {
+  field(box, label) {
     const wrap = document.createElement('label');
     wrap.className = 'field';
     if (label) {
@@ -41,18 +45,82 @@ const ui = {
       span.textContent = label;
       wrap.append(span);
     }
+    box.append(wrap);
+    return wrap;
+  },
+
+  text(box, { label, value, placeholder, onInput, dir }) {
+    const wrap = ui.field(box, label);
     const input = document.createElement('input');
     input.type = 'text';
     input.value = value || '';
     input.placeholder = placeholder || '';
+    if (dir) input.dir = dir;
     input.addEventListener('input', () => onInput(input.value));
     wrap.append(input);
+    return input;
+  },
+
+  number(box, { label, value, min, max, step = 1, onInput, suffix }) {
+    const wrap = ui.field(box, label);
+    const row = document.createElement('span');
+    row.className = 'number-row';
+    const input = document.createElement('input');
+    input.type = 'number';
+    input.value = value;
+    if (min !== undefined) input.min = min;
+    if (max !== undefined) input.max = max;
+    input.step = step;
+    input.addEventListener('input', () => onInput(input.value === '' ? '' : Number(input.value)));
+    row.append(input);
+    if (suffix) {
+      const s = document.createElement('span');
+      s.className = 'suffix';
+      s.textContent = suffix;
+      row.append(s);
+    }
+    wrap.append(row);
+    return input;
+  },
+
+  slider(box, { label, value, min, max, step = 1, onInput, format = (v) => String(v) }) {
+    const wrap = ui.field(box, label);
+    const row = document.createElement('span');
+    row.className = 'slider-row';
+    const input = document.createElement('input');
+    input.type = 'range';
+    input.min = min;
+    input.max = max;
+    input.step = step;
+    input.value = value;
+    const out = document.createElement('output');
+    out.textContent = format(Number(value));
+    input.addEventListener('input', () => {
+      out.textContent = format(Number(input.value));
+      onInput(Number(input.value));
+    });
+    row.append(input, out);
+    wrap.append(row);
+    return input;
+  },
+
+  check(box, { label, value, onChange, hint }) {
+    const wrap = document.createElement('label');
+    wrap.className = 'check';
+    const input = document.createElement('input');
+    input.type = 'checkbox';
+    input.checked = !!value;
+    input.addEventListener('change', () => onChange(input.checked));
+    const span = document.createElement('span');
+    span.textContent = label;
+    wrap.append(input, span);
+    if (hint) wrap.title = hint;
     box.append(wrap);
     return input;
   },
 
   /** A row of mutually exclusive choices, shown as a segmented control. */
-  choice(box, { label, value, choices, onChange }) {
+  choice(box, { label, value, choices, onChange, vertical = false }) {
     const wrap = document.createElement('div');
     wrap.className = 'field';
     if (label) {
@@ -62,12 +130,13 @@ const ui = {
       wrap.append(span);
     }
     const row = document.createElement('div');
-    row.className = 'segmented';
+    row.className = vertical ? 'segmented vertical' : 'segmented';
     row.setAttribute('role', 'radiogroup');
     for (const c of choices) {
       const b = document.createElement('button');
       b.type = 'button';
       b.className = 'seg' + (c.value === value ? ' on' : '');
+      b.dataset.value = String(c.value);
       b.setAttribute('role', 'radio');
       b.setAttribute('aria-checked', String(c.value === value));
       b.textContent = c.label;
@@ -86,16 +155,177 @@ const ui = {
     return row;
   },
 
-  button(box, { label, onClick, kind = 'secondary' }) {
+  button(box, { label, onClick, kind = 'secondary', title, disabled = false }) {
     const b = document.createElement('button');
     b.type = 'button';
     b.className = kind;
     b.textContent = label;
+    if (title) b.title = title;
+    b.disabled = disabled;
     b.addEventListener('click', onClick);
     box.append(b);
     return b;
   },
+
+  row(box) {
+    const row = document.createElement('div');
+    row.className = 'opt-row';
+    box.append(row);
+    return row;
+  },
+
+  note(box, text, kind = '') {
+    const p = document.createElement('p');
+    p.className = `opt-preview ${kind}`.trim();
+    p.textContent = text;
+    box.append(p);
+    return p;
+  },
+
+  /**
+   * Where on the page: a small page with a button at each spot. Laid out left to right
+   * so "right" is on the right, whatever the page direction.
+   */
+  position(box, { label, value, rows, onChange, extra }) {
+    const wrap = document.createElement('div');
+    wrap.className = 'field';
+    if (label) {
+      const span = document.createElement('span');
+      span.className = 'field-label';
+      span.textContent = label;
+      wrap.append(span);
+    }
+    const NAMES = {
+      top: 'למעלה', middle: 'באמצע', bottom: 'למטה',
+      left: 'משמאל', center: 'במרכז', right: 'מימין',
+    };
+    const page = document.createElement('div');
+    page.className = `pos-picker rows-${rows.length}`;
+    page.setAttribute('role', 'radiogroup');
+    const buttons = [];
+    for (const vert of rows) {
+      for (const horiz of ['left', 'center', 'right']) {
+        const id = `${vert}-${horiz}`;
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'pos' + (id === value ? ' on' : '');
+        b.dataset.value = id;
+        const name = `${NAMES[vert]} ${NAMES[horiz]}`;
+        b.title = name;
+        b.setAttribute('aria-label', name);
+        b.setAttribute('role', 'radio');
+        b.setAttribute('aria-checked', String(id === value));
+        b.addEventListener('click', () => {
+          buttons.forEach((x) => {
+            x.classList.toggle('on', x === b);
+            x.setAttribute('aria-checked', String(x === b));
+          });
+          onChange(id);
+        });
+        buttons.push(b);
+        page.append(b);
+      }
+    }
+    wrap.append(page);
+    if (extra) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'seg-single' + (value === extra.value ? ' on' : '');
+      b.textContent = extra.label;
+      b.addEventListener('click', () => {
+        buttons.forEach((x) => x.classList.remove('on'));
+        b.classList.add('on');
+        onChange(extra.value);
+      });
+      buttons.push(b);
+      wrap.append(b);
+    }
+    box.append(wrap);
+    return page;
+  },
+
+  swatches(box, { label, value, colors, onChange }) {
+    const wrap = ui.field(box, label);
+    const row = document.createElement('span');
+    row.className = 'swatches';
+    for (const c of colors) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'swatch' + (c.value === value ? ' on' : '');
+      b.style.background = c.value;
+      b.title = c.label;
+      b.setAttribute('aria-label', c.label);
+      b.addEventListener('click', () => {
+        row.querySelectorAll('.swatch').forEach((x) => x.classList.toggle('on', x === b));
+        onChange(c.value);
+      });
+      row.append(b);
+    }
+    wrap.append(row);
+    return row;
+  },
 };
+
+/* ---------------- shared pieces ---------------- */
+
+/** Per-tool state that is not an option: grids, undo history, measured sizes. */
+const mem = {};
+
+const firstFile = (view) => view.files.find((f) => !f.error) || null;
+
+function pagesOf(file) {
+  return Array.from({ length: file.pageCount }, (_, i) => ({ key: `0:${i}`, token: file.token, index: i, turn: 0 }));
+}
+
+/** Only sentences written for people reach the screen; anything else is a bug. */
+function hebrewOr(err, fallback = 'משהו השתבש בהכנת התצוגה. אפשר עדיין להפעיל את הכלי.') {
+  const message = err && err.message ? err.message : String(err);
+  if (/[\u0590-\u05FF]/.test(message)) return message;
+  console.error('panel:', message);
+  return fallback;
+}
+
+function rangesError(text, total) {
+  try {
+    R().parseRanges(text, total);
+    return null;
+  } catch (err) {
+    return hebrewOr(err, 'לא ניתן לקרוא את רשימת העמודים.');
+  }
+}
+
+const pagesWord = (n) => (n === 1 ? 'עמוד אחד' : `${n} עמודים`);
+const filesWord = (n) => (n === 1 ? 'קובץ אחד' : `${n} קבצים`);
+
+/** Shown page sizes in points, from pdf.js, once per file. */
+async function shownSizes(view, file) {
+  const key = `sizes:${file.token}`;
+  if (!mem[key]) mem[key] = view.thumbs().then((t) => t.pageSizes(file.token)).catch(() => []);
+  return mem[key];
+}
+
+/**
+ * A page with something drawn over it, for previews. Returns the stage element; the
+ * caller positions overlays inside it in fractions of the page.
+ */
+function previewPage(host, view, file, index, width) {
+  const stage = document.createElement('div');
+  stage.className = 'preview-stage loading';
+  stage.style.width = `${width}px`;
+  host.append(stage);
+  view.pageThumb(file.token, index, width).then((url) => {
+    stage.classList.remove('loading');
+    if (!url) return;
+    const img = new Image();
+    img.src = url;
+    img.alt = '';
+    img.draggable = false;
+    stage.prepend(img);
+  });
+  return stage;
+}
+
+/* ---------------- the panels ---------------- */
 
 const panels = {
   merge: {
@@ -103,9 +333,7 @@ const panels = {
     render(container, view) {
       const order = ui.section(container, 'סדר הקבצים',
         'הקבצים יאוחדו בסדר שברשימה. אפשר לגרור שורה כדי להזיז אותה.');
-      const row = document.createElement('div');
-      row.className = 'opt-row';
-      order.append(row);
+      const row = ui.row(order);
       ui.button(row, { label: 'מיון לפי שם', onClick: () => view.sortFiles('name') });
       ui.button(row, { label: 'היפוך הסדר', onClick: () => view.sortFiles('reverse') });
 
@@ -122,7 +350,842 @@ const panels = {
       return null;
     },
   },
+
+  split: {
+    defaults: () => ({ mode: 'ranges', ranges: '', mergeRanges: false, every: 2, pages: '', extractEach: false, maxMb: 5 }),
+    render(container, view) {
+      const o = view.options;
+      const file = firstFile(view);
+      const total = file ? file.pageCount : 0;
+
+      const how = ui.section(container, 'איך לפצל');
+      ui.choice(how, {
+        value: o.mode,
+        vertical: true,
+        choices: [
+          { value: 'ranges', label: 'לפי טווחי עמודים' },
+          { value: 'every', label: 'כל כמה עמודים' },
+          { value: 'extract', label: 'חילוץ עמודים נבחרים' },
+          { value: 'size', label: 'לפי גודל קובץ' },
+        ],
+        onChange: (v) => {
+          view.set('mode', v);
+          view.rerender();
+        },
+      });
+
+      const box = ui.section(container);
+      let preview;
+      let grid = null;
+
+      const refresh = () => {
+        if (!file) {
+          preview.textContent = 'בחר קובץ כדי לראות איך הוא יתחלק.';
+          return;
+        }
+        const plan = splitPlan(o, total);
+        preview.textContent = plan.error || plan.text;
+        preview.classList.toggle('bad', !!plan.error);
+        if (grid && o.mode !== 'extract') grid.setPages((plan.pages || pagesOf(file)).map((p) => ({ ...p, token: file.token })));
+      };
+
+      if (o.mode === 'ranges') {
+        ui.text(box, {
+          label: 'טווחים, מופרדים בפסיק',
+          value: o.ranges,
+          placeholder: total ? `למשל: 1-3, 4-${Math.max(4, Math.min(total, 9))}, ${Math.min(total, 10)}-` : '1-3, 4-6, 7-',
+          dir: 'ltr',
+          onInput: (v) => {
+            view.set('ranges', v);
+            refresh();
+          },
+        });
+        ui.check(box, { label: 'כל הטווחים בקובץ אחד', value: o.mergeRanges, onChange: (v) => { view.set('mergeRanges', v); refresh(); } });
+      } else if (o.mode === 'every') {
+        ui.number(box, { label: 'קובץ חדש כל', value: o.every, min: 1, suffix: 'עמודים', onInput: (v) => { view.set('every', v); refresh(); } });
+      } else if (o.mode === 'extract') {
+        const input = ui.text(box, {
+          label: 'העמודים לחילוץ',
+          value: o.pages,
+          placeholder: 'לחץ על עמודים, או כתוב למשל 2, 5-7',
+          dir: 'ltr',
+          onInput: (v) => {
+            view.set('pages', v);
+            if (grid && file && !rangesError(v, total)) {
+              grid.setSelection(R().indicesOf(R().parseRanges(v, total)).map((i) => `0:${i}`));
+            }
+            refresh();
+          },
+        });
+        mem.splitInput = input;
+        ui.check(box, { label: 'כל עמוד כקובץ נפרד', value: o.extractEach, onChange: (v) => { view.set('extractEach', v); refresh(); } });
+      } else {
+        ui.number(box, { label: 'גודל מרבי לכל חלק', value: o.maxMb, min: 0.1, step: 0.5, suffix: 'MB', onInput: (v) => { view.set('maxMb', v); refresh(); } });
+        if (file) ui.note(box, `גודל הקובץ עכשיו: ${(file.size / 1024 / 1024).toFixed(1)} MB.`, 'muted');
+      }
+
+      preview = ui.note(box, '');
+
+      if (file && file.token) {
+        const selected = o.mode === 'extract' && o.pages && !rangesError(o.pages, total)
+          ? R().indicesOf(R().parseRanges(o.pages, total)).map((i) => `0:${i}`)
+          : [];
+        grid = new window.PageGrid(view.pagesHost, {
+          pages: pagesOf(file),
+          select: o.mode === 'extract',
+          selected,
+          thumb: view.pageThumb,
+          onSelect: (pages) => {
+            const text = R().rangesText(pages.map((p) => p.index));
+            view.set('pages', text);
+            if (mem.splitInput) mem.splitInput.value = text;
+            refresh();
+          },
+        });
+        mem.splitGrid = grid;
+      }
+      refresh();
+    },
+    blocked(view) {
+      const file = firstFile(view);
+      if (!file) return null;
+      return splitPlan(view.options, file.pageCount).error || null;
+    },
+    onEscape() {
+      return mem.splitGrid ? mem.splitGrid.clearSelection() : false;
+    },
+  },
+
+  organize: {
+    defaults: () => ({ pages: [], extra: [] }),
+    inputs(view) {
+      const file = firstFile(view);
+      return [file.path, ...(view.options.extra || [])];
+    },
+    render(container, view) {
+      const file = firstFile(view);
+      const help = ui.section(container, 'עבודה עם העמודים',
+        'לחיצה בוחרת עמוד, Ctrl מוסיף לבחירה ו-Shift בוחר טווח. גרירה מזיזה את העמודים הנבחרים. Delete מוחק, Ctrl+Z מבטל.');
+      if (!file || !file.token) return;
+
+      let st = mem.organize;
+      if (!st || st.forPath !== file.path) {
+        st = mem.organize = { forPath: file.path, seq: pagesOf(file).map((p) => ({ key: p.key, f: 0, p: p.index, r: 0 })), extra: [], undo: [], nextKey: 0 };
+        // A repeated run brings its sequence back.
+        if (Array.isArray(view.options.pages) && view.options.pages.length && !(view.options.extra || []).length) {
+          st.seq = view.options.pages.map((it, i) => ({ ...it, key: `r:${i}` }));
+        }
+      }
+
+      const sync = () => {
+        view.set('pages', st.seq.map(({ f, p, r, blank, w, h }) => (blank ? { blank: true, w, h } : { f, p, r })));
+        view.set('extra', st.extra.map((x) => x.path));
+      };
+      const tokenOf = (f) => (f === 0 ? file.token : st.extra[f - 1].token);
+      const toPages = () => st.seq.map((it) => (it.blank
+        ? { key: it.key, blank: true }
+        : { key: it.key, token: tokenOf(it.f), index: it.p, turn: it.r, label: it.f ? `מקובץ ${it.f + 1}` : '', tone: it.f }));
+      const save = () => {
+        st.undo.push(st.seq.map((x) => ({ ...x })));
+        if (st.undo.length > 100) st.undo.shift();
+      };
+      const apply = (next) => {
+        st.seq = next;
+        grid.setPages(toPages());
+        sync();
+        paint();
+      };
+
+      const actions = ui.section(container, 'פעולות על הבחירה');
+      const row1 = ui.row(actions);
+      const left = ui.button(row1, { label: '⟲ שמאלה', title: 'סיבוב 90 מעלות נגד כיוון השעון', onClick: () => turn(-1) });
+      const right = ui.button(row1, { label: '⟳ ימינה', title: 'סיבוב 90 מעלות עם כיוון השעון', onClick: () => turn(1) });
+      const del = ui.button(row1, { label: 'מחיקה', title: 'מחיקת העמודים הנבחרים (Delete)', onClick: () => grid.removeSelected() });
+      const selNote = ui.note(actions, '', 'muted');
+
+      const add = ui.section(container, 'הוספה');
+      const row2 = ui.row(add);
+      ui.button(row2, { label: 'עמוד ריק', title: 'אחרי העמוד הנבחר האחרון, או בסוף', onClick: () => insertBlank() });
+      ui.button(row2, { label: 'עמודים מקובץ אחר…', onClick: () => insertFile() });
+
+      const undoBox = ui.section(container);
+      const row3 = ui.row(undoBox);
+      const undo = ui.button(row3, { label: 'ביטול הפעולה האחרונה', kind: 'ghost', onClick: () => undoLast() });
+      ui.button(row3, { label: 'חזרה לסדר המקורי', kind: 'ghost', onClick: () => { save(); st.extra = []; apply(pagesOf(file).map((p) => ({ key: `o:${st.nextKey++}`, f: 0, p: p.index, r: 0 }))); } });
+      const count = ui.note(undoBox, '', 'muted');
+
+      const grid = new window.PageGrid(view.pagesHost, {
+        pages: toPages(),
+        reorder: true,
+        remove: true,
+        thumb: view.pageThumb,
+        onChange: (pages) => {
+          save();
+          const byKey = new Map(st.seq.map((x) => [x.key, x]));
+          st.seq = pages.map((p) => byKey.get(p.key));
+          sync();
+          paint();
+        },
+        onSelect: () => paint(),
+      });
+      mem.organizeGrid = grid;
+
+      function paint() {
+        const n = grid.selected.size;
+        for (const b of [left, right, del]) {
+          b.disabled = n === 0;
+          b.title = n === 0 ? 'בחר קודם עמודים' : b.title;
+        }
+        selNote.textContent = n ? `${pagesWord(n)} ${n === 1 ? 'נבחר' : 'נבחרו'}.` : 'לא נבחרו עמודים. לחץ על עמוד כדי לבחור.';
+        undo.disabled = st.undo.length === 0;
+        const removed = file.pageCount - st.seq.filter((x) => !x.blank && x.f === 0).length;
+        count.textContent = `${pagesWord(st.seq.length)} בקובץ החדש${removed > 0 ? `, ${removed === 1 ? 'עמוד אחד הוסר' : `${removed} עמודים הוסרו`}` : ''}.`;
+      }
+
+      function turn(dir) {
+        save();
+        const keys = grid.selected;
+        apply(st.seq.map((x) => (keys.has(x.key) && !x.blank ? { ...x, r: (((x.r || 0) + dir) % 4 + 4) % 4 } : x)));
+      }
+
+      function insertAt() {
+        const keys = grid.selected;
+        let at = st.seq.length;
+        st.seq.forEach((x, i) => { if (keys.has(x.key)) at = i + 1; });
+        return at;
+      }
+
+      async function insertBlank() {
+        save();
+        const sizes = await shownSizes(view, file);
+        const at = insertAt();
+        const ref = st.seq[Math.max(0, at - 1)];
+        const size = ref && !ref.blank && ref.f === 0 && sizes[ref.p] ? sizes[ref.p] : { width: 595.28, height: 841.89 };
+        const next = st.seq.slice();
+        const key = `b:${st.nextKey++}`;
+        next.splice(at, 0, { key, blank: true, w: size.width, h: size.height });
+        apply(next);
+        grid.setSelection([key]);
+      }
+
+      async function insertFile() {
+        const r = await view.pick({ extensions: ['pdf'], multiple: false, title: 'עמודים מקובץ אחר' });
+        if (!r.ok) return view.error(r.error);
+        if (r.cancelled || !r.files.length) return;
+        const other = r.files[0];
+        if (other.error) return view.error(other.error);
+        save();
+        st.extra.push({ path: other.path, token: other.token, name: other.name, pageCount: other.pageCount });
+        const f = st.extra.length;
+        const at = insertAt();
+        const added = Array.from({ length: other.pageCount }, (_, i) => ({ key: `x:${st.nextKey++}`, f, p: i, r: 0 }));
+        const next = st.seq.slice();
+        next.splice(at, 0, ...added);
+        apply(next);
+        grid.setSelection(added.map((a) => a.key));
+        paint();
+      }
+
+      function undoLast() {
+        const prev = st.undo.pop();
+        if (!prev) return;
+        st.seq = prev;
+        grid.setPages(toPages());
+        sync();
+        paint();
+      }
+      mem.organizeUndo = undoLast;
+
+      sync();
+      paint();
+    },
+    blocked(view) {
+      const st = mem.organize;
+      const file = firstFile(view);
+      if (!file || !st || st.forPath !== file.path) return null;
+      if (!st.seq.length) return 'לא נשאר אף עמוד. בטל את המחיקה (Ctrl+Z) או בחר קובץ אחר.';
+      const unchanged = st.seq.length === file.pageCount && st.seq.every((x, i) => !x.blank && x.f === 0 && x.p === i && !x.r);
+      if (unchanged) return 'עוד לא שונה דבר בסדר העמודים.';
+      return null;
+    },
+    onEscape() {
+      return mem.organizeGrid ? mem.organizeGrid.clearSelection() : false;
+    },
+  },
+
+  rotate: {
+    defaults: () => ({ angle: 90, pages: '' }),
+    render(container, view) {
+      const o = view.options;
+      const angle = ui.section(container, 'כיוון הסיבוב');
+      ui.choice(angle, {
+        value: o.angle,
+        choices: [
+          { value: 90, label: '⟳ 90° ימינה' },
+          { value: 180, label: '180°' },
+          { value: 270, label: '⟲ 90° שמאלה' },
+        ],
+        onChange: (v) => {
+          view.set('angle', v);
+          refresh();
+        },
+      });
+
+      const scope = ui.section(container, 'אילו עמודים');
+      const note = ui.note(scope, '');
+      const file = firstFile(view);
+      const single = view.files.length === 1 && file && file.token;
+      let grid = null;
+
+      function refresh() {
+        if (!single) {
+          view.set('pages', '');
+          note.textContent = view.files.length > 1
+            ? `כל העמודים ב-${filesWord(view.files.length)} יסובבו. לבחירת עמודים מסוימים עבוד על קובץ אחד.`
+            : 'כל העמודים יסובבו.';
+          return;
+        }
+        const chosen = grid ? grid.selectedPages().map((p) => p.index) : [];
+        view.set('pages', chosen.length ? R().rangesText(chosen) : '');
+        note.textContent = chosen.length
+          ? `יסובבו ${chosen.length === 1 ? 'עמוד' : 'עמודים'} ${R().rangesText(chosen)}. Esc מבטל את הבחירה.`
+          : 'כל העמודים יסובבו. לחיצה על עמודים תסובב רק אותם.';
+        if (grid) {
+          const turns = o.angle / 90;
+          const keys = new Set(chosen.map((i) => `0:${i}`));
+          const all = !chosen.length;
+          grid.setPages(pagesOf(file).map((p) => ({ ...p, turn: all || keys.has(p.key) ? turns : 0 })));
+        }
+      }
+
+      if (single) {
+        const preselected = o.pages && !rangesError(o.pages, file.pageCount)
+          ? R().indicesOf(R().parseRanges(o.pages, file.pageCount)).map((i) => `0:${i}`) : [];
+        grid = new window.PageGrid(view.pagesHost, { pages: pagesOf(file), selected: preselected, thumb: view.pageThumb, onSelect: () => refresh() });
+        mem.rotateGrid = grid;
+      } else {
+        mem.rotateGrid = null;
+      }
+      refresh();
+    },
+    blocked: () => null,
+    onEscape() {
+      return mem.rotateGrid ? mem.rotateGrid.clearSelection() : false;
+    },
+  },
+
+  crop: {
+    defaults: () => ({ margins: { top: 0, right: 0, bottom: 0, left: 0 }, scope: 'all', page: 0, pages: '' }),
+    render(container, view) {
+      const o = view.options;
+      const file = firstFile(view);
+      const help = ui.section(container, 'מה לשמור',
+        'גרור את קצוות המסגרת על העמוד. מה שמחוץ לה יוסתר, אבל לא יימחק.');
+      const row = ui.row(help);
+      const auto = ui.button(row, { label: 'זיהוי שוליים', title: 'מוצא את השוליים הלבנים בכל העמודים', onClick: () => detect() });
+      ui.button(row, { label: 'איפוס', kind: 'ghost', onClick: () => setMargins({ top: 0, right: 0, bottom: 0, left: 0 }) });
+      const measures = ui.note(help, '', 'muted');
+
+      const scope = ui.section(container, 'על אילו עמודים');
+      ui.choice(scope, {
+        value: o.scope,
+        choices: [{ value: 'all', label: 'כל העמודים' }, { value: 'page', label: 'העמוד המוצג בלבד' }],
+        onChange: (v) => { view.set('scope', v); syncPages(); },
+      });
+
+      if (!file || !file.token) return;
+      const total = file.pageCount;
+      if (o.page >= total) o.page = 0;
+
+      const nav = document.createElement('div');
+      nav.className = 'crop-nav';
+      const prev = document.createElement('button');
+      prev.type = 'button';
+      prev.className = 'ghost icon';
+      prev.textContent = '›';
+      prev.setAttribute('aria-label', 'העמוד הקודם');
+      const label = document.createElement('span');
+      const next = document.createElement('button');
+      next.type = 'button';
+      next.className = 'ghost icon';
+      next.textContent = '‹';
+      next.setAttribute('aria-label', 'העמוד הבא');
+      nav.append(prev, label, next);
+      view.pagesHost.append(nav);
+
+      const holder = document.createElement('div');
+      holder.className = 'crop-holder';
+      view.pagesHost.append(holder);
+
+      let stage;
+      const draw = () => {
+        holder.replaceChildren();
+        stage = previewPage(holder, view, file, o.page, 460);
+        stage.classList.add('crop-stage');
+        const box = document.createElement('div');
+        box.className = 'crop-box';
+        stage.append(box);
+        for (const h of ['n', 's', 'e', 'w', 'ne', 'nw', 'se', 'sw']) {
+          const handle = document.createElement('span');
+          handle.className = `crop-handle h-${h}`;
+          handle.dataset.h = h;
+          box.append(handle);
+        }
+        place();
+        label.textContent = `עמוד ${o.page + 1} מתוך ${total}`;
+        prev.disabled = o.page === 0;
+        next.disabled = o.page === total - 1;
+        wire(box);
+      };
+      prev.addEventListener('click', () => { o.page = Math.max(0, o.page - 1); draw(); syncPages(); });
+      next.addEventListener('click', () => { o.page = Math.min(total - 1, o.page + 1); draw(); syncPages(); });
+
+      function place() {
+        const m = o.margins;
+        const box = stage.querySelector('.crop-box');
+        box.style.top = `${m.top * 100}%`;
+        box.style.bottom = `${m.bottom * 100}%`;
+        box.style.left = `${m.left * 100}%`;
+        box.style.right = `${m.right * 100}%`;
+        shownSizes(view, file).then((sizes) => {
+          const s = sizes[o.page];
+          if (!s) return;
+          const mm = (frac, pts) => Math.round(frac * pts * 25.4 / 72);
+          measures.textContent = Object.values(m).every((v) => !v)
+            ? 'עוד לא סומן מה לחתוך.'
+            : `ייחתכו: למעלה ${mm(m.top, s.height)} מ"מ, למטה ${mm(m.bottom, s.height)} מ"מ, מימין ${mm(m.right, s.width)} מ"מ, משמאל ${mm(m.left, s.width)} מ"מ.`;
+        });
+      }
+
+      function setMargins(m) {
+        const clamp = (v) => Math.max(0, Math.min(0.9, Math.round(v * 1000) / 1000));
+        const next = { top: clamp(m.top), right: clamp(m.right), bottom: clamp(m.bottom), left: clamp(m.left) };
+        // Never let the box turn inside out: keep at least 5% of the page each way.
+        if (next.left + next.right > 0.95) next.right = 0.95 - next.left;
+        if (next.top + next.bottom > 0.95) next.bottom = 0.95 - next.top;
+        view.set('margins', next);
+        o.margins = next;
+        place();
+      }
+
+      function wire(box) {
+        box.addEventListener('pointerdown', (e) => {
+          e.preventDefault();
+          const rect = stage.getBoundingClientRect();
+          const start = { x: e.clientX, y: e.clientY, m: { ...o.margins } };
+          const handle = e.target.dataset.h || 'move';
+          box.setPointerCapture(e.pointerId);
+          const move = (ev) => {
+            const dx = (ev.clientX - start.x) / rect.width;
+            const dy = (ev.clientY - start.y) / rect.height;
+            const m = { ...start.m };
+            if (handle === 'move') {
+              const w = 1 - start.m.left - start.m.right;
+              const h = 1 - start.m.top - start.m.bottom;
+              m.left = Math.max(0, Math.min(1 - w, start.m.left + dx));
+              m.right = 1 - w - m.left;
+              m.top = Math.max(0, Math.min(1 - h, start.m.top + dy));
+              m.bottom = 1 - h - m.top;
+            } else {
+              if (handle.includes('n')) m.top = start.m.top + dy;
+              if (handle.includes('s')) m.bottom = start.m.bottom - dy;
+              if (handle.includes('w')) m.left = start.m.left + dx;
+              if (handle.includes('e')) m.right = start.m.right - dx;
+            }
+            setMargins(m);
+          };
+          const up = () => {
+            box.removeEventListener('pointermove', move);
+            box.removeEventListener('pointerup', up);
+            box.removeEventListener('pointercancel', up);
+          };
+          box.addEventListener('pointermove', move);
+          box.addEventListener('pointerup', up);
+          box.addEventListener('pointercancel', up);
+        });
+      }
+
+      function syncPages() {
+        view.set('pages', o.scope === 'page' ? String(o.page + 1) : '');
+      }
+
+      /**
+       * The smallest box that holds everything printed, across pages: each sampled
+       * page is drawn small and scanned for pixels that are not near white.
+       */
+      async function detect() {
+        auto.disabled = true;
+        const original = auto.textContent;
+        const thumbs = await view.thumbs();
+        const sample = o.scope === 'page'
+          ? [o.page]
+          : Array.from({ length: Math.min(total, 24) }, (_, i) => Math.floor((i * total) / Math.min(total, 24)));
+        const box = { top: 1, right: 1, bottom: 1, left: 1 };
+        let found = false;
+        for (let k = 0; k < sample.length; k++) {
+          auto.textContent = `בודק עמוד ${k + 1} מתוך ${sample.length}…`;
+          const canvas = await thumbs.render(file.token, sample[k], 260);
+          const m = contentMargins(canvas);
+          if (!m) continue;
+          found = true;
+          for (const side of Object.keys(box)) box[side] = Math.min(box[side], m[side]);
+        }
+        auto.textContent = original;
+        auto.disabled = false;
+        if (!found) return view.error('לא נמצא תוכן על העמודים. אין מה לחתוך.');
+        const pad = 0.012;
+        setMargins({ top: box.top - pad, right: box.right - pad, bottom: box.bottom - pad, left: box.left - pad });
+      }
+
+      draw();
+      syncPages();
+    },
+    blocked(view) {
+      const m = view.options.margins || {};
+      if (!['top', 'right', 'bottom', 'left'].some((k) => m[k] > 0)) {
+        return 'סמן מה לשמור: גרור את קצוות המסגרת על העמוד, או לחץ על "זיהוי שוליים".';
+      }
+      return null;
+    },
+  },
+
+  'page-numbers': {
+    defaults: () => ({ position: 'bottom-center', margin: 'normal', format: 'n', start: 1, pagesMode: 'all', pages: '', size: 11, background: false }),
+    render(container, view) {
+      const o = view.options;
+      const where = ui.section(container, 'מיקום');
+      ui.position(where, { value: o.position, rows: ['top', 'bottom'], onChange: (v) => { view.set('position', v); preview(); } });
+      ui.choice(where, {
+        label: 'מרחק מהקצה',
+        value: o.margin,
+        choices: [{ value: 'small', label: 'קטן' }, { value: 'normal', label: 'רגיל' }, { value: 'large', label: 'גדול' }],
+        onChange: (v) => { view.set('margin', v); preview(); },
+      });
+
+      const look = ui.section(container, 'מה ייכתב');
+      ui.choice(look, {
+        value: o.format,
+        vertical: true,
+        choices: [
+          { value: 'n', label: '3' },
+          { value: 'page-n', label: 'עמוד 3' },
+          { value: 'n-of', label: '3 מתוך 10' },
+          { value: 'page-n-of', label: 'עמוד 3 מתוך 10' },
+          { value: 'n-slash', label: '3/10' },
+        ],
+        onChange: (v) => { view.set('format', v); preview(); },
+      });
+      ui.number(look, { label: 'המספר הראשון', value: o.start, min: 0, onInput: (v) => { view.set('start', v); preview(); } });
+      ui.choice(look, {
+        label: 'גודל',
+        value: o.size,
+        choices: [{ value: 9, label: 'קטן' }, { value: 11, label: 'רגיל' }, { value: 14, label: 'גדול' }],
+        onChange: (v) => { view.set('size', v); preview(); },
+      });
+      ui.check(look, { label: 'רקע לבן מאחורי המספר', value: o.background, hint: 'שומר על המספר קריא מעל שוליים כהים של סריקה', onChange: (v) => { view.set('background', v); preview(); } });
+
+      const which = ui.section(container, 'אילו עמודים');
+      ui.choice(which, {
+        value: o.pagesMode,
+        vertical: true,
+        choices: [
+          { value: 'all', label: 'כל העמודים' },
+          { value: 'skip-first', label: 'בלי העמוד הראשון' },
+          { value: 'custom', label: 'עמודים מסוימים' },
+        ],
+        onChange: (v) => {
+          view.set('pagesMode', v);
+          view.set('pages', v === 'skip-first' ? '2-' : v === 'all' ? '' : view.options.customPages || '');
+          view.rerender();
+        },
+      });
+      if (o.pagesMode === 'custom') {
+        ui.text(which, { value: o.pages, placeholder: 'למשל 3-', dir: 'ltr', onInput: (v) => { view.set('pages', v); view.set('customPages', v); preview(); } });
+      }
+      const err = ui.note(which, '', 'bad');
+
+      const file = firstFile(view);
+      let stages = [];
+      if (file && file.token) {
+        const row = document.createElement('div');
+        row.className = 'preview-row';
+        view.pagesHost.append(row);
+        const shown = Math.min(file.pageCount, 2);
+        for (let i = 0; i < shown; i++) stages.push(previewPage(row, view, file, i, 260));
+      }
+
+      function preview() {
+        const total = file ? file.pageCount : 0;
+        const error = o.pages && file ? rangesError(o.pages, total) : null;
+        err.textContent = error || '';
+        if (!file) return;
+        const numbered = error ? [] : o.pages ? R().indicesOf(R().parseRanges(o.pages, total)) : [...Array(total).keys()];
+        const last = Number(o.start) + numbered.length - 1;
+        shownSizes(view, file).then((sizes) => {
+          stages.forEach((stage, i) => {
+            stage.querySelectorAll('.stamp').forEach((x) => x.remove());
+            const k = numbered.indexOf(i);
+            if (k === -1 || !sizes[i]) return;
+            const n = Number(o.start) + k;
+            const text = { n: `${n}`, 'page-n': `עמוד ${n}`, 'n-of': `${n} מתוך ${last}`, 'page-n-of': `עמוד ${n} מתוך ${last}`, 'n-slash': `${n}/${last}` }[o.format];
+            const scale = 260 / sizes[i].width;
+            const margin = { small: 18, normal: 30, large: 48 }[o.margin] * scale;
+            const [vert, horiz] = o.position.split('-');
+            const s = document.createElement('span');
+            s.className = 'stamp' + (o.background ? ' backed' : '');
+            s.dir = 'auto';
+            s.textContent = text;
+            s.style.fontSize = `${o.size * scale * 1.333}px`;
+            s.style[vert === 'top' ? 'top' : 'bottom'] = `${margin}px`;
+            if (horiz === 'center') { s.style.left = '50%'; s.style.transform = 'translateX(-50%)'; }
+            else s.style[horiz] = `${margin}px`;
+            stage.append(s);
+          });
+        });
+      }
+      preview();
+    },
+    blocked(view) {
+      const file = firstFile(view);
+      const o = view.options;
+      if (o.pagesMode === 'custom' && !String(o.pages || '').trim()) return 'כתוב אילו עמודים למספר.';
+      if (file && o.pages) return rangesError(o.pages, file.pageCount);
+      if (o.start === '' || !Number.isFinite(Number(o.start))) return 'כתוב את המספר הראשון.';
+      return null;
+    },
+  },
+
+  watermark: {
+    defaults: () => ({ kind: 'text', text: '', size: 60, color: '#c00000', opacity: 0.25, angle: 45, position: 'middle-center', layer: 'over', pages: '', image: '', imageName: '', imageToken: '', scale: 0.4 }),
+    render(container, view) {
+      const o = view.options;
+      const what = ui.section(container, 'סימן המים');
+      ui.choice(what, {
+        value: o.kind,
+        choices: [{ value: 'text', label: 'טקסט' }, { value: 'image', label: 'תמונה' }],
+        onChange: (v) => { view.set('kind', v); view.rerender(); },
+      });
+      if (o.kind === 'text') {
+        ui.text(what, { value: o.text, placeholder: 'למשל: טיוטה, העתק, חסוי', onInput: (v) => { view.set('text', v); preview(); } });
+        ui.slider(what, { label: 'גודל', value: o.size, min: 20, max: 160, step: 2, onInput: (v) => { view.set('size', v); preview(); } });
+        ui.swatches(what, {
+          label: 'צבע',
+          value: o.color,
+          colors: [
+            { value: '#c00000', label: 'אדום' },
+            { value: '#7f7f7f', label: 'אפור' },
+            { value: '#1f5fbf', label: 'כחול' },
+            { value: '#000000', label: 'שחור' },
+          ],
+          onChange: (v) => { view.set('color', v); preview(); },
+        });
+      } else {
+        const row = ui.row(what);
+        ui.button(row, {
+          label: o.imageName ? 'החלפת תמונה' : 'בחירת תמונה…',
+          onClick: async () => {
+            const r = await view.pick({ extensions: ['png', 'jpg', 'jpeg'], multiple: false, title: 'תמונה לסימן המים' });
+            if (!r.ok) return view.error(r.error);
+            if (r.cancelled || !r.files.length) return;
+            view.set('image', r.files[0].path);
+            view.set('imageName', r.files[0].name);
+            view.set('imageToken', r.files[0].token || '');
+            view.rerender();
+          },
+        });
+        if (o.imageName) ui.note(what, o.imageName, 'muted');
+        ui.slider(what, { label: 'רוחב', value: Math.round(o.scale * 100), min: 5, max: 100, step: 5, format: (v) => `${v}%`, onInput: (v) => { view.set('scale', v / 100); preview(); } });
+      }
+      ui.slider(what, { label: 'שקיפות', value: Math.round((1 - o.opacity) * 100), min: 0, max: 95, step: 5, format: (v) => `${v}%`, onInput: (v) => { view.set('opacity', 1 - v / 100); preview(); } });
+      ui.choice(what, {
+        label: 'זווית',
+        value: o.angle,
+        choices: [{ value: 0, label: 'ישר' }, { value: 45, label: 'אלכסון ↗' }, { value: -45, label: 'אלכסון ↘' }, { value: 90, label: 'אנכי' }],
+        onChange: (v) => { view.set('angle', v); preview(); },
+      });
+
+      const where = ui.section(container, 'מיקום');
+      ui.position(where, { value: o.position, rows: ['top', 'middle', 'bottom'], extra: { value: 'tile', label: 'פריסה על כל העמוד' }, onChange: (v) => { view.set('position', v); preview(); } });
+      ui.choice(where, {
+        label: 'שכבה',
+        value: o.layer,
+        choices: [{ value: 'over', label: 'מעל התוכן' }, { value: 'under', label: 'מתחת לתוכן' }],
+        onChange: (v) => { view.set('layer', v); preview(); },
+      });
+      ui.note(where, 'מתחת לתוכן לא ייראה בעמודים סרוקים, כי הסריקה עצמה היא תמונה שמכסה את כל העמוד.', 'muted');
+      ui.text(where, { label: 'עמודים (ריק לכולם)', value: o.pages, placeholder: 'למשל 2-5', dir: 'ltr', onInput: (v) => { view.set('pages', v); } });
+
+      const file = firstFile(view);
+      let stage = null;
+      if (file && file.token) {
+        const row = document.createElement('div');
+        row.className = 'preview-row';
+        view.pagesHost.append(row);
+        stage = previewPage(row, view, file, 0, 340);
+      }
+
+      function preview() {
+        if (!stage) return;
+        stage.querySelectorAll('.mark').forEach((x) => x.remove());
+        if (o.kind === 'text' && !o.text.trim()) return;
+        if (o.kind === 'image' && !o.imageToken) return;
+        shownSizes(view, file).then((sizes) => {
+          const s = sizes[0];
+          if (!s) return;
+          const scale = 340 / s.width;
+          const make = () => {
+            let el;
+            if (o.kind === 'text') {
+              el = document.createElement('span');
+              el.dir = 'auto';
+              el.textContent = o.text;
+              el.style.fontSize = `${o.size * scale * 1.333}px`;
+              el.style.color = o.color;
+            } else {
+              el = new Image();
+              el.src = `/doc/${encodeURIComponent(o.imageToken)}`;
+              el.style.width = `${o.scale * 340}px`;
+            }
+            el.className = 'mark';
+            el.style.opacity = String(o.opacity);
+            return el;
+          };
+          const rot = `rotate(${-o.angle}deg)`;
+          if (o.position === 'tile') {
+            const layer = document.createElement('div');
+            layer.className = 'mark tile-layer';
+            for (let i = 0; i < 12; i++) {
+              const el = make();
+              el.classList.remove('mark');
+              el.style.transform = rot;
+              layer.append(el);
+            }
+            stage.append(layer);
+            return;
+          }
+          const el = make();
+          const [vert, horiz] = o.position.split('-');
+          const m = 36 * scale;
+          el.style.position = 'absolute';
+          const tx = horiz === 'center' ? '-50%' : '0';
+          const ty = vert === 'middle' ? '-50%' : '0';
+          if (horiz === 'center') el.style.left = '50%'; else el.style[horiz] = `${m}px`;
+          if (vert === 'middle') el.style.top = '50%'; else el.style[vert] = `${m}px`;
+          el.style.transform = `translate(${tx}, ${ty}) ${rot}`;
+          stage.append(el);
+        });
+      }
+      preview();
+    },
+    blocked(view) {
+      const o = view.options;
+      if (o.kind === 'text' && !String(o.text || '').trim()) return 'כתוב את הטקסט של סימן המים.';
+      if (o.kind === 'image' && !o.image) return 'בחר תמונה לסימן המים.';
+      const file = firstFile(view);
+      if (o.pages && file && view.files.length === 1) return rangesError(o.pages, file.pageCount);
+      return null;
+    },
+  },
+
+  'pdf-to-markdown': {
+    defaults: () => ({ pageBreaks: false }),
+    render(container, view) {
+      const box = ui.section(container, 'אפשרויות',
+        'כותרות מזוהות לפי גודל האות, רשימות לפי הסימן שבתחילתן, ופסקאות לפי הרווח שבין השורות. עמודים סרוקים צריכים קודם זיהוי טקסט (OCR).');
+      ui.check(box, { label: 'קו מפריד בין עמודים', value: view.options.pageBreaks, onChange: (v) => view.set('pageBreaks', v) });
+    },
+    blocked: () => null,
+  },
+
+  repair: {
+    defaults: () => ({}),
+    render(container) {
+      ui.section(container, 'איך זה עובד',
+        'התיקון קורא כל מה שעוד אפשר לקרוא בקובץ ובונה ממנו קובץ חדש ותקין. הקובץ המקורי לא משתנה, והתוצאה תגיד כמה עמודים שוחזרו.');
+    },
+    blocked: () => null,
+  },
 };
+
+/** What Split will produce, for the preview line, the page badges, and the button. */
+function splitPlan(o, total) {
+  const tone = (i) => i;
+  const labelled = (groups) => {
+    const pages = Array.from({ length: total }, (_, i) => ({ key: `0:${i}`, index: i, turn: 0, dim: true }));
+    groups.forEach((indices, g) => indices.forEach((i) => {
+      pages[i] = { ...pages[i], dim: false, label: groups.length > 1 ? `קובץ ${g + 1}` : 'בקובץ', tone: tone(g) };
+    }));
+    return pages;
+  };
+  try {
+    if (o.mode === 'every') {
+      const n = Math.floor(Number(o.every));
+      if (!Number.isFinite(n) || n < 1) return { error: 'כתוב כל כמה עמודים לפצל, מספר של 1 ומעלה.' };
+      if (n >= total) return { error: `בקובץ ${pagesWord(total)}, ולכן חלוקה כל ${n} עמודים תשאיר אותו שלם.` };
+      const groups = [];
+      for (let s = 0; s < total; s += n) groups.push([...Array(Math.min(n, total - s)).keys()].map((k) => s + k));
+      return { text: `ייווצרו ${filesWord(groups.length)}, בתיקייה חדשה ליד המקור.`, pages: labelled(groups) };
+    }
+    if (o.mode === 'extract') {
+      if (!String(o.pages || '').trim()) return { error: 'בחר את העמודים לחילוץ: לחיצה על עמוד, Ctrl להוספה, Shift לטווח.' };
+      const idx = R().indicesOf(R().parseRanges(o.pages, total));
+      return { text: o.extractEach ? `ייווצרו ${filesWord(idx.length)}, עמוד בכל קובץ.` : `ייווצר קובץ אחד בן ${pagesWord(idx.length)}.` };
+    }
+    if (o.mode === 'size') {
+      const mb = Number(o.maxMb);
+      if (!Number.isFinite(mb) || mb <= 0) return { error: 'כתוב גודל מרבי לכל חלק, במגה-בייט.' };
+      return { text: `כל חלק יהיה עד ${mb} MB. מספר החלקים ייקבע לפי העמודים.` };
+    }
+    if (!String(o.ranges || '').trim()) return { error: 'כתוב את הטווחים, למשל 1-3, 4-6. כל טווח יהפוך לקובץ.' };
+    const ranges = R().parseRanges(o.ranges, total);
+    const groups = ranges.map(({ from, to }) => [...Array(to - from + 1).keys()].map((k) => from - 1 + k));
+    if (o.mergeRanges) {
+      return { text: `ייווצר קובץ אחד בן ${pagesWord(groups.flat().length)}.`, pages: labelled([groups.flat()]) };
+    }
+    return {
+      text: groups.length === 1
+        ? `ייווצר קובץ אחד: עמ' ${R().formatRange(ranges[0])}.`
+        : `ייווצרו ${filesWord(groups.length)}: ${ranges.map((r) => `עמ' ${R().formatRange(r)}`).join(', ')}.`,
+      pages: labelled(groups),
+    };
+  } catch (err) {
+    return { error: hebrewOr(err, 'לא ניתן לקרוא את רשימת העמודים.') };
+  }
+}
+
+/** Fractions of white space on each side of a rendered page, or null if it is blank. */
+function contentMargins(canvas) {
+  const ctx = canvas.getContext('2d');
+  const { width: w, height: h } = canvas;
+  const data = ctx.getImageData(0, 0, w, h).data;
+  let top = h;
+  let bottom = -1;
+  let left = w;
+  let right = -1;
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const i = (y * w + x) * 4;
+      if (data[i] < 235 || data[i + 1] < 235 || data[i + 2] < 235) {
+        if (y < top) top = y;
+        if (y > bottom) bottom = y;
+        if (x < left) left = x;
+        if (x > right) right = x;
+      }
+    }
+  }
+  if (bottom < 0) return null;
+  return { top: top / h, bottom: (h - 1 - bottom) / h, left: left / w, right: (w - 1 - right) / w };
+}
+
+// Ctrl+Z in Organize undoes the last change, unless the focus is in a text field.
+document.addEventListener('keydown', (e) => {
+  if (!(e.ctrlKey || e.metaKey) || e.key.toLowerCase() !== 'z') return;
+  if (!window.shell || window.shell.screen !== 'tool' || window.shell.view.toolId !== 'organize') return;
+  if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA')) return;
+  e.preventDefault();
+  if (mem.organizeUndo) mem.organizeUndo();
+});
 
 window.panels = panels;
 window.panelUi = ui;
+window.panelHelpers = { splitPlan, contentMargins, mem };

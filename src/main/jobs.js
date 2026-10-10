@@ -78,11 +78,17 @@ function start(tool, inputs, options, hooks = {}) {
           hooks.onProgress({ id, ...job.lastProgress });
         }
       },
-      async writeOutput(bytes, { source, label, ext = 'pdf', name }) {
+      /**
+       * @param {Uint8Array|Buffer|string} bytes
+       * @param {{source?: string, label?: string, ext?: string, name?: string, dir?: string}} where
+       *   `dir` with `name` writes inside a folder the tool made with outputFolder().
+       */
+      async writeOutput(bytes, { source, label, ext = 'pdf', name, dir }) {
         throwIfAborted(controller.signal);
-        const finalPath = name
-          ? await output.unusedPath(hooks.outputFolder || path.dirname(source), name, ext)
-          : await output.outputFor(source, label, ext, { folder: hooks.outputFolder });
+        let finalPath;
+        if (dir) finalPath = await output.unusedPath(dir, name, ext);
+        else if (name) finalPath = await output.unusedPath(hooks.outputFolder || path.dirname(source), name, ext);
+        else finalPath = await output.outputFor(source, label, ext, { folder: hooks.outputFolder });
         const temp = path.join(scratch, `out-${job.outputs.length}.${ext}`);
         await fs.writeFile(temp, bytes);
         throwIfAborted(controller.signal);

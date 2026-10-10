@@ -65,12 +65,7 @@ app.whenReady().then(async () => {
   await fsp.writeFile(TXT, 'hello');
 
   const win = await openWindow();
-  const errors = [];
-  win.webContents.on('console-message', (event) => {
-    const level = event.level !== undefined ? event.level : event;
-    const message = event.message || '';
-    if (level === 'error' || level === 3 || /^thumbnail:/.test(message)) errors.push(message);
-  });
+  const errors = win.consoleErrors;
 
   const run = (code) => win.webContents.executeJavaScript(code, true);
   const settle = (ms = 120) => run(`new Promise(r => setTimeout(r, ${ms}))`);
@@ -104,8 +99,8 @@ app.whenReady().then(async () => {
     groups: document.querySelectorAll('.tool-group').length,
     merge: !document.querySelector('.tile[data-tool="merge"]').classList.contains('unavailable'),
     appendix: !document.querySelector('.tile[data-tool="appendix"]').classList.contains('unavailable'),
-    split: document.querySelector('.tile[data-tool="split"] .tile-soon').textContent,
-    splitDesc: document.querySelector('.tile[data-tool="split"] .tile-desc').textContent,
+    split: (document.querySelector('.tile[data-tool="compress"] .tile-soon') || {}).textContent,
+    splitDesc: document.querySelector('.tile[data-tool="compress"] .tile-desc').textContent,
     firstTile: document.querySelector('.tile').dataset.tool,
     removed: ['jpg-to-pdf', 'html-to-pdf', 'compare'].filter(id => document.querySelector('.tile[data-tool="' + id + '"]')),
     cloud: document.querySelectorAll('.tile .tile-cloud').length,
@@ -117,10 +112,11 @@ app.whenReady().then(async () => {
   check('  without the three tools that were crossed out', grid.removed.length === 0, grid.removed.join(', '));
   check('merge and the appendix builder are available', grid.merge && grid.appendix);
   check('a tool not built yet is marked "soon" on its tile', grid.split === 'בקרוב', grid.split);
-  check('  and still says what it will do', /טווחי עמודים/.test(grid.splitDesc), grid.splitDesc);
+  check('  and still says what it will do', /קטן יותר/.test(grid.splitDesc), grid.splitDesc);
   check('the appendix builder is the first tile', grid.firstTile === 'appendix', grid.firstTile);
   check('the two cloud tools are marked as cloud', grid.cloud === 2, String(grid.cloud));
   check('home has no back button', grid.screen === 'home' && grid.back);
+  check('the shared page-range parser loaded', await run(`typeof window.pageRanges === 'object' && typeof window.pageRanges.parseRanges === 'function'`));
 
   await run(`(() => { const s = document.getElementById('home-search'); s.value = 'כיווץ'; s.dispatchEvent(new Event('input')); })()`);
   const found = await run(`[...document.querySelectorAll('.tile')].map(t => t.dataset.tool)`);
@@ -132,7 +128,7 @@ app.whenReady().then(async () => {
 
   /* ---- a tool that is not built yet ---- */
   console.log('\na tool not built yet');
-  await press('.tile[data-tool="split"]');
+  await press('.tile[data-tool="compress"]');
   check('opens with a notice saying why', !(await hidden('tool-unavailable')) && /עדיין לא זמין/.test(await text('#tool-unavailable')));
   check('  and its button stays disabled with the same reason',
     (await run(`document.getElementById('tool-run').disabled`)) && /עדיין לא זמין/.test(await text('#tool-blocked')));
@@ -201,7 +197,14 @@ app.whenReady().then(async () => {
     fs.existsSync(expected) ? (await pageWidths(expected)).join(',') : 'missing');
   check('  and it lists the output with open and show buttons',
     (await run(`document.querySelectorAll('#tool-result-outputs li button').length`)) === 2);
-  check('no other tool is offered to continue with before one exists', await hidden('tool-continue'));
+  const chips = await run(`[...document.querySelectorAll('#tool-continue-chips .chip')].map(c => c.dataset.tool)`);
+  check('the result offers other tools to continue with, not the same one', !(await hidden('tool-continue')) && chips.includes('page-numbers') && !chips.includes('merge'), chips.join(', '));
+  await press('#tool-continue-chips .chip[data-tool="page-numbers"]');
+  await until(`document.querySelector('#screen-name').textContent === 'מספרי עמודים' && document.querySelectorAll('#tool-file-list .file-row').length === 1`);
+  check('  and continuing opens that tool with the result already in it',
+    (await text('#screen-name')) === 'מספרי עמודים' && (await run(`document.querySelector('#tool-file-list .file-name').title`)) === 'כתב הגנה - מאוחד.pdf');
+  await press('#nav-back');
+  await press('.tile[data-tool="merge"]');
 
   await press('#tool-run');
   await until(`!document.getElementById('tool-result').classList.contains('hidden')`);

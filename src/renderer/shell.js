@@ -100,15 +100,20 @@ const shell = (() => {
 
   function thumbnail(file, width = 56) {
     if (!file.token || file.ext !== 'pdf' || file.error) return Promise.resolve(null);
-    const key = `${file.token}:${width}`;
+    return pageThumb(file.token, 0, width, file.name);
+  }
+
+  /** A data URL of one page, `width` CSS pixels wide; cached for the session. */
+  function pageThumb(token, index, width, label = '') {
+    const key = `${token}:${index}:${width}`;
     if (!thumbCache.has(key)) {
       thumbCache.set(key, thumbsReady
-        .then((t) => t.render(file.token, 0, width))
+        .then((t) => t.render(token, index, width))
         .then((canvas) => canvas.toDataURL('image/png'))
         .catch((err) => {
           // A missing thumbnail leaves the generic file icon, which is still usable;
           // say why in the console rather than nowhere.
-          console.warn(`thumbnail: ${file.name}: ${err && err.message}`);
+          console.warn(`thumbnail: ${label} page ${index + 1}: ${err && err.message}`);
           thumbCache.delete(key);
           return null;
         }));
@@ -362,6 +367,18 @@ const shell = (() => {
         renderFiles();
       },
       rerender: () => renderOptions(),
+      pagesHost: $('tool-pages'),
+      pageThumb,
+      thumbs: () => thumbsReady,
+      error: (message) => showError(message),
+      clearError: () => clearResult(),
+      busy: () => !!view.job,
+      describe: async (paths) => {
+        const r = await window.api.describeFiles(paths);
+        return r.ok ? r.files : [];
+      },
+      pick: (spec) => window.api.pickFiles(spec),
+      run: () => run(),
     };
   }
 
@@ -382,11 +399,15 @@ const shell = (() => {
     renderOptions();
   }
 
+  let currentPanelView = null;
+
   function renderOptions() {
     const host = $('tool-options');
     host.replaceChildren();
+    $('tool-pages').replaceChildren();
     const panel = window.panels[view.toolId];
-    if (panel) panel.render(host, panelView());
+    currentPanelView = panelView();
+    if (panel) panel.render(host, currentPanelView);
     updateRun();
   }
 
@@ -586,9 +607,11 @@ const shell = (() => {
     updateRun();
     if (typeof updateRestartButton === 'function') updateRestartButton();
 
+    const panel = window.panels[t.id];
+    const inputs = panel && panel.inputs ? panel.inputs(panelView()) : state.files.map((f) => f.path);
     const response = await window.api.startJob({
       toolId: t.id,
-      inputs: state.files.map((f) => f.path),
+      inputs,
       options: JSON.parse(JSON.stringify(state.options)),
     });
 
@@ -635,7 +658,8 @@ const shell = (() => {
     $('tool-result-title').textContent = response.summary || 'הפעולה הסתיימה.';
     const list = $('tool-result-outputs');
     list.replaceChildren();
-    for (const out of response.outputs) {
+    const shown = response.display && response.display.length ? response.display : response.outputs;
+    for (const out of shown) {
       const li = document.createElement('li');
       const name = nameNode(out.split(/[\\/]/).pop(), 'out-name');
       name.title = out;
@@ -647,7 +671,7 @@ const shell = (() => {
       list.append(li);
     }
 
-    const pdfs = response.outputs.filter((p) => /\.pdf$/i.test(p));
+    const pdfs = shown.filter((p) => /\.pdf$/i.test(p));
     const chips = $('tool-continue-chips');
     chips.replaceChildren();
     const next = CONTINUE_WITH.map(tool).filter((x) => x && x.available && x.id !== t.id);
@@ -744,6 +768,11 @@ const shell = (() => {
         e.preventDefault();
         return;
       }
+      const panel = view.screen === 'tool' ? window.panels[view.toolId] : null;
+      if (panel && panel.onEscape && currentPanelView && panel.onEscape(currentPanelView)) {
+        e.preventDefault();
+        return;
+      }
       if (view.screen === 'home' && view.pending.length) {
         view.pending = [];
         renderHome();
@@ -818,6 +847,7 @@ const shell = (() => {
     cancel,
     addFiles,
     receiveFiles,
+    pageThumb,
     busy: () => !!view.job,
     get screen() { return view.screen; },
     get view() { return view; },

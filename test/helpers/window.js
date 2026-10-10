@@ -31,6 +31,16 @@ async function openWindow({ width = 1240, height = 900, screen } = {}) {
       sandbox: false,
     },
   });
+  // Collected from before the first byte loads: a script that fails to parse reports
+  // only once, while the page is loading.
+  win.consoleErrors = [];
+  win.webContents.on('console-message', (event) => {
+    const level = event.level !== undefined ? event.level : event;
+    const message = event.message || '';
+    if (level === 'error' || level === 3 || /^thumbnail:|^panel:/.test(message)) {
+      if (!/update:status/.test(message)) win.consoleErrors.push(message);
+    }
+  });
   await win.loadURL(INDEX_URL);
   await win.webContents.executeJavaScript('window.shell.ready', true);
   if (screen) await win.webContents.executeJavaScript(`window.shell.open(${JSON.stringify(screen)})`, true);

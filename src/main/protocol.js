@@ -38,6 +38,7 @@ const MIME = {
   '.bmp': 'image/bmp',
   '.pdf': 'application/pdf',
   '.ttf': 'font/ttf',
+  '.otf': 'font/otf',
   '.woff2': 'font/woff2',
   '.wasm': 'application/wasm',
   '.bcmap': 'application/octet-stream',
@@ -156,6 +157,7 @@ function defaultMounts() {
     ['pdfjs-cmaps', path.join(root, 'node_modules', 'pdfjs-dist', 'cmaps')],
     ['pdfjs-fonts', path.join(root, 'node_modules', 'pdfjs-dist', 'standard_fonts')],
     ['fonts', path.join(root, 'assets', 'fonts')],
+    ['shared', path.join(root, 'src', 'shared')],
   ];
 }
 
