@@ -9,8 +9,7 @@ const {
 
 const bin = require('../engine/binaries');
 const imaging = require('../engine/imaging');
-const { stage } = require('../engine/stage');
-const { renderPages } = require('../engine/render');
+const { drawPages } = require('../engine/pagepicture');
 const { ocrFile } = require('./ocr');
 const { loadPdf } = require('../pdf/inspect');
 const { samePages } = require('../engine/verify');
@@ -59,20 +58,17 @@ async function run({ inputs, options = {}, ctx }) {
       });
     });
 
-  // Layers first, and the marked pages drawn from the settled copy: Ghostscript, drawing
-  // the original, would show what a viewer hides by a rule it does not work out, and that
-  // would then be burned into the picture of the redacted page.
-  const layers = settleLayers(doc);
-  let src;
-  if (layers) {
-    doc.catalog.set(PDFName.of('OCProperties'), layers.list);
-    src = 'settled.pdf';
-    await fs.writeFile(path.join(ctx.scratch, src), await doc.save({ updateFieldAppearances: false }));
-  } else {
-    src = await stage(ctx, source, 'redact');
-  }
+  // The marked pages are drawn by pdf.js from the original, as the screen drew them when
+  // the user marked them (engine/pagepicture.js), so the picture holds what they saw.
   ctx.progress(0.05, 'מצייר את העמודים המסומנים…');
-  const images = await renderPages(ctx, src, pages, { dpi: DPI, device: 'png16m', tag: 'red' });
+  let images;
+  try {
+    images = await drawPages(source, pages, { dpi: DPI, ctx });
+  } catch (err) {
+    if (ctx.signal && ctx.signal.aborted) throw err;
+    throw new Error('לא ניתן היה לצייר את העמודים המסומנים, ולכן לא נוצר עותק. אפשר לנסות קודם את "תיקון PDF".');
+  }
+  const layers = settleLayers(doc);
 
   // The result is a new document holding only what it should. Removing a page from the
   // original and saving would not do: pdf-lib writes every object it read, referenced
@@ -91,7 +87,7 @@ async function run({ inputs, options = {}, ctx }) {
   for (let k = 0; k < pages.length; k++) {
     const i = pages[k];
     ctx.progress(0.1 + (k / pages.length) * 0.5, `משחיר את עמוד ${i + 1}`);
-    const png = await fs.readFile(images[k]);
+    const png = images[k];
     // Beyond each mark by a little, so anti-aliased edges of letters do not peek out.
     const boxes = byPage.get(i).map((m) => ({ x: m.x - 0.002, y: m.y - 0.002, w: m.w + 0.004, h: m.h + 0.004 }));
     blacked.set(i, (await imaging.blackOut(png, 'image/png', boxes)).bytes);
@@ -328,43 +324,166 @@ function flatten(page, annot, layers) {
 }
 
 /**
- * The document's layers, settled once for the whole file rather than followed from each
- * page: a hidden drawing can sit wherever a resource can (a pattern, a soft mask, a font
- * that draws its own letters, a font chosen through a graphics state...), and following
- * every such path has missed one each time. Instead:
+ * The document's layers, settled once for the whole file.
  *
- * - which layers are shown is decided here, as a viewer decides it (PDF 32000, 8.11);
- * - every picture or drawing anywhere in the file placed whole on a hidden layer is
- *   emptied (Ghostscript would draw it: it ignores /OC on them);
- * - every rule over layers anywhere in the file is rewritten in place to name one plain
- *   layer, shown or hidden, by its worked-out answer (Ghostscript does not work out
- *   visibility expressions);
- * - every layer that marked content names, in any /Properties dictionary in the file,
- *   is replaced there by the plain shown or hidden layer, so Ghostscript leaves out the
- *   marked content of hidden ones knowing only those two. The list of the two is taken
- *   out of the result afterwards (withoutLayers).
+ * What counts as shown is exactly what the screen showed when the user marked the file:
+ * the rules are pdf.js's own (the version this app ships, display intent), ported line
+ * for line from OptionalContentConfig.isVisible and PartialEvaluator's
+ * parseMarkedContentProps and _parseVisibilityExpression, including where they differ
+ * from the PDF specification (an unknown layer shows; a list of no layers under AnyOn
+ * hides; a visibility expression stops at ten levels, its deeper parts counting as shown).
+ * Matching the screen, rather than the specification, means the result shows what the
+ * user saw, no more and no less.
  *
- * Returns { list, visible(oc) }: the layer list for Ghostscript, and a test of whether an
- * /OC value is shown. With no layers: null.
+ * Then, for Ghostscript, which works out less of this than pdf.js does:
+ * - every picture or drawing in the file whose /OC is hidden is emptied (Ghostscript
+ *   ignores /OC on them);
+ * - every rule over layers is rewritten in place to name one plain layer, shown or hidden;
+ * - every layer named in any /Properties dictionary is replaced there by the plain shown
+ *   or hidden layer, so Ghostscript needs to know only those two.
+ * The list of the two is taken out of the result afterwards (withoutLayers).
+ *
+ * Everything is found by going through every object in the file once, not by following
+ * references from the pages: following them missed a new place each review round.
+ *
+ * Returns { list, visible(oc) }, or null when the file has no layers.
  */
 function settleLayers(doc) {
   const ctxt = doc.context;
   const props = doc.catalog.lookup(PDFName.of('OCProperties'));
   if (!(props instanceof PDFDict)) return null;
-  const isLayer = (o) => o instanceof PDFDict && String(o.get(PDFName.of('Type'))) === '/OCG';
-  const isRule = (o) => o instanceof PDFDict && String(o.get(PDFName.of('Type'))) === '/OCMD';
-  const d = props.lookup(PDFName.of('D'));
-  const listOf = (dict, key) => {
-    const a = dict instanceof PDFDict ? dict.lookup(PDFName.of(key)) : null;
-    return a instanceof PDFArray ? a.asArray().filter((r) => r instanceof PDFRef && isLayer(ctxt.lookup(r))) : [];
-  };
-  const on = new Set(listOf(d, 'ON').map(String));
-  const off = new Set(listOf(d, 'OFF').map(String));
-  const allOff = d instanceof PDFDict && String(d.get(PDFName.of('BaseState'))) === '/OFF';
+  const typeOf = (o) => (o instanceof PDFDict ? String(o.get(PDFName.of('Type'))) : '');
 
-  // Every layer and every rule in the file, wherever it is, found by going through every
-  // object once.
-  const layers = [];
+  // The layers pdf.js knows: those in /OCGs, with no /D or no /OCGs list meaning none.
+  // Each starts shown; BaseState /OFF hides all; then /ON shows and /OFF hides (OFF last,
+  // so it wins). A layer whose /Usage /View /ViewState is /OFF never shows on screen.
+  const groups = new Map();
+  const d = props.lookup(PDFName.of('D'));
+  const listed = props.lookup(PDFName.of('OCGs'));
+  if (d instanceof PDFDict && listed instanceof PDFArray) {
+    for (const ref of listed.asArray()) {
+      if (!(ref instanceof PDFRef) || groups.has(String(ref))) continue;
+      const layer = ctxt.lookup(ref);
+      if (!(layer instanceof PDFDict)) return null;
+      const usage = layer.lookup(PDFName.of('Usage'));
+      const view = usage instanceof PDFDict ? usage.lookup(PDFName.of('View')) : null;
+      const viewState = view instanceof PDFDict ? String(view.get(PDFName.of('ViewState'))) : '';
+      groups.set(String(ref), { on: true, viewOff: viewState === '/OFF' });
+    }
+    const set = (key, on) => {
+      const a = d.lookup(PDFName.of(key));
+      if (!(a instanceof PDFArray)) return;
+      for (const r of a.asArray()) if (r instanceof PDFRef && groups.has(String(r))) groups.get(String(r)).on = on;
+    };
+    if (String(d.get(PDFName.of('BaseState'))) === '/OFF') for (const g of groups.values()) g.on = false;
+    set('ON', true);
+    set('OFF', false);
+  }
+  // Undefined for a layer pdf.js does not know, which then shows.
+  const known = (id) => groups.get(id);
+  const groupShown = (g) => g.on && !g.viewOff;
+
+  // A visibility expression, parsed and worked out as pdf.js does. Each (expression,
+  // depth) is worked out once, so shared or self-containing parts cannot make this slow.
+  const answers = new Map();
+  // Returns undefined when pdf.js's parse would yield nothing (bad operator, too short,
+  // past ten levels), else whether the expression shows.
+  const expression = (array, nesting) => {
+    const level = nesting + 1;
+    let byLevel = answers.get(array);
+    if (!byLevel) answers.set(array, (byLevel = new Map()));
+    if (byLevel.has(level)) return byLevel.get(level);
+    byLevel.set(level, undefined);
+    let result;
+    const items = array.asArray();
+    const op = items.length ? ctxt.lookup(items[0]) : null;
+    const name = op instanceof PDFName ? op.asString().slice(1) : '';
+    if (level <= 10 && items.length >= 2 && ['And', 'Or', 'Not'].includes(name)) {
+      // Parsed: arrays nest, references name layers, anything else is dropped.
+      const elements = [];
+      for (const raw of items.slice(1)) {
+        const value = ctxt.lookup(raw);
+        if (value instanceof PDFArray) elements.push({ nested: value });
+        else if (raw instanceof PDFRef) elements.push({ id: String(raw) });
+      }
+      result = evaluate(name, elements, level);
+    }
+    byLevel.set(level, result);
+    return result;
+  };
+  const evaluate = (name, elements, level) => {
+    if (elements.length < 1) return true;
+    for (const element of elements) {
+      let state;
+      if (element.nested) {
+        const inner = expression(element.nested, level);
+        state = inner === undefined ? true : inner;
+      } else {
+        const g = known(element.id);
+        if (!g) return true;
+        state = groupShown(g);
+      }
+      if (name === 'And' && !state) return false;
+      if (name === 'Or' && state) return true;
+      if (name === 'Not') return !state;
+    }
+    return name === 'And';
+  };
+  // A list of layers under a policy, as pdf.js reads it: in order, and "shown" at the
+  // first layer it does not know. Worked out once per list and policy.
+  const lists = new Map();
+  const policyShown = (ids, policy, list) => {
+    const memo = list && lists.get(list);
+    if (memo && memo.has(policy)) return memo.get(policy);
+    // The first layer (in order) for which `stop` holds: 'unknown', 'hit' or 'none'.
+    const scan = (stop) => {
+      for (const id of ids) {
+        const g = known(id);
+        if (!g) return 'unknown';
+        if (stop(groupShown(g))) return 'hit';
+      }
+      return 'none';
+    };
+    let result;
+    if (policy === 'AnyOn') result = scan((v) => v) !== 'none';
+    else if (policy === 'AllOn') result = scan((v) => !v) !== 'hit';
+    else if (policy === 'AnyOff') result = scan((v) => !v) !== 'none';
+    else if (policy === 'AllOff') result = scan((v) => v) !== 'hit';
+    else result = true;
+    if (list) {
+      if (!lists.has(list)) lists.set(list, new Map());
+      lists.get(list).set(policy, result);
+    }
+    return result;
+  };
+  // Whether an /OC value (or a /Properties entry) shows: parseMarkedContentProps, then
+  // isVisible. `raw` is the value as written, so a layer is known by its reference.
+  const visible = (raw) => {
+    if (!groups.size) return true;
+    if (!raw) return true;
+    const o = ctxt.lookup(raw);
+    const type = typeOf(o);
+    if (type === '/OCG') {
+      const g = raw instanceof PDFRef ? known(String(raw)) : undefined;
+      return g ? groupShown(g) : true;
+    }
+    if (type !== '/OCMD') return true;
+    const ve = o.lookup(PDFName.of('VE'));
+    if (ve instanceof PDFArray) {
+      const shown = expression(ve, 0);
+      if (shown !== undefined) return shown;
+    }
+    const membersRaw = o.get(PDFName.of('OCGs'));
+    const members = ctxt.lookup(membersRaw);
+    const policyName = o.lookup(PDFName.of('P'));
+    const policy = policyName instanceof PDFName ? policyName.asString().slice(1) : 'AnyOn';
+    if (members instanceof PDFArray) return policyShown(members.asArray().map(String), policy, members);
+    if (members instanceof PDFDict) return policyShown([membersRaw instanceof PDFRef ? String(membersRaw) : ''], policy, null);
+    return true;
+  };
+
+  // Every rule, stream and /Properties dictionary in the file, found by going through
+  // every object once.
   const rules = [];
   const streams = [];
   const properties = [];
@@ -381,128 +500,47 @@ function settleLayers(doc) {
       return;
     }
     if (o instanceof PDFDict) {
-      if (isRule(o)) rules.push(o);
+      if (typeOf(o) === '/OCMD') rules.push(o);
       const named = o.lookup(PDFName.of('Properties'));
       if (named instanceof PDFDict) properties.push(named);
       for (const [, v] of o.entries()) visit(v);
     }
   };
   for (const [ref, o] of ctxt.enumerateIndirectObjects()) {
-    if (isLayer(o)) layers.push(ref);
     if (o instanceof PDFStream) streams.push([ref, o]);
     visit(o);
   }
-  const hiddenLayers = new Set(layers.map(String).filter((r) => (allOff ? !on.has(r) : off.has(r))));
-  // A layer written in place rather than as an object of its own is in no list, so it
-  // takes the default state.
-  const layerShown = (ref) => (ref instanceof PDFRef ? !hiddenLayers.has(String(ref)) : !allOff);
-
-  // A file can be made so that working out its rules takes very long. Past this much work
-  // every rule still unanswered hides; no real file comes near it.
-  let budget = 2000000;
-
-  // A visibility expression: [/And|/Or|/Not operand...], each operand a layer or another
-  // expression. If anything in it is malformed or nests deeper than any real file would
-  // (an expression that contains itself nests forever), the whole expression hides. The
-  // first such part ends the work, and parts already worked out are remembered, so no
-  // file can make this slow.
-  // A part that failed is remembered as failed, along with every part that contained it,
-  // so a shared bad part is not worked through again by each rule that uses it.
-  const known = new Map();
-  const BAD = Symbol('bad');
-  const expression = (ve) => {
-    const stack = [];
-    const go = (x, depth) => {
-      if (--budget < 0) throw BAD;
-      const v = ctxt.lookup(x);
-      if (isLayer(v)) return layerShown(x);
-      if (!(v instanceof PDFArray) || v.size() < 2 || depth > 50) throw BAD;
-      if (known.has(v)) {
-        if (known.get(v) === BAD) throw BAD;
-        return known.get(v);
-      }
-      stack.push(v);
-      const [op, ...rest] = v.asArray();
-      let result;
-      if (String(op) === '/And') result = rest.every((y) => go(y, depth + 1));
-      else if (String(op) === '/Or') result = rest.some((y) => go(y, depth + 1));
-      else if (String(op) === '/Not' && rest.length === 1) result = !go(rest[0], depth + 1);
-      else throw BAD;
-      stack.pop();
-      known.set(v, result);
-      return result;
-    };
-    try {
-      return go(ve, 0);
-    } catch (err) {
-      if (err !== BAD) throw err;
-      for (const v of stack) known.set(v, BAD);
-      return false;
-    }
-  };
-  // The answer for a list of layers under a rule, remembered per list, so many rules
-  // sharing one long list cost one reading of it.
-  const groups = new Map();
-  const ruleShown = (o) => {
-    if (o.get(PDFName.of('VE'))) return expression(o.get(PDFName.of('VE')));
-    const members = o.get(PDFName.of('OCGs'));
-    const m = ctxt.lookup(members);
-    const rule = String(o.get(PDFName.of('P')) || '/AnyOn');
-    const key = m instanceof PDFArray ? m : null;
-    if (key && groups.has(key) && groups.get(key).has(rule)) return groups.get(key).get(rule);
-    budget -= key ? key.size() : 1;
-    if (budget < 0) return false;
-    const group = (key ? key.asArray() : members ? [members] : [])
-      .filter((r) => isLayer(ctxt.lookup(r)))
-      .map(layerShown);
-    let answer;
-    if (!group.length) answer = true;
-    else if (rule === '/AllOn') answer = group.every(Boolean);
-    else if (rule === '/AnyOff') answer = group.some((v) => !v);
-    else if (rule === '/AllOff') answer = group.every((v) => !v);
-    else answer = group.some(Boolean);
-    if (key) {
-      if (!groups.has(key)) groups.set(key, new Map());
-      groups.get(key).set(rule, answer);
-    }
-    return answer;
-  };
 
   // Decided before anything is changed.
-  const answers = new Map(rules.map((o) => [o, ruleShown(o)]));
-  const visible = (oc) => {
-    if (!oc) return true;
-    const o = ctxt.lookup(oc);
-    if (isLayer(o)) return layerShown(oc);
-    if (isRule(o)) return answers.has(o) ? answers.get(o) : ruleShown(o);
-    return true;
-  };
-  // Only pictures and drawings: a viewer ignores /OC on any other stream (a page's own
-  // content, a colour profile, a font), so those are left as they are.
+  const ruleAnswers = new Map(rules.map((o) => [o, visible(o)]));
+  // Only pictures and drawings: pdf.js and every viewer ignore /OC on any other stream (a
+  // page's own content, a colour profile, a font), so those are left as they are.
   const hiddenStreams = streams.filter(([, x]) => ['/Image', '/Form'].includes(String(x.dict.get(PDFName.of('Subtype')))) &&
     !visible(x.dict.get(PDFName.of('OC'))));
+  const propertyAnswers = properties.map((named) => [named, named.entries()
+    .filter(([, value]) => typeOf(ctxt.lookup(value)) === '/OCG')
+    .map(([key, value]) => [key, visible(value)])]);
 
   const shown = ctxt.register(ctxt.obj({ Type: 'OCG', Name: PDFHexString.fromText('מוצג') }));
   const hidden = ctxt.register(ctxt.obj({ Type: 'OCG', Name: PDFHexString.fromText('מוסתר') }));
-  hiddenLayers.add(String(hidden));
   for (const [ref] of hiddenStreams) ctxt.assign(ref, ctxt.stream('', { Type: 'XObject', Subtype: 'Form', BBox: [0, 0, 0, 0] }));
   // Only the keys of a rule are replaced: the same dictionary may serve as something else
   // too, and its other keys are left for that.
-  for (const [o, answer] of answers) {
+  for (const [o, answer] of ruleAnswers) {
     for (const key of ['VE', 'P', 'OCGs']) o.delete(PDFName.of(key));
     o.set(PDFName.of('OCGs'), answer ? shown : hidden);
   }
-  // Marked content names its layer in a /Properties dictionary; each of those, anywhere in
-  // the file, now names the plain shown or hidden layer. Rules there already do (above).
-  for (const named of properties) {
-    for (const [key, value] of named.entries()) {
-      if (isLayer(ctxt.lookup(value))) named.set(key, layerShown(value) ? shown : hidden);
-    }
+  for (const [named, entries] of propertyAnswers) {
+    for (const [key, answer] of entries) named.set(key, answer ? shown : hidden);
   }
-  // So Ghostscript needs to know only the two plain layers. (A list of every original
-  // layer makes it very slow on a file with many.)
   const list = ctxt.obj({ OCGs: [shown, hidden], D: { Order: [shown, hidden], OFF: [hidden] } });
-  return { list, visible };
+  // After the rewrite every rule names a plain layer, so answers come from the record.
+  const decided = (raw) => {
+    const o = ctxt.lookup(raw);
+    if (ruleAnswers.has(o)) return ruleAnswers.get(o);
+    return visible(raw);
+  };
+  return { list, visible: decided };
 }
 
 /**

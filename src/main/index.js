@@ -52,6 +52,7 @@ if (process.env.APPENDIX_BUILDER_SELFTEST) {
     disposeRenderer();
     require('./engine/ocr').shutdown();
     require('./engine/imaging').dispose();
+    require('./engine/pagepicture').dispose();
   });
 }
 
