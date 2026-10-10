@@ -13,6 +13,7 @@ const pagepicture = require('../engine/pagepicture');
 const { ocrFile } = require('./ocr');
 const { loadPdf } = require('../pdf/inspect');
 const { samePages } = require('../engine/verify');
+const docs = require('../docs');
 const { staleFields, drawAppearances } = require('./forms');
 
 const DPI = 200;
@@ -38,7 +39,29 @@ async function run({ inputs, options = {}, ctx }) {
   const marks = Array.isArray(options.marks) ? options.marks.filter(valid) : [];
   if (!marks.length) throw new Error('לא סומן מה להשחיר. סמן אזורים על העמוד, או חפש טקסט וסמן את התוצאות.');
 
-  const doc = await loadPdf(source);
+  // The marks were made on the file as it was when the screen opened it.
+  if (options.forToken && docs.register(source) !== options.forToken) {
+    throw new Error('הקובץ השתנה מאז שסומן, ולכן לא נוצר עותק. פתח אותו שוב וסמן מחדש.');
+  }
+  // Refuses a locked file with its own message.
+  await loadPdf(source);
+
+  // One reading of the file for everything that follows. pdf.js (which drew the screen
+  // and draws the marked pages) and pdf-lib (which copies the other pages) read a file
+  // differently where it is ambiguous: an object written twice, a damaged table of
+  // objects. Then a picture could replace a page other than the one marked, or a kept
+  // page could carry what the marked one held. qpdf writes the file afresh, each object
+  // once, as its table of objects says, as pdf.js reads it; and a file it has to repair
+  // is refused, since then nobody can say which reading the screen showed.
+  ctx.progress(0.02, 'קורא את הקובץ…');
+  await fs.copyFile(source, path.join(ctx.scratch, 'given.pdf'));
+  const q = await bin.run('qpdf', ['--', 'given.pdf', 'single.pdf'], { cwd: ctx.scratch, signal: ctx.signal });
+  ctx.throwIfCancelled();
+  if (q.code !== 0) {
+    throw new Error('הקובץ פגום או בנוי באופן שאינו חד משמעי, ולכן אין ודאות מה בדיוק הוצג במסך. לא נוצר עותק. אפשר להריץ קודם את "תיקון PDF" ולסמן שוב בקובץ המתוקן.');
+  }
+  const single = path.join(ctx.scratch, 'single.pdf');
+  const doc = await loadPdf(single);
   const total = doc.getPageCount();
   const byPage = new Map();
   for (const m of marks) {
@@ -58,22 +81,28 @@ async function run({ inputs, options = {}, ctx }) {
       });
     });
 
-  // The marked pages are drawn by pdf.js from the original, as the screen drew them when
-  // the user marked them (engine/pagepicture.js), so the picture holds what they saw.
-  // First the pages are matched: the marks are numbered as pdf.js numbers the pages, and
-  // the pictures replace pages as pdf-lib numbers them. A file can be made so that the two
-  // disagree, and a picture would then replace a page other than the one marked.
+  // The marked pages are drawn by pdf.js, as the screen drew them when the user marked
+  // them (engine/pagepicture.js), so the picture holds what they saw. First the pages
+  // are matched: the marks are numbered as pdf.js numbers the pages, and the pictures
+  // replace pages as pdf-lib numbers them. A file can be made so that the two disagree,
+  // and a picture would then replace a page other than the one marked.
   ctx.progress(0.05, 'מצייר את העמודים המסומנים…');
+  // The pictures are drawn from the file itself, as the screen drew it. The fresh copy
+  // is read by pdf.js too, to confirm pdf-lib sees its pages as pdf.js does; and the two
+  // pdf.js readings must count the same pages.
   const view = pagepicture.open(source, { signal: ctx.signal });
+  const copyView = pagepicture.open(single, { signal: ctx.signal });
   const blacked = new Map();
   try {
+    let onScreen;
     let shown;
     try {
-      shown = await view.pageList();
+      onScreen = await view.pageList();
+      shown = await copyView.pageList();
     } catch (err) {
       failed(ctx, err);
     }
-    const same = shown.length === total && doc.getPages().every((p, i) =>
+    const same = onScreen.length === total && shown.length === total && doc.getPages().every((p, i) =>
       shown[i][0] === p.ref.objectNumber && shown[i][1] === p.ref.generationNumber);
     if (!same) {
       throw new Error('העמודים בקובץ הזה בנויים כך שאין ודאות איזה עמוד סומן, ולכן לא נוצר עותק. אפשר להריץ קודם "תיקון PDF" ולסמן שוב בקובץ המתוקן.');
@@ -94,6 +123,7 @@ async function run({ inputs, options = {}, ctx }) {
     }
   } finally {
     await view.release();
+    await copyView.release();
   }
   const layers = settleLayers(doc);
 
@@ -204,6 +234,9 @@ function notedRemovals({ handwriting, typed }) {
 function failed(ctx, err) {
   ctx.throwIfCancelled();
   console.error('[redact] drawing the marked pages failed:', err);
+  if (err && err.timedOut) {
+    throw new Error('ציור אחד העמודים המסומנים לא הסתיים גם אחרי שתי דקות, ולכן לא נוצר עותק. העמוד כבד מאוד לציור; אפשר לנסות לכווץ את הקובץ קודם.');
+  }
   throw new Error('לא ניתן היה לצייר את העמודים המסומנים, ולכן לא נוצר עותק. אפשר לנסות קודם את "תיקון PDF".');
 }
 
@@ -521,13 +554,19 @@ function settleLayers(doc) {
   // Whether something carrying this /OC is on screen. With no /OC at all it is. An
   // annotation's /OC counts only when it is a dictionary (setOptionalContent). On an
   // error, /OC null included, pdf.js leaves out a picture or drawing and an annotation,
-  // and shows marked content. (An /OC that is a name is read by pdf.js through the
-  // resources of whatever draws the picture, which differ by use; it is taken as an
-  // error, so such a picture is left out.)
+  // and shows marked content.
   const visible = (raw, use = 'content') => {
     if (raw === undefined) return true;
     const o = ctxt.lookup(raw);
     if (use === 'annot' && (!(o instanceof PDFDict) || o instanceof PDFStream)) return true;
+    if (o instanceof PDFName && use === 'xobject') {
+      // A picture's /OC given as a name: pdf.js looks it up in the /Properties of the
+      // resources that draw the picture, and fails (leaving the picture out) where there
+      // is none. Which resources draw it differs by use, so every /Properties in the file
+      // naming it is read, and the picture shows only if each reading shows it.
+      const found = properties.filter((named) => named.has(o)).map((named) => named.get(o));
+      return found.length > 0 && found.every((v) => visible(v, 'xobject'));
+    }
     const p = parsed(raw);
     if (p === ERROR) return use === 'content';
     if (!p || !groups.size) return true;
@@ -642,4 +681,4 @@ async function withoutLayers(bytes, details) {
   return result.save({ useObjectStreams: true });
 }
 
-module.exports = { run, strip, availability: () => bin.availability('gs') };
+module.exports = { run, strip, availability: () => bin.availability('gs', 'qpdf') };

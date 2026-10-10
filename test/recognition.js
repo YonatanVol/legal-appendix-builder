@@ -23,6 +23,7 @@ const tools = require('../src/main/tools');
 const text = require('../src/main/pdf/text');
 const bin = require('../src/main/engine/binaries');
 const stamp = require('../src/main/pdf/stamp');
+const pagepicture = require('../src/main/engine/pagepicture');
 const runs = require('../src/main/runs');
 const { registerIpc } = require('../src/main/ipc');
 const { renderHtmlToPdf, disposeRenderer } = require('../src/main/pdf/render');
@@ -346,6 +347,7 @@ async function fidelityPdf(file) {
   const oddForms = [
     odd('OC-ODD-NUMBER', 5, 380), odd('OC-ODD-NULL', PDFNull, 370), odd('OC-ODD-ARRAY', [offLayer], 360),
     odd('OC-ODD-STREAM', ctx.register(ctx.stream('x')), 350), odd('OC-ODD-NAME', PDFName.of('Ve'), 340),
+    odd('OC-NAMED-SHOWN', PDFName.of('Vs'), 335),
     odd('OC-ODD-NULLMEMBER', ctx.register(ctx.obj({ Type: 'OCMD', OCGs: [shownLayer, PDFNull], P: 'AnyOn' })), 330),
     odd('OC-SUBTYPE-REF', offLayer, 320),
   ];
@@ -400,6 +402,8 @@ async function fidelityPdf(file) {
     '/OC /Tr BDC BT /F1 12 Tf 50 310 Td (OC-TYPE-REF) Tj ET EMC',
     '/OC /Vr BDC BT /F1 12 Tf 50 300 Td (OC-VIEW-REF) Tj ET EMC',
     '/OC /Nm BDC BT /F1 12 Tf 50 290 Td (OC-NULLMEMBER-MARKED) Tj ET EMC',
+    // A rule written in place in the content rather than named through /Properties.
+    `/OC << /Type /OCMD /OCGs ${offLayer.objectNumber} 0 R >> BDC BT /F1 12 Tf 50 280 Td (OC-INLINE) Tj ET EMC`,
     ...oddForms.map((_, k) => `/Od${k} Do`),
     '/OC /Nt BDC BT /F1 12 Tf 50 430 Td (OC-NOTTWO) Tj ET EMC',
     '/OC /Os BDC BT /F1 12 Tf 50 460 Td (OC-ORSELF) Tj ET EMC',
@@ -503,6 +507,28 @@ function darkIn(file, page, dir) {
   };
   return { stamp: dark(300, 400, 400, 450), check: dark(50, 80, 600, 630), origin: dark(100, 200, 100, 150) };
 }
+
+/**
+ * A PDF written by hand, objects in the order given (the same number may appear twice),
+ * with a table of objects pointing at the last copy of each, or the first for `firstOf`.
+ */
+function rawPdf(objs, { firstOf = [] } = {}) {
+  let out = '%PDF-1.7\n%\xe2\xe3\xcf\xd3\n';
+  const at = {};
+  for (const [num, body] of objs) {
+    const offset = out.length;
+    if (!(num in at) || !firstOf.includes(num)) at[num] = offset;
+    out += `${num} 0 obj\n${body}\nendobj\n`;
+  }
+  const max = Math.max(...objs.map((o) => o[0]));
+  const xref = out.length;
+  out += `xref\n0 ${max + 1}\n0000000000 65535 f \n`;
+  for (let n = 1; n <= max; n++) out += at[n] !== undefined ? `${String(at[n]).padStart(10, '0')} 00000 n \n` : '0000000000 65535 f \n';
+  out += `trailer\n<< /Size ${max + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
+  return Buffer.from(out, 'latin1');
+}
+const rawStream = (t) => `<< /Length ${t.length} >>\nstream\n${t}\nendstream`;
+const rawPage = (contents) => `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 7 0 R >> >> /Contents ${contents} 0 R >>`;
 
 /** How dark each box [x0, x1, y0, y1] (points) of a page is, from 0 to 1, at 72 DPI. */
 function darkAt(file, page, dir, boxes) {
@@ -764,9 +790,20 @@ app.whenReady().then(async () => {
     // layer and must simply be gone.
     const judged = ['PUBLIC-FIDELITY', 'OC-VE-MARKED', 'OC-VE-FORM', 'OC-VE-AND', 'OC-UNLISTED', 'OC-CYCLIC', 'OC-MALFORMED', 'OC-SHORTVE',
       'OC-NOTSELF', 'OC-ORSELF', 'OC-DEEPCHAIN', 'OC-MEMO', 'OC-NOTTWO', 'OC-SINGLEREF-OFF', 'OC-SINGLEREF-ON', 'OC-USAGE-VIEWOFF', 'OC-ONOFF', 'OC-PASTTEN', 'OC-UNKNOWNIN',
-      'OC-TYPE-REF', 'OC-VIEW-REF', 'OC-NULLMEMBER-MARKED', 'OC-ODD-NUMBER', 'OC-ODD-NULL', 'OC-ODD-ARRAY', 'OC-ODD-STREAM', 'OC-ODD-NAME',
-      'OC-ODD-NULLMEMBER', 'OC-SUBTYPE-REF', 'OC-ANNOT-NULLMEMBER', 'OC-AP-OWN-OC', 'OC-ANNOT-NUMBER'];
+      'OC-TYPE-REF', 'OC-VIEW-REF', 'OC-NULLMEMBER-MARKED', 'OC-ODD-NUMBER', 'OC-ODD-ARRAY', 'OC-ODD-STREAM', 'OC-ODD-NAME',
+      'OC-ODD-NULLMEMBER', 'OC-SUBTYPE-REF', 'OC-ANNOT-NULLMEMBER', 'OC-AP-OWN-OC', 'OC-ANNOT-NUMBER', 'OC-NAMED-SHOWN'];
     const differs = judged.filter((x) => raw.includes(x) !== onScreen.has(x));
+    // One known difference, by choice: kept pages are copied from a copy qpdf writes afresh
+    // (so that pdf-lib reads each object as pdf.js does), and qpdf writes /OC null as no
+    // /OC, which is how the specification reads it. pdf.js alone hides such a drawing.
+    check(`  ${mode} comments: a drawing with /OC null, which pdf.js alone hides, shows as the specification reads it`,
+      r.ok && !onScreen.has('OC-ODD-NULL') && raw.includes('OC-ODD-NULL'), r.error);
+    // Another, in a file that is not valid PDF: a rule written in place in a page's content
+    // that names a layer by object number (content may not refer to objects). The fresh
+    // copy numbers objects anew, so the rule no longer names the layer, and what it hid
+    // shows on that unmarked page.
+    check(`  ${mode} comments: a rule naming a layer by number inside page content (not valid PDF) is not followed`,
+      r.ok && !onScreen.has('OC-INLINE') && raw.includes('OC-INLINE'), r.error);
     const nested = ['PATTERNHIDDEN', 'GSTHREEFORMHIDDEN', 'GSTHREEMCHIDDEN', 'TYPETHREEMCHIDDEN', 'TYPETHREEFORMHIDDEN', 'SMASKHIDDEN', 'HIDDENCOMMENT', 'NULLMEMBERCOMMENT', 'SECRET-FIDELITY-P0']
       .filter((x) => raw.includes(x));
     check(`  ${mode} comments: what shows matches what pdf.js showed on screen, marker by marker; what is hidden inside patterns, Type3 letters, soft masks or a comment stays out; the page's own content stays`,
@@ -927,6 +964,61 @@ app.whenReady().then(async () => {
       !r.ok && /אין ודאות איזה עמוד סומן/.test(r.error || '') && fs.readdirSync(dir).length === before, r.error || r.display);
   }
   {
+    // A page object written twice, the table of objects pointing at the first copy (as
+    // pdf.js reads it) while a reader going through the file in order takes the second,
+    // which holds the marked page's content.
+    const objs = [[1, '<< /Type /Catalog /Pages 2 0 R >>'], [2, '<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>'], [3, rawPage(5)], [4, rawPage(6)],
+      [5, rawStream('BT /F1 24 Tf 50 700 Td (SECRET-TWICE) Tj ET')], [6, rawStream('BT /F1 24 Tf 50 700 Td (PUBLIC-TWICE) Tj ET')],
+      [7, '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>'], [4, rawPage(5)]];
+    const twice = path.join(dir, 'twice.pdf');
+    await fsp.writeFile(twice, rawPdf(objs, { firstOf: [4] }));
+    r = await runTool('redact', [twice], { marks: [{ page: 0, x: 0, y: 0, w: 1, h: 1 }] });
+    const raw = r.ok ? expanded(r.display[0], dir) : '';
+    check('  a page object written twice: the kept page is the one the screen showed, and the marked text is nowhere',
+      r.ok && raw.includes('PUBLIC-TWICE') && !raw.includes('SECRET-TWICE'), r.error || 'secret inside');
+    // The same file with its table of objects pointing nowhere useful: refused.
+    const broken = rawPdf(objs, { firstOf: [4] });
+    const at = broken.lastIndexOf('startxref');
+    const damaged = path.join(dir, 'damaged-table.pdf');
+    await fsp.writeFile(damaged, Buffer.concat([broken.subarray(0, at), Buffer.from('startxref\n17\n%%EOF\n')]));
+    r = await runTool('redact', [damaged], { marks: [{ page: 0, x: 0, y: 0, w: 1, h: 1 }] });
+    check('  a file whose table of objects has to be repaired is refused, pointing to Repair PDF', !r.ok && /תיקון PDF/.test(r.error || ''), r.error);
+    // A page at the end that pdf.js counts and pdf-lib does not: the counts differ.
+    const tail = rawPdf([[1, '<< /Type /Catalog /Pages 2 0 R >>'], [2, '<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>'], [3, rawPage(5)],
+      [4, rawPage(5).replace('/Type /Page ', '')], [5, rawStream('BT /F1 24 Tf 50 700 Td (TAIL) Tj ET')], [7, '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>']]);
+    const tailFile = path.join(dir, 'tail.pdf');
+    await fsp.writeFile(tailFile, tail);
+    r = await runTool('redact', [tailFile], { marks: [{ page: 0, x: 0, y: 0, w: 1, h: 1 }] });
+    check('  a file whose last page only pdf.js counts is refused', !r.ok && /אין ודאות איזה עמוד סומן/.test(r.error || ''), r.error || 'redacted');
+    // Marks made on another version of the file.
+    r = await runTool('redact', [twice], { marks: [{ page: 0, x: 0, y: 0, w: 1, h: 1 }], forToken: 'not-this-version' });
+    check('  marks made on another version of the file are refused', !r.ok && /השתנה מאז שסומן/.test(r.error || ''), r.error);
+  }
+  {
+    // The picture of a marked page has the size pdf.js shows the page at: turned, with a
+    // crop box larger than the page, and in units twice the usual.
+    const d = await PDFDocument.create();
+    const p0 = d.addPage([400, 600]);
+    p0.setRotation(degrees(90));
+    const p1 = d.addPage([400, 600]);
+    p1.node.set(PDFName.of('CropBox'), d.context.obj([-50, -50, 450, 650]));
+    const p2 = d.addPage([400, 600]);
+    p2.node.set(PDFName.of('UserUnit'), d.context.obj(2));
+    const sized = path.join(dir, 'sizes.pdf');
+    await fsp.writeFile(sized, await d.save());
+    r = await runTool('redact', [sized], { marks: [0, 1, 2].map((page) => ({ page, x: 0.1, y: 0.1, w: 0.1, h: 0.1 })) });
+    const lib = await text.pdfjs();
+    const orig = await lib.getDocument({ data: new Uint8Array(await fsp.readFile(sized)), isEvalSupported: false }).promise;
+    const want = [];
+    for (let i = 1; i <= 3; i++) {
+      const v = (await orig.getPage(i)).getViewport({ scale: 1 });
+      want.push([Math.round(v.width), Math.round(v.height)]);
+    }
+    await orig.destroy();
+    const got = r.ok ? (await PDFDocument.load(await fsp.readFile(r.display[0]))).getPages().map((pg) => pg.getSize()).map((z) => [Math.round(z.width), Math.round(z.height)]) : [];
+    check('  each redacted page is the size pdf.js shows it at (turned, larger crop box, larger units)', r.ok && JSON.stringify(got) === JSON.stringify(want), `${JSON.stringify(got)} vs ${JSON.stringify(want)}`);
+  }
+  {
     // Esc while pdf.js is still drawing a page that takes long to draw.
     const d = await PDFDocument.create();
     const ctx = d.context;
@@ -939,15 +1031,17 @@ app.whenReady().then(async () => {
     await fsp.writeFile(slowPage, await d.save());
     let jobId = null;
     let askedAt = 0;
+    let started = false;
     const job = jobs.start(tools.runnable('redact'), [slowPage], { marks: [{ page: 0, x: 0.1, y: 0.1, w: 0.2, h: 0.2 }] }, {
       onProgress: (p) => {
-        // Progress is sent at most every 33 ms, so the drawing stage is caught by its
-        // first message; Esc comes a second and a half into drawing.
-        if (!askedAt && /מצייר את העמודים המסומנים/.test(p.text || '')) {
+        // Progress is sent at most every 33 ms, so the job is caught by its first message;
+        // Esc comes three seconds later, well inside the page's drawing (over 20 s here).
+        if (!started) {
+          started = true;
           setTimeout(() => {
             askedAt = Date.now();
             jobs.cancel(jobId);
-          }, 1500);
+          }, 3000);
         }
       },
     });
@@ -955,6 +1049,26 @@ app.whenReady().then(async () => {
     const c = await job.promise;
     const after = askedAt ? Date.now() - askedAt : -1;
     check('  Esc stops a page that is still being drawn, within moments', c.cancelled && after >= 0 && after < 4000, `${c.cancelled ? 'cancelled' : c.error || 'finished'} after ${after} ms`);
+    check('    and closes the drawing window, which is the only way to stop pdf.js mid-page', !pagepicture.windowForTest());
+    // The drawing window's page dies mid-drawing: the job ends at once, not at the time limit.
+    let crashedAt = 0;
+    let crashStarted = false;
+    const crash = jobs.start(tools.runnable('redact'), [slowPage], { marks: [{ page: 0, x: 0.1, y: 0.1, w: 0.2, h: 0.2 }] }, {
+      onProgress: () => {
+        if (crashStarted) return;
+        crashStarted = true;
+        setTimeout(() => {
+          const w = pagepicture.windowForTest();
+          crashedAt = Date.now();
+          if (w) w.webContents.forcefullyCrashRenderer();
+        }, 3000);
+      },
+    });
+    const cr = await crash.promise;
+    const ended = crashedAt ? Date.now() - crashedAt : -1;
+    check('  when the drawing window dies mid-page, the job ends at once with a message', !cr.ok && !cr.cancelled && ended >= 0 && ended < 4000 && /לצייר/.test(cr.error || ''), `${cr.error} after ${ended} ms`);
+    r = await runTool('redact', [fidelity], { marks: [{ page: 0, x: 0, y: 0, w: 1, h: 1 }] });
+    check('    and the next redaction works', r.ok, r.error);
   }
 
   /* ---- PDF to Excel ---- */

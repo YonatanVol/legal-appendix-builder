@@ -61,6 +61,10 @@ function call(code, { signal, limit = PAGE_LIMIT_MS } = {}) {
       done = true;
       clearTimeout(timer);
       if (signal) signal.removeEventListener('abort', onAbort);
+      if (!w.isDestroyed()) {
+        w.webContents.removeListener('render-process-gone', onGone);
+        w.webContents.removeListener('destroyed', onGone);
+      }
       fn(value);
     };
     const onAbort = () => {
@@ -69,8 +73,12 @@ function call(code, { signal, limit = PAGE_LIMIT_MS } = {}) {
     };
     const timer = setTimeout(() => {
       dispose();
-      finish(reject, new Error('drawing the page took too long'));
+      finish(reject, Object.assign(new Error('drawing the page took too long'), { timedOut: true }));
     }, limit);
+    // A window that is gone never answers: say so at once rather than at the time limit.
+    const onGone = () => finish(reject, new Error('the drawing window was lost'));
+    w.webContents.once('render-process-gone', onGone);
+    w.webContents.once('destroyed', onGone);
     if (signal) {
       if (signal.aborted) return onAbort();
       signal.addEventListener('abort', onAbort, { once: true });
@@ -103,9 +111,14 @@ function open(file, { signal } = {}) {
   };
 }
 
+/** For tests: whether the window is open, and the window itself. */
+function windowForTest() {
+  return win && !win.isDestroyed() ? win : null;
+}
+
 function dispose() {
   if (win && !win.isDestroyed()) win.destroy();
   win = null;
 }
 
-module.exports = { open, dispose };
+module.exports = { open, dispose, windowForTest };

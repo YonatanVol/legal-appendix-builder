@@ -268,10 +268,22 @@ function run() {
 
     // Redact from inside the package: the marked page is drawn by pdf.js in a hidden
     // window served from the installed program, and no text of it may be left.
-    const redacted = await page(`window.api.startJob(${JSON.stringify({ toolId: 'redact', inputs: [a], options: { marks: [{ page: 0, x: 0, y: 0, w: 1, h: 1 }] } })})`);
+    // Two pages of text; the other page must keep its own, so a picture on the wrong page
+    // would show.
+    const worded = path.join(scratch, 'tool-words.pdf');
+    {
+      const { StandardFonts } = require('pdf-lib');
+      const doc = await PDFDocument.create();
+      const font = await doc.embedFont(StandardFonts.Helvetica);
+      doc.addPage([595.28, 841.89]).drawText('MARKED PAGE ONE', { x: 60, y: 700, size: 18, font });
+      doc.addPage([595.28, 841.89]).drawText('KEPT PAGE TWO', { x: 60, y: 700, size: 18, font });
+      await fsp.writeFile(worded, await doc.save());
+    }
+    const redacted = await page(`window.api.startJob(${JSON.stringify({ toolId: 'redact', inputs: [worded], options: { marks: [{ page: 0, x: 0, y: 0, w: 1, h: 1 }] } })})`);
     const redactedText = redacted.ok ? (await require('./pdf/text').documentText(redacted.display[0])) : [];
-    check('a page is redacted, drawn by pdf.js inside the package, with none of its text left',
-      redacted.ok && redactedText.length > 0 && redactedText[0].trim() === '', redacted.ok ? JSON.stringify(redactedText[0]).slice(0, 80) : redacted.error);
+    check('a page is redacted, drawn by pdf.js inside the package: none of its text is left, and the other page keeps its own',
+      redacted.ok && redactedText.length === 2 && !/MARKED/.test(redactedText[0]) && /KEPT PAGE TWO/.test(redactedText[1]),
+      redacted.ok ? JSON.stringify(redactedText).slice(0, 120) : redacted.error);
 
     // Recognition from inside the package: Hebrew stamped by Chromium, drawn as a picture
     // by Ghostscript, then scanned back, cleaned and read by Tesseract in its own process.
