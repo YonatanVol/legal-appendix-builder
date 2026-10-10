@@ -67,4 +67,48 @@ async function inspect(filePath) {
   };
 }
 
-module.exports = { loadPdf, inspect, A4 };
+/**
+ * What the tool screens show for a file the user dropped. Never throws: a file that
+ * cannot be used comes back with `error` (and `encrypted` when that is the reason),
+ * so the list can show the row with the problem next to it instead of refusing the
+ * whole drop.
+ */
+async function describe(filePath) {
+  const name = path.basename(filePath);
+  const ext = path.extname(filePath).replace('.', '').toLowerCase();
+  let size = 0;
+  try {
+    size = (await fs.stat(filePath)).size;
+  } catch (err) {
+    return { path: filePath, name, ext, size, pageCount: 0, error: `לא ניתן לקרוא את הקובץ "${name}": ${err.message}` };
+  }
+
+  if (ext !== 'pdf') return { path: filePath, name, ext, size, pageCount: 0 };
+
+  try {
+    const bytes = await fs.readFile(filePath);
+    if (bytes.length === 0) return { path: filePath, name, ext, size, pageCount: 0, error: `הקובץ "${name}" ריק.` };
+    if (bytes.subarray(0, 5).toString('latin1') !== '%PDF-') {
+      return { path: filePath, name, ext, size, pageCount: 0, error: `הקובץ "${name}" אינו קובץ PDF תקין.` };
+    }
+    const doc = await PDFDocument.load(bytes, { ignoreEncryption: true });
+    const encrypted = doc.isEncrypted;
+    const pageCount = doc.getPageCount();
+    const first = pageCount ? doc.getPage(0) : null;
+    const pageSize = first ? first.getSize() : null;
+    return {
+      path: filePath,
+      name,
+      ext,
+      size,
+      pageCount,
+      pageSize,
+      encrypted,
+      error: encrypted ? `הקובץ "${name}" מוגן בסיסמה. הסר את הסיסמה בכלי "הסרת סיסמה" ונסה שוב.` : undefined,
+    };
+  } catch (err) {
+    return { path: filePath, name, ext, size, pageCount: 0, error: `הקובץ "${name}" פגום או לא נתמך. אפשר לנסות את כלי "תיקון PDF".` };
+  }
+}
+
+module.exports = { loadPdf, inspect, describe, A4 };

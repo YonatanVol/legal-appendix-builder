@@ -8,7 +8,8 @@ const { session } = require('electron');
 //
 // data: is required: generated pages are handed to Chromium as data: URLs so that no
 // case details are ever written to a temporary file.
-const ALLOWED_SCHEMES = new Set(['file:', 'data:', 'blob:', 'devtools:', 'chrome-extension:']);
+// app: is the renderer itself, served from disk by protocol.js.
+const ALLOWED_SCHEMES = new Set(['app:', 'file:', 'data:', 'blob:', 'devtools:', 'chrome-extension:']);
 
 function isAllowed(url) {
   try {

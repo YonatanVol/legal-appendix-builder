@@ -33,6 +33,27 @@ contextBridge.exposeInMainWorld('api', {
     return () => ipcRenderer.removeListener('bundle:progress', listener);
   },
 
+  // The tool grid.
+  listTools: () => ipcRenderer.invoke('tools:list'),
+  describeFiles: (paths) => ipcRenderer.invoke('files:describe', paths),
+  pickFiles: (spec) => ipcRenderer.invoke('files:pick', spec),
+  pickFolder: (spec) => ipcRenderer.invoke('folder:pick', spec),
+  startJob: (spec) => ipcRenderer.invoke('job:start', spec),
+  cancelJob: (id) => ipcRenderer.invoke('job:cancel', id),
+  onJobProgress: (callback) => {
+    const listener = (_event, progress) => callback(progress);
+    ipcRenderer.on('job:progress', listener);
+    return () => ipcRenderer.removeListener('job:progress', listener);
+  },
+  onJobStarted: (callback) => {
+    const listener = (_event, info) => callback(info);
+    ipcRenderer.on('job:started', listener);
+    return () => ipcRenderer.removeListener('job:started', listener);
+  },
+  runsList: () => ipcRenderer.invoke('runs:list'),
+  runsRemove: (id) => ipcRenderer.invoke('runs:remove', id),
+  recentFiles: () => ipcRenderer.invoke('runs:recent'),
+
   // Electron 32+ no longer exposes File.path; this is the supported replacement.
   pathForFile: (file) => webUtils.getPathForFile(file),
 });

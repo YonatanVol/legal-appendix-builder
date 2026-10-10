@@ -14,6 +14,7 @@ const fsp = require('fs/promises');
 const os = require('os');
 const path = require('path');
 const { app, BrowserWindow } = require('electron');
+const { openWindow } = require('./helpers/window');
 
 const FIXTURES = path.join(__dirname, 'fixtures');
 const { version } = require('../package.json');
@@ -60,11 +61,7 @@ app.whenReady().then(async () => {
   updater.start({ getWindow: () => win, isBuilding, version });
   check('the pending note is consumed once the version matches', !fs.existsSync(pendingFile));
 
-  win = new BrowserWindow({
-    width: 1040, height: 900, show: false,
-    webPreferences: { preload: path.join(__dirname, '..', 'src', 'preload.js'), contextIsolation: true, nodeIntegration: false },
-  });
-  await win.loadFile(path.join(__dirname, '..', 'src', 'renderer', 'index.html'));
+  win = await openWindow({ screen: 'appendix' });
   const run = (code) => win.webContents.executeJavaScript(code, true);
   const settle = (ms = 150) => run(`new Promise(r => setTimeout(r, ${ms}))`);
   const hidden = (id) => run(`document.getElementById(${JSON.stringify(id)}).classList.contains('hidden')`);
