@@ -355,6 +355,163 @@ function previewPage(host, view, file, index, width) {
   return stage;
 }
 
+/** A picture the page can read (by its document link) as a data: URL, for embedding. */
+async function dataUrlOf(url) {
+  const blob = await (await fetch(url)).blob();
+  return new Promise((resolve) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.readAsDataURL(blob);
+  });
+}
+
+/**
+ * Making a signature: draw it, type it, or take it from a picture. Pictures have their
+ * white background made transparent and are cut to the ink, so a photographed
+ * signature sits on the page like a pen stroke.
+ */
+function openSignatureMaker(onSave) {
+  const dlg = document.createElement('dialog');
+  dlg.className = 'sig-dialog';
+  dlg.innerHTML = `
+    <h2>חתימה חדשה</h2>
+    <div class="segmented sig-tabs" role="tablist">
+      <button type="button" class="seg on" data-tab="draw">ציור</button>
+      <button type="button" class="seg" data-tab="type">הקלדה</button>
+      <button type="button" class="seg" data-tab="image">מתמונה</button>
+    </div>
+    <div class="sig-pane" data-pane="draw">
+      <canvas width="560" height="200" class="sig-canvas"></canvas>
+      <div class="opt-row"><button type="button" class="ghost small" data-act="clear">ניקוי</button>
+        <span class="swatches"><button type="button" class="swatch on" style="background:#1a1a1a" data-ink="#1a1a1a" title="שחור"></button><button type="button" class="swatch" style="background:#1f3fa8" data-ink="#1f3fa8" title="כחול"></button></span></div>
+    </div>
+    <div class="sig-pane" data-pane="type" hidden>
+      <input type="text" class="sig-typed" dir="auto" placeholder="השם כפי שתרצה שייחתם">
+      <canvas width="560" height="160" class="sig-preview"></canvas>
+    </div>
+    <div class="sig-pane" data-pane="image" hidden>
+      <button type="button" class="secondary" data-act="pick">בחירת תמונה של חתימה…</button>
+      <canvas width="560" height="200" class="sig-from-image"></canvas>
+      <p class="opt-hint">הרקע הלבן מוסר אוטומטית. כדאי לצלם על דף לבן, באור טוב.</p>
+    </div>
+    <p class="sig-error opt-preview bad"></p>
+    <div class="sig-actions"><button type="button" class="primary" data-act="save">שמירה</button><button type="button" class="ghost" data-act="cancel">ביטול</button></div>`;
+  document.body.append(dlg);
+  const $$ = (sel) => dlg.querySelector(sel);
+  let tab = 'draw';
+  let ink = '#1a1a1a';
+  let drew = false;
+  let imageCanvas = null;
+
+  dlg.querySelectorAll('.sig-tabs .seg').forEach((b) => b.addEventListener('click', () => {
+    tab = b.dataset.tab;
+    dlg.querySelectorAll('.sig-tabs .seg').forEach((x) => x.classList.toggle('on', x === b));
+    dlg.querySelectorAll('.sig-pane').forEach((p) => { p.hidden = p.dataset.pane !== tab; });
+  }));
+
+  const pad = $$('.sig-canvas');
+  const ctx = pad.getContext('2d');
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  let last = null;
+  pad.addEventListener('pointerdown', (e) => {
+    pad.setPointerCapture(e.pointerId);
+    const r = pad.getBoundingClientRect();
+    last = [(e.clientX - r.left) * (pad.width / r.width), (e.clientY - r.top) * (pad.height / r.height)];
+  });
+  pad.addEventListener('pointermove', (e) => {
+    if (!last) return;
+    const r = pad.getBoundingClientRect();
+    const p = [(e.clientX - r.left) * (pad.width / r.width), (e.clientY - r.top) * (pad.height / r.height)];
+    // Faster strokes are thinner, the way ink behaves.
+    const speed = Math.hypot(p[0] - last[0], p[1] - last[1]);
+    ctx.lineWidth = Math.max(1.4, 4 - speed / 12);
+    ctx.strokeStyle = ink;
+    ctx.beginPath();
+    ctx.moveTo(last[0], last[1]);
+    ctx.lineTo(p[0], p[1]);
+    ctx.stroke();
+    last = p;
+    drew = true;
+  });
+  pad.addEventListener('pointerup', () => { last = null; });
+  $$('[data-act="clear"]').addEventListener('click', () => { ctx.clearRect(0, 0, pad.width, pad.height); drew = false; });
+  dlg.querySelectorAll('[data-ink]').forEach((b) => b.addEventListener('click', () => {
+    ink = b.dataset.ink;
+    dlg.querySelectorAll('[data-ink]').forEach((x) => x.classList.toggle('on', x === b));
+  }));
+
+  const typed = $$('.sig-typed');
+  const preview = $$('.sig-preview');
+  const drawTyped = () => {
+    const c = preview.getContext('2d');
+    c.clearRect(0, 0, preview.width, preview.height);
+    c.fillStyle = ink;
+    c.font = "italic bold 64px 'David Bundled', David, serif";
+    c.textAlign = 'center';
+    c.textBaseline = 'middle';
+    c.direction = /[֐-׿]/.test(typed.value) ? 'rtl' : 'ltr';
+    c.fillText(typed.value, preview.width / 2, preview.height / 2);
+  };
+  typed.addEventListener('input', drawTyped);
+
+  $$('[data-act="pick"]').addEventListener('click', async () => {
+    const r = await window.shell.pickFiles({ extensions: ['png', 'jpg', 'jpeg'], multiple: false, title: 'תמונה של חתימה' });
+    if (!r.ok || r.cancelled || !r.files.length || !r.files[0].token) return;
+    const img = new Image();
+    img.onload = () => {
+      const c = $$('.sig-from-image');
+      const scale = Math.min(c.width / img.naturalWidth, c.height / img.naturalHeight);
+      const g = c.getContext('2d', { willReadFrequently: true });
+      g.clearRect(0, 0, c.width, c.height);
+      g.drawImage(img, (c.width - img.naturalWidth * scale) / 2, (c.height - img.naturalHeight * scale) / 2, img.naturalWidth * scale, img.naturalHeight * scale);
+      const data = g.getImageData(0, 0, c.width, c.height);
+      for (let i = 0; i < data.data.length; i += 4) {
+        const v = (data.data[i] + data.data[i + 1] + data.data[i + 2]) / 3;
+        // Paper fades out smoothly, ink stays.
+        data.data[i + 3] = v > 200 ? 0 : v > 140 ? Math.round(((200 - v) / 60) * 255) : 255;
+      }
+      g.putImageData(data, 0, 0);
+      imageCanvas = c;
+    };
+    img.src = `/doc/${encodeURIComponent(r.files[0].token)}`;
+  });
+
+  /** The canvas cut to its ink, as a PNG data URL, or null if it is empty. */
+  const trimmed = (canvas) => {
+    const g = canvas.getContext('2d', { willReadFrequently: true });
+    const { data, width, height } = g.getImageData(0, 0, canvas.width, canvas.height);
+    let x0 = width, y0 = height, x1 = -1, y1 = -1;
+    for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
+      if (data[(y * width + x) * 4 + 3] > 20) { if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; }
+    }
+    if (x1 < 0) return null;
+    const out = document.createElement('canvas');
+    out.width = x1 - x0 + 9;
+    out.height = y1 - y0 + 9;
+    out.getContext('2d').drawImage(canvas, x0 - 4, y0 - 4, out.width, out.height, 0, 0, out.width, out.height);
+    return out.toDataURL('image/png');
+  };
+
+  const close = () => { dlg.close(); dlg.remove(); };
+  $$('[data-act="cancel"]').addEventListener('click', close);
+  dlg.addEventListener('cancel', close);
+  $$('[data-act="save"]').addEventListener('click', () => {
+    let url = null;
+    if (tab === 'draw') url = drew ? trimmed(pad) : null;
+    else if (tab === 'type') url = typed.value.trim() ? trimmed(preview) : null;
+    else url = imageCanvas ? trimmed(imageCanvas) : null;
+    if (!url) {
+      $$('.sig-error').textContent = tab === 'draw' ? 'צייר חתימה בתיבה.' : tab === 'type' ? 'כתוב את השם.' : 'בחר תמונה של חתימה.';
+      return;
+    }
+    onSave(url, tab);
+    close();
+  });
+  dlg.showModal();
+  return dlg;
+}
+
 /* ---------------- the panels ---------------- */
 
 const panels = {
@@ -1332,7 +1489,7 @@ const panels = {
           status.textContent = r.error;
           return;
         }
-        status.textContent = `נסרקו ${pagesWord(r.files.length)}${r.device ? ` מ-${r.device}` : ''}. אפשר לסרוק עוד או להפיק PDF.`;
+        status.textContent = r.warning || `נסרקו ${pagesWord(r.files.length)}${r.device ? ` מ-${r.device}` : ''}. אפשר לסרוק עוד או להפיק PDF.`;
         window.shell.addFiles(r.files);
       });
 
@@ -1534,11 +1691,17 @@ const panels = {
       }
 
       /** Where a match sits inside a run of text, by its share of the characters. */
+      // Where a match sits is estimated from its share of the characters, which a
+      // proportional font or mixed Hebrew and digits can throw off. So the box reaches a
+      // full average character further on each side: covering too much is safe, too
+      // little is not.
       function subBox(b, start, end) {
         const len = b.str.length || 1;
-        if (b.vertical) return { x: b.x, y: b.y + (b.h * start) / len, w: b.w, h: (b.h * (end - start)) / len };
-        const from = b.rtl ? 1 - end / len : start / len;
-        return { x: b.x + b.w * from, y: b.y, w: (b.w * (end - start)) / len, h: b.h };
+        const s = Math.max(0, start - 1);
+        const e2 = Math.min(len, end + 1);
+        if (b.vertical) return { x: b.x - b.w * 0.1, y: b.y + (b.h * s) / len, w: b.w * 1.2, h: (b.h * (e2 - s)) / len };
+        const from = b.rtl ? 1 - e2 / len : s / len;
+        return { x: b.x + b.w * from, y: b.y - b.h * 0.1, w: (b.w * (e2 - s)) / len, h: b.h * 1.2 };
       }
 
       async function findAll(re, what) {
@@ -1610,6 +1773,348 @@ const panels = {
       ui.note(box, 'עמודים סרוקים עוברים קודם זיהוי טקסט. במקרה כזה כדאי לבדוק את המספרים מול המקור.', 'muted');
     },
     blocked: () => null,
+  },
+
+  edit: {
+    defaults: () => ({ objects: [] }),
+    render(container, view) {
+      const file = firstFile(view);
+      const help = ui.section(container, 'איך עורכים',
+        'בחר כלי בסרגל שמעל העמוד ולחץ או גרור על העמוד. לחיצה כפולה על טקסט עורכת אותו, Delete מוחק את הנבחר, Ctrl+Z מבטל.');
+      const count = ui.note(help, '', 'muted');
+      if (!file || !file.token) return;
+      if (view.options.forToken && view.options.forToken !== file.token) view.set('objects', []);
+      view.set('forToken', file.token);
+      const paint = () => {
+        const n = view.options.objects.length;
+        count.textContent = n ? `${n === 1 ? 'פריט אחד' : `${n} פריטים`} על העמודים.` : 'עוד לא נוסף דבר.';
+      };
+      const editor = new window.PageEditor(view.pagesHost, {
+        token: file.token,
+        pageCount: file.pageCount,
+        objects: view.options.objects,
+        tools: ['select', 'text', 'image', 'rect', 'ellipse', 'line', 'arrow', 'path', 'highlight', 'whiteout'],
+        thumb: view.pageThumb,
+        sizes: shownSizes(view, file),
+        onChange: (objects) => {
+          view.set('objects', objects.map(({ id, ...o }) => o));
+          paint();
+        },
+        pickImage: async () => {
+          const r = await view.pick({ extensions: ['png', 'jpg', 'jpeg'], multiple: false, title: 'תמונה להוספה' });
+          if (!r.ok || r.cancelled || !r.files.length || !r.files[0].token) return null;
+          return dataUrlOf(`/doc/${encodeURIComponent(r.files[0].token)}`);
+        },
+      });
+      mem.editor = editor;
+      paint();
+    },
+    blocked: (view) => ((view.options.objects || []).length ? null : 'הוסף משהו לעמוד: בחר כלי בסרגל ולחץ על העמוד.'),
+    onEscape: () => (mem.editor ? mem.editor.escape() : false),
+  },
+
+  sign: {
+    defaults: () => ({ objects: [], certificate: '', certificateName: '', certPassword: '', name: '' }),
+    render(container, view) {
+      const o = view.options;
+      const file = firstFile(view);
+      let current = null; // what a click on the page places
+
+      const mine = ui.section(container, 'החתימות שלי', 'בחר חתימה ולחץ על המקום בעמוד. החתימות נשמרות רק במחשב הזה.');
+      const gallery = document.createElement('div');
+      gallery.className = 'sig-gallery';
+      mine.append(gallery);
+      ui.button(mine, { label: 'חתימה חדשה…', onClick: () => openSignatureMaker(async (dataUrl, kind) => {
+        const r = await window.api.signaturesSave({ dataUrl, kind });
+        if (!r.ok) return view.error(r.error);
+        await loadGallery(r.signature.id);
+      }) });
+
+      const more = ui.section(container, 'עוד להוסיף');
+      ui.text(more, { label: 'שם החותם', value: o.name, placeholder: 'למשל: עו"ד רון קלנר', onInput: (v) => view.set('name', v) });
+      const quick = ui.row(more);
+      const today = () => {
+        const d = new Date();
+        return `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}/${d.getFullYear()}`;
+      };
+      const initials = (name) => name.replace(/עו"ד|עו״ד|ד"ר|ד״ר/g, '').trim().split(/\s+/).filter(Boolean).map((w) => w[0]).join('.') + '.';
+      const choose = (label, make) => ui.button(quick, { label, onClick: () => {
+        const item = make();
+        if (!item) return view.error('כתוב קודם את שם החותם.');
+        current = item;
+        placing.textContent = `לחץ על המקום בעמוד כדי להוסיף: ${label}.`;
+        if (editor) editor.setTool('place');
+      } });
+      const textItem = (text) => ({ type: 'text', text, size: 13, color: '#1a1a1a', align: 'right', w: Math.max(0.12, text.length * 0.012), h: 0.022 });
+      choose('שם', () => (o.name.trim() ? textItem(o.name.trim()) : null));
+      choose('תאריך', () => textItem(today()));
+      choose('ראשי תיבות', () => (o.name.trim() ? textItem(initials(o.name)) : null));
+      const placing = ui.note(more, '', 'muted');
+
+      const cert = ui.section(container, 'חתימה דיגיטלית (לא חובה)',
+        'עם קובץ תעודה (pfx) הקובץ נחתם גם דיגיטלית: Acrobat יראה מי חתם, וכל שינוי אחרי החתימה יבטל אותה. בלי תעודה, החתימה חזותית בלבד.');
+      const certRow = ui.row(cert);
+      ui.button(certRow, { label: o.certificateName ? 'החלפת תעודה' : 'בחירת קובץ תעודה…', onClick: async () => {
+        const r = await view.pick({ extensions: ['pfx', 'p12'], multiple: false, title: 'קובץ תעודה לחתימה דיגיטלית' });
+        if (!r.ok || r.cancelled || !r.files.length) return;
+        view.set('certificate', r.files[0].path);
+        view.set('certificateName', r.files[0].name);
+        view.rerender();
+      } });
+      if (o.certificateName) {
+        ui.button(certRow, { label: 'הסרה', kind: 'ghost', onClick: () => { view.set('certificate', ''); view.set('certificateName', ''); view.rerender(); } });
+        ui.note(cert, o.certificateName, 'muted');
+        ui.password(cert, { label: 'סיסמת התעודה', value: o.certPassword, onInput: (v) => view.set('certPassword', v) });
+      }
+
+      async function loadGallery(selectId) {
+        const r = await window.api.signaturesList();
+        gallery.replaceChildren();
+        const list = r.ok ? r.signatures : [];
+        if (!list.length) {
+          const empty = document.createElement('p');
+          empty.className = 'opt-hint';
+          empty.textContent = 'עוד אין חתימות שמורות. לחץ "חתימה חדשה" כדי ליצור אחת.';
+          gallery.append(empty);
+        }
+        for (const sig of list) {
+          const card = document.createElement('div');
+          card.className = 'sig-card';
+          const pick = document.createElement('button');
+          pick.type = 'button';
+          pick.className = 'sig-pick';
+          pick.title = 'לחץ ואז לחץ על העמוד';
+          const img = new Image();
+          img.src = sig.dataUrl;
+          img.alt = 'חתימה';
+          pick.append(img);
+          pick.addEventListener('click', () => {
+            gallery.querySelectorAll('.sig-pick').forEach((b) => b.classList.toggle('on', b === pick));
+            const probe = new Image();
+            probe.onload = () => {
+              const w = 0.22;
+              const sizes = editor ? editor.pageH / editor.pageW : 1.414;
+              current = { type: 'image', src: sig.dataUrl, w, h: (w * probe.naturalHeight / probe.naturalWidth) / sizes };
+              placing.textContent = 'לחץ על המקום בעמוד כדי להציב את החתימה. אפשר לגרור ולהגדיל אותה אחר כך.';
+              if (editor) editor.setTool('place');
+            };
+            probe.src = sig.dataUrl;
+          });
+          const del = document.createElement('button');
+          del.type = 'button';
+          del.className = 'ghost icon remove';
+          del.textContent = '✕';
+          del.title = 'מחיקת החתימה השמורה';
+          del.addEventListener('click', async () => {
+            if (!window.confirm('למחוק את החתימה השמורה הזו? חתימות שכבר הוצבו בקבצים לא יושפעו.')) return;
+            await window.api.signaturesRemove(sig.id);
+            loadGallery();
+          });
+          card.append(pick, del);
+          gallery.append(card);
+          if (sig.id === selectId) pick.click();
+        }
+      }
+      loadGallery();
+
+      let editor = null;
+      if (file && file.token) {
+        if (o.forToken && o.forToken !== file.token) view.set('objects', []);
+        view.set('forToken', file.token);
+        editor = new window.PageEditor(view.pagesHost, {
+          token: file.token,
+          pageCount: file.pageCount,
+          objects: o.objects,
+          tools: ['select'],
+          thumb: view.pageThumb,
+          sizes: shownSizes(view, file),
+          onChange: (objects) => view.set('objects', objects.map(({ id, ...x }) => x)),
+          placeItem: () => {
+            const item = current;
+            editor.setTool('select');
+            placing.textContent = '';
+            return item;
+          },
+        });
+        mem.editor = editor;
+      }
+    },
+    blocked(view) {
+      const o = view.options;
+      if (!(o.objects || []).length && !o.certificate) return 'בחר חתימה ולחץ על המקום בעמוד.';
+      if (o.certificate && !o.certPassword) return 'כתוב את סיסמת קובץ התעודה.';
+      return null;
+    },
+    onEscape: () => (mem.editor ? mem.editor.escape() : false),
+  },
+
+  forms: {
+    defaults: () => ({ values: {}, flatten: false, objects: [] }),
+    render(container, view) {
+      const o = view.options;
+      const file = firstFile(view);
+      const fieldsBox = ui.section(container, 'שדות הטופס');
+      const list = document.createElement('div');
+      list.className = 'field-list';
+      fieldsBox.append(list);
+      const status = ui.note(fieldsBox, 'קורא את הטופס…', 'muted');
+      const create = ui.section(container, 'שדות חדשים', 'בחר סוג שדה בסרגל שמעל העמוד וגרור על העמוד כדי למקם אותו.');
+      const newList = document.createElement('div');
+      newList.className = 'field-list';
+      create.append(newList);
+      const finish = ui.section(container, 'סיום');
+      ui.check(finish, { label: 'השטחה: השדות הופכים לחלק מהעמוד ולא ניתנים לעריכה', value: o.flatten, onChange: (v) => view.set('flatten', v) });
+
+      if (!file || !file.token) return;
+      if (o.forToken && o.forToken !== file.token) {
+        view.set('values', {});
+        view.set('objects', []);
+      }
+      view.set('forToken', file.token);
+      let fields = [];
+      const inputs = new Map();
+
+      const syncCreate = () => {
+        const made = (o.objects || []).filter((x) => x.type === 'field');
+        view.set('create', made.map((x) => ({ type: x.kind === 'checkbox' ? 'checkbox' : x.kind === 'dropdown' ? 'dropdown' : x.kind === 'signature' ? 'signature' : 'text', name: x.name, page: x.page, x: x.x, y: x.y, w: x.w, h: x.h, options: x.options || [], align: 'right' })));
+        newList.replaceChildren();
+        made.forEach((x) => {
+          const row = document.createElement('label');
+          row.className = 'field-row';
+          const kind = document.createElement('span');
+          kind.className = 'field-kind';
+          kind.textContent = { text: 'טקסט', checkbox: 'סימון', dropdown: 'רשימה', signature: 'חתימה' }[x.kind] || 'טקסט';
+          const name = document.createElement('input');
+          name.type = 'text';
+          name.value = x.name;
+          name.addEventListener('input', () => {
+            editor.update(x.id, (obj) => { obj.name = name.value; }, { record: false });
+          });
+          row.append(kind, name);
+          if (x.kind === 'dropdown') {
+            const opts = document.createElement('input');
+            opts.type = 'text';
+            opts.placeholder = 'אפשרויות, מופרדות בפסיק';
+            opts.value = (x.options || []).join(', ');
+            opts.addEventListener('input', () => editor.update(x.id, (obj) => { obj.options = opts.value.split(',').map((t) => t.trim()).filter(Boolean); }, { record: false }));
+            row.append(opts);
+          }
+          newList.append(row);
+        });
+      };
+
+      const overlay = (page) => {
+        const els = [];
+        for (const f of fields) {
+          for (const b of f.boxes.filter((bx) => bx.page === page)) {
+            const el = document.createElement('div');
+            el.className = 'form-box' + (o.values[f.name] !== undefined ? ' filled' : '');
+            Object.assign(el.style, { left: `${b.x * 100}%`, top: `${b.y * 100}%`, width: `${b.w * 100}%`, height: `${b.h * 100}%` });
+            el.title = f.name;
+            el.addEventListener('pointerdown', (e) => {
+              e.stopPropagation();
+              const input = inputs.get(f.name);
+              if (input) input.focus();
+            });
+            els.push(el);
+          }
+        }
+        return els;
+      };
+
+      const editor = new window.PageEditor(view.pagesHost, {
+        token: file.token,
+        pageCount: file.pageCount,
+        objects: o.objects,
+        tools: ['select', 'field-text', 'field-checkbox', 'field-dropdown', 'field-signature'],
+        thumb: view.pageThumb,
+        sizes: shownSizes(view, file),
+        overlay,
+        onChange: (objects) => {
+          let n = (fields.length || 0) + 1;
+          const taken = new Set(fields.map((f) => f.name));
+          for (const x of objects) {
+            if (x.type === 'field' && !x.name) {
+              while (taken.has(`שדה ${n}`)) n++;
+              x.name = `שדה ${n}`;
+              taken.add(x.name);
+            }
+          }
+          view.set('objects', objects);
+          syncCreate();
+        },
+      });
+      mem.editor = editor;
+
+      window.api.formsRead(file.path).then((r) => {
+        if (!r.ok) {
+          status.textContent = r.error;
+          return;
+        }
+        fields = r.fields;
+        status.textContent = fields.length
+          ? `${fields.length === 1 ? 'שדה אחד' : `${fields.length} שדות`} בטופס. לחיצה על שדה בעמוד מעבירה אליו.`
+          : 'בקובץ הזה אין שדות למילוי. אפשר להוסיף שדות חדשים.';
+        list.replaceChildren();
+        for (const f of fields) {
+          const row = document.createElement('label');
+          row.className = 'field-row';
+          const name = document.createElement('span');
+          name.className = 'field-name';
+          name.textContent = f.name;
+          row.append(name);
+          let input;
+          const current = o.values[f.name] !== undefined ? o.values[f.name] : f.value;
+          const setValue = (v) => {
+            view.set('values', { ...view.options.values, [f.name]: v });
+            editor.paint();
+          };
+          if (f.type === 'checkbox') {
+            input = document.createElement('input');
+            input.type = 'checkbox';
+            input.checked = current === true || current === 'true';
+            input.addEventListener('change', () => setValue(input.checked));
+          } else if (f.type === 'radio' || f.type === 'dropdown' || f.type === 'list') {
+            input = document.createElement('select');
+            for (const c of ['', ...f.choices]) {
+              const opt = document.createElement('option');
+              opt.value = c;
+              opt.textContent = c || '(ללא בחירה)';
+              if (c === current) opt.selected = true;
+              input.append(opt);
+            }
+            input.addEventListener('change', () => setValue(input.value));
+          } else if (f.type === 'signature') {
+            input = document.createElement('span');
+            input.className = 'opt-hint';
+            input.textContent = 'שדה חתימה: חתום עליו בכלי "חתימה על PDF".';
+          } else {
+            input = document.createElement('input');
+            input.type = 'text';
+            input.dir = 'auto';
+            input.value = current || '';
+            input.addEventListener('input', () => setValue(input.value));
+          }
+          if (f.readOnly && input.tagName !== 'SPAN') {
+            input.disabled = true;
+            input.title = 'השדה הזה נעול לעריכה בטופס עצמו.';
+          }
+          row.append(input);
+          inputs.set(f.name, input);
+          list.append(row);
+        }
+        editor.paint();
+        syncCreate();
+      });
+    },
+    blocked(view) {
+      const o = view.options;
+      const named = (o.create || []).every((c) => String(c.name || '').trim());
+      if (!named) return 'לכל שדה חדש צריך שם.';
+      if (!Object.keys(o.values || {}).length && !(o.create || []).length && !o.flatten) return 'מלא שדה, הוסף שדה חדש, או סמן השטחה.';
+      return null;
+    },
+    onEscape: () => (mem.editor ? mem.editor.escape() : false),
   },
 
   repair: {

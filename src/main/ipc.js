@@ -12,6 +12,7 @@ const docs = require('./docs');
 const jobs = require('./jobs');
 const tools = require('./tools');
 const wia = require('./engine/wia');
+const signatures = require('./signatures');
 // Read from the manifest rather than app.getVersion(): that only resolves the app's
 // own package.json in some launch contexts, and reports Electron's version otherwise.
 const { version } = require('../../package.json');
@@ -358,13 +359,13 @@ function registerToolIpc() {
     const sender = event.sender;
     scanning = new AbortController();
     try {
-      const { files, device } = await wia.acquire({
+      const { files, device, warning } = await wia.acquire({
         dpi: [150, 200, 300].includes(Number(dpi)) ? Number(dpi) : 300,
         mode,
         signal: scanning.signal,
         onPage: (n) => { if (!sender.isDestroyed()) sender.send('scan:page', n); },
       });
-      return { ok: true, device, files: await describeAll(files) };
+      return { ok: true, device, warning, files: await describeAll(files) };
     } catch (err) {
       return fail(err);
     } finally {
@@ -374,6 +375,35 @@ function registerToolIpc() {
   ipcMain.handle('scan:cancel', () => {
     if (scanning) scanning.abort();
     return { ok: true };
+  });
+
+  ipcMain.handle('signatures:list', async () => {
+    try {
+      return { ok: true, signatures: await signatures.list() };
+    } catch (err) {
+      return fail(err);
+    }
+  });
+  ipcMain.handle('signatures:save', async (_event, spec) => {
+    try {
+      return { ok: true, signature: await signatures.save(spec || {}) };
+    } catch (err) {
+      return fail(err);
+    }
+  });
+  ipcMain.handle('signatures:remove', async (_event, id) => {
+    try {
+      return { ok: true, removed: await signatures.remove(String(id)) };
+    } catch (err) {
+      return fail(err);
+    }
+  });
+  ipcMain.handle('forms:read', async (_event, filePath) => {
+    try {
+      return { ok: true, fields: await require('./tools/forms').readFields(String(filePath)) };
+    } catch (err) {
+      return fail(err);
+    }
   });
 
   ipcMain.handle('runs:list', async () => {

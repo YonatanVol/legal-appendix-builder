@@ -275,7 +275,10 @@ function run() {
       const scanned = picture
         ? await page(`window.api.startJob(${JSON.stringify({ toolId: 'scan', inputs: [picture], options: { mode: 'gray', ocr: true } })})`)
         : { ok: false, error: pictures.error };
-      check('a picture of a Hebrew page is scanned to PDF and its text recognised', scanned.ok && /זוהה/.test(scanned.summary || ''), scanned.ok ? scanned.summary : scanned.error);
+      // The stamped words must come back: a summary saying "recognised" is not enough,
+      // since stray marks read with low confidence would say that too.
+      const words = scanned.ok ? (await require('./pdf/text').documentText(scanned.display[0])).join(' ') : '';
+      check('a picture of a Hebrew page is scanned to PDF and its Hebrew read back', scanned.ok && /עמוד/.test(words) && /מתוך/.test(words), scanned.ok ? words.slice(0, 80) : scanned.error);
     }
   }
 

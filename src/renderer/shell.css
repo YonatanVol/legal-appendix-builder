@@ -497,3 +497,61 @@ button.small { padding: 4px 10px; font-size: 12.5px; }
 .redact-hit { position: absolute; background: rgba(255, 213, 0, .35); outline: 2px solid #e0a800; pointer-events: none; }
 .mark-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
 .mark-list:empty { display: none; }
+
+/* ---------------- page editor ---------------- */
+.page-editor { display: flex; flex-direction: column; gap: 10px; }
+.editor-toolbar {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 10px;
+  padding: 8px 10px; background: var(--surface); border: 1px solid var(--line); border-radius: 12px;
+  position: sticky; top: 8px; z-index: 5;
+}
+.editor-tools { display: flex; gap: 2px; }
+.editor-tool {
+  width: 34px; height: 34px; display: grid; place-items: center;
+  border: 0; border-radius: 8px; background: transparent; color: var(--ink); cursor: pointer; font: inherit;
+}
+.editor-tool:hover { background: #f0f1f4; }
+.editor-tool.on { background: var(--accent-soft); color: var(--accent); }
+.editor-size { font: inherit; padding: 4px 6px; border: 1px solid var(--line); border-radius: 6px; }
+.editor-spacer { flex: 1; }
+.editor-stage { user-select: none; touch-action: none; }
+.editor-stage[data-tool="select"] { cursor: default; }
+.editor-stage[data-tool="text"] { cursor: text; }
+.editor-stage[data-tool="place"] { cursor: copy; }
+.editor-stage:not([data-tool="select"]):not([data-tool="text"]):not([data-tool="place"]) { cursor: crosshair; }
+.editor-page { position: absolute; inset: 0; width: 100%; height: 100%; }
+.editor-layer { position: absolute; inset: 0; }
+.editor-svg { position: absolute; inset: 0; overflow: visible; }
+.editor-svg .editor-obj { cursor: move; }
+.editor-svg .editor-obj.selected { filter: drop-shadow(0 0 2px var(--accent)); }
+.editor-obj { position: absolute; box-sizing: border-box; cursor: move; line-height: 1.2; }
+.editor-obj.selected { outline: 2px solid var(--accent); outline-offset: 2px; }
+.obj-text { font-family: 'David Bundled', David, "Times New Roman", serif; white-space: pre; overflow: visible; }
+.obj-text.editing { outline: 2px dashed var(--accent); background: rgba(255, 255, 255, .85); cursor: text; user-select: text; }
+.obj-image img { width: 100%; height: 100%; display: block; pointer-events: none; }
+.obj-highlight { mix-blend-mode: multiply; opacity: .45; }
+.obj-whiteout { background: #fff; box-shadow: 0 0 0 1px rgba(0, 0, 0, .08); }
+.obj-field { border: 1.5px dashed var(--accent); background: rgba(31, 95, 191, .08); }
+.field-tag { position: absolute; top: -18px; inset-inline-start: 0; font-size: 11px; color: var(--accent); background: #fff; padding: 0 4px; border-radius: 3px; white-space: nowrap; }
+.form-box { position: absolute; border: 1.5px solid rgba(31, 95, 191, .55); background: rgba(31, 95, 191, .06); border-radius: 2px; cursor: pointer; }
+.form-box.filled { background: rgba(28, 107, 69, .1); border-color: rgba(28, 107, 69, .6); }
+
+/* ---------------- signatures and form fields ---------------- */
+.sig-gallery { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
+.sig-card { position: relative; }
+.sig-card .remove { position: absolute; top: 2px; inset-inline-end: 2px; }
+.sig-pick { width: 100%; height: 64px; display: grid; place-items: center; background: #fff; border: 1px solid var(--line); border-radius: 8px; cursor: pointer; padding: 6px; }
+.sig-pick img { max-width: 100%; max-height: 100%; }
+.sig-pick.on { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
+.sig-dialog { border: 0; border-radius: 14px; padding: 20px 22px; width: min(620px, 92vw); box-shadow: 0 20px 60px rgba(0, 0, 0, .25); }
+.sig-dialog::backdrop { background: rgba(17, 20, 26, .4); }
+.sig-dialog h2 { margin: 0 0 12px; font-size: 16px; }
+.sig-pane { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; }
+.sig-pane canvas { width: 100%; border: 1px dashed #c9cdd5; border-radius: 8px; background: #fff; touch-action: none; }
+.sig-typed { font: inherit; font-size: 15px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; }
+.sig-actions { display: flex; gap: 8px; margin-top: 14px; }
+.field-list { display: flex; flex-direction: column; gap: 8px; max-height: 420px; overflow: auto; }
+.field-row { display: flex; flex-direction: column; gap: 4px; }
+.field-row input[type="text"], .field-row select { font: inherit; padding: 7px 9px; border: 1px solid var(--line); border-radius: 8px; }
+.field-row input[type="checkbox"] { width: 18px; height: 18px; accent-color: var(--accent); }
+.field-name, .field-kind { font-size: 12.5px; color: var(--muted); }

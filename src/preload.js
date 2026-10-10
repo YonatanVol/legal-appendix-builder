@@ -58,6 +58,10 @@ contextBridge.exposeInMainWorld('api', {
     ipcRenderer.on('scan:page', listener);
     return () => ipcRenderer.removeListener('scan:page', listener);
   },
+  signaturesList: () => ipcRenderer.invoke('signatures:list'),
+  signaturesSave: (spec) => ipcRenderer.invoke('signatures:save', spec),
+  signaturesRemove: (id) => ipcRenderer.invoke('signatures:remove', id),
+  formsRead: (path) => ipcRenderer.invoke('forms:read', path),
   runsList: () => ipcRenderer.invoke('runs:list'),
   runsRemove: (id) => ipcRenderer.invoke('runs:remove', id),
   recentFiles: () => ipcRenderer.invoke('runs:recent'),

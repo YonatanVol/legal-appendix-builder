@@ -49,6 +49,57 @@ async function vectorPdf(file, body, { pages = 1, style = 'font-family:Arial;fon
   return file;
 }
 
+/**
+ * A PDF with a secret in every place a PDF can hide one: the page's text, the document
+ * details (standard and custom), XMP, an attachment, an outline entry, the structure
+ * tree's alternative text, a note on the other page, a link from the other page to the
+ * secret one, and a picture shared through the page tree's resources.
+ */
+async function secretsPdf(file) {
+  const { PDFDocument, StandardFonts, PDFName, PDFString, PDFHexString } = require('pdf-lib');
+  const doc = await PDFDocument.create();
+  const font = await doc.embedFont(StandardFonts.Helvetica);
+  const p1 = doc.addPage([595, 842]);
+  const p2 = doc.addPage([595, 842]);
+  p1.drawText('SECRET-ID-4711', { x: 60, y: 760, size: 18, font });
+  p2.drawText('PUBLIC-PAGE-TWO', { x: 60, y: 760, size: 18, font });
+  // A form drawn only on page 1, listed in resources every page inherits.
+  const xobj = doc.context.stream('BT /F1 12 Tf 60 700 Td (SECRET-XOBJ) Tj ET', {
+    Type: 'XObject', Subtype: 'Form', BBox: [0, 0, 595, 842], Resources: { Font: { F1: font.ref } },
+  });
+  const xref = doc.context.register(xobj);
+  doc.catalog.lookup(PDFName.of('Pages')).set(PDFName.of('Resources'), doc.context.obj({ XObject: { Shared: xref }, Font: { F1: font.ref } }));
+  p1.pushOperators(...[require('pdf-lib').pushGraphicsState(), require('pdf-lib').drawObject('Shared'), require('pdf-lib').popGraphicsState()]);
+  doc.setTitle('SECRET-TITLE');
+  doc.getInfoDict().set(PDFName.of('CaseNumber'), PDFString.of('SECRET-INFO'));
+  const xmp = doc.context.stream('<x:xmpmeta xmlns:x="adobe:ns:meta/"><dc:title>SECRET-XMP</dc:title></x:xmpmeta>', { Type: 'Metadata', Subtype: 'XML' });
+  doc.catalog.set(PDFName.of('Metadata'), doc.context.register(xmp));
+  await doc.attach(Buffer.from('SECRET-ATTACH'), 'notes.txt', { mimeType: 'text/plain' });
+  const outline = doc.context.register(doc.context.obj({ Title: PDFString.of('SECRET-OUTLINE'), Dest: [p1.ref, PDFName.of('Fit')] }));
+  doc.catalog.set(PDFName.of('Outlines'), doc.context.obj({ Type: 'Outlines', First: outline, Last: outline, Count: 1 }));
+  const elem = doc.context.register(doc.context.obj({ Type: 'StructElem', S: 'P', Pg: p1.ref, ActualText: PDFString.of('SECRET-ALT') }));
+  doc.catalog.set(PDFName.of('StructTreeRoot'), doc.context.obj({ Type: 'StructTreeRoot', K: [elem] }));
+  const note = doc.context.register(doc.context.obj({ Type: 'Annot', Subtype: 'Text', Rect: [10, 10, 40, 40], Contents: PDFString.of('SECRET-NOTE') }));
+  const link = doc.context.register(doc.context.obj({ Type: 'Annot', Subtype: 'Link', Rect: [60, 600, 200, 620], Dest: [p1.ref, PDFName.of('Fit')] }));
+  p2.node.set(PDFName.of('Annots'), doc.context.obj([note, link]));
+  await fsp.writeFile(file, await doc.save({ useObjectStreams: false }));
+  return file;
+}
+
+/** Every object of a PDF, streams decompressed, as one string. */
+function expanded(file, dir) {
+  const out = path.join(dir, `expanded-${Math.random().toString(36).slice(2)}.pdf`);
+  try {
+    execFileSync(bin.locate('qpdf'), ['--qdf', '--object-streams=disable', '--decode-level=all', '--', file, out], { stdio: 'ignore' });
+  } catch (err) {
+    if (err.status !== 3) throw err;
+  }
+  const text = fs.readFileSync(out).toString('latin1');
+  fs.rmSync(out, { force: true });
+  // pdf-lib may write a string as hex; read those too.
+  return text + text.replace(/<([0-9A-Fa-f\s]+)>/g, (m, hex) => Buffer.from(hex.replace(/\s/g, ''), 'hex').toString('latin1'));
+}
+
 /** A page image of `source` at 200 DPI, as a scanner would make. */
 function picture(source, out, page = 1) {
   execFileSync(bin.locate('gs'), ['-q', '-dNOPAUSE', '-dBATCH', '-dSAFER', '-sDEVICE=pnggray', '-r200', `-dFirstPage=${page}`, `-dLastPage=${page}`, `-sOutputFile=${out}`, source]);
@@ -179,6 +230,20 @@ app.whenReady().then(async () => {
   r = await runTool('redact', [secret], { marks: [] });
   check('nothing marked is refused, saying how to mark', !r.ok && /סמן/.test(r.error), r.error);
 
+  /* ---- Redact leaves nothing behind, anywhere in the file ---- */
+  console.log('\nRedact, byte by byte');
+  const hiding = await secretsPdf(path.join(dir, 'מסתור.pdf'));
+  r = await runTool('redact', [hiding], { marks: [{ page: 0, x: 0.05, y: 0.05, w: 0.9, h: 0.2 }], clean: true });
+  const raw = r.ok ? expanded(r.display[0], dir) : '';
+  const left = ['SECRET-ID-4711', 'SECRET-TITLE', 'SECRET-INFO', 'SECRET-XMP', 'SECRET-ATTACH', 'SECRET-OUTLINE', 'SECRET-ALT', 'SECRET-NOTE', 'SECRET-XOBJ']
+    .filter((secret) => raw.includes(secret));
+  check('no secret survives anywhere in the file: page text, details, XMP, attachment, outline, tags, notes, shared pictures',
+    r.ok && raw.length > 0 && left.length === 0, r.error || `still inside: ${left.join(', ')}`);
+  check('  while the unmarked page keeps its own text', raw.includes('PUBLIC-PAGE-TWO'));
+  r = await runTool('redact', [hiding], { marks: [{ page: 0, x: 0.05, y: 0.05, w: 0.9, h: 0.2 }], clean: true, ocr: true });
+  const rawOcr = r.ok ? expanded(r.display[0], dir) : '';
+  check('  and the same holds after OCR of the redacted pages', r.ok && !['SECRET-ID-4711', 'SECRET-XOBJ', 'SECRET-NOTE'].some((x) => rawOcr.includes(x)), r.error);
+
   /* ---- PDF to Excel ---- */
   console.log('\nPDF to Excel');
   const table = await vectorPdf(path.join(dir, 'טבלה.pdf'), `
@@ -187,6 +252,7 @@ app.whenReady().then(async () => {
       <tr><td>תאריך</td><td style="padding-right:40px">תיאור</td><td style="padding-right:40px">סכום</td></tr>
       <tr><td>07/08/2026</td><td style="padding-right:40px">שכר טרחה</td><td style="padding-right:40px">1,250.50</td></tr>
       <tr><td>15/08/2026</td><td style="padding-right:40px">אגרה</td><td style="padding-right:40px">300</td></tr>
+      <tr><td>20.08.2026</td><td style="padding-right:40px">צילומים</td><td style="padding-right:40px">12.50</td></tr>
     </table>
     <p>סוף הדוח.</p>`, { style: 'font-family:Arial;font-size:13pt' });
   r = await runTool('pdf-to-excel', [table], {});
@@ -199,6 +265,7 @@ app.whenReady().then(async () => {
   check('  the text above the table is in the first column', sheet && sheet.getCell(1, 1).value === 'דוח תשלומים לתיק 4521', JSON.stringify(row(1)));
   check('  the header row has its columns in Hebrew order', JSON.stringify(row(2)) === '["תאריך","תיאור","סכום"]', JSON.stringify(row(2)));
   check('  amounts become numbers, dates stay as written', JSON.stringify(row(3)) === '["07/08/2026","שכר טרחה",1250.5]' && row(4)[2] === 300, `${JSON.stringify(row(3))} ${JSON.stringify(row(4))}`);
+  check('  a small amount like 12.50 is a number too, and a dotted date stays a date', JSON.stringify(row(5)) === '["20.08.2026","צילומים",12.5]', JSON.stringify(row(5)));
 
   const english = await vectorPdf(path.join(dir, 'english.pdf'), `
     <table cellpadding="6" style="direction:ltr"><tr><td>Item</td><td style="padding-left:40px">Qty</td></tr><tr><td>Paper</td><td style="padding-left:40px">12</td></tr></table>`,

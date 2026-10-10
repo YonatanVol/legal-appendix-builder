@@ -14,7 +14,9 @@ const pending = new Map();
 function spawn() {
   if (child) return child;
   child = utilityProcess.fork(path.join(__dirname, 'ocr-worker.js'), [], { stdio: 'ignore', serviceName: 'office-ocr' });
-  child.on('message', (msg) => {
+  const listener = child;
+  listener.on('message', (msg) => {
+    if (child !== listener) return;
     if (msg.type !== 'done') return;
     const settle = pending.get(msg.result.id);
     if (settle) {
@@ -23,7 +25,11 @@ function spawn() {
     }
   });
   // A crash, typically running out of memory, ends the process and not just the page.
-  child.on('exit', () => {
+  // Only this process's own exit counts: one that was stopped on purpose may finish
+  // exiting after a new one has started, and must not touch the new one's work.
+  const own = child;
+  own.on('exit', () => {
+    if (child !== own) return;
     for (const settle of pending.values()) settle({ error: 'תהליך זיהוי הטקסט נעצר באמצע.' });
     pending.clear();
     child = null;

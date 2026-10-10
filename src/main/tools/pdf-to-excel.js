@@ -80,12 +80,16 @@ async function pageItems(file, ctx, progress) {
   } finally {
     await doc.destroy();
   }
-  const empty = pages.map((p, i) => (p.items.length ? -1 : i)).filter((i) => i >= 0);
+  // Pages with almost no text are read with OCR: a scanned table often carries a typed
+  // header or a stamped page number, and those few words alone would make the page look
+  // like text. OCR then reads the whole page, header included.
+  const chars = (p) => p.items.reduce((n, it) => n + it.str.replace(/\s/g, '').length, 0);
+  const empty = pages.map((p, i) => (chars(p) < 40 ? i : -1)).filter((i) => i >= 0);
   if (empty.length && bin.locate('gs')) {
     const read = await ocrFile(file, { langs: 'heb+eng' }, ctx, (fr, label) => progress(0.5 + fr * 0.5, label));
     for (const i of empty) {
       const img = read.images[i];
-      if (!img || !read.words[i].length) continue;
+      if (!img || !read.words[i] || !read.words[i].length) continue;
       const k = 72 / img.dpi;
       pages[i] = {
         ocr: true,
@@ -148,7 +152,21 @@ function layout(items) {
     if (j - i >= 2) {
       tables++;
       const block = lines.slice(i, j);
-      const columns = clusterColumns(block.flatMap((l) => l.cells));
+      // A cell spanning most of the table (a wrapped description, a heading inside it)
+      // would overlap every column and merge them into one, so it does not shape the
+      // columns; it is placed in the nearest one afterwards.
+      const all = block.flatMap((l) => l.cells);
+      const left = Math.min(...all.map((c) => c.x0));
+      const right = Math.max(...all.map((c) => c.x1));
+      const wide = new Set(all.filter((c) => c.x1 - c.x0 > (right - left) * 0.45));
+      const columns = clusterColumns(all.filter((c) => !wide.has(c)));
+      for (const c of wide) {
+        const mid = (c.x0 + c.x1) / 2;
+        let best = columns[0];
+        for (const col of columns) if (Math.abs((col.x0 + col.x1) / 2 - mid) < Math.abs((best.x0 + best.x1) / 2 - mid)) best = col;
+        if (best) best.members.add(c);
+        else columns.push({ x0: c.x0, x1: c.x1, members: new Set([c]) });
+      }
       const ordered = rtl ? columns.slice().sort((a, b) => b.x1 - a.x1) : columns.slice().sort((a, b) => a.x0 - b.x0);
       for (const line of block) {
         const row = new Array(ordered.length).fill('');
@@ -214,10 +232,14 @@ function clusterColumns(cells) {
   return columns;
 }
 
-/** "1,250.00" and "₪ 300" become numbers; dates, ID numbers and anything else stay text. */
+/**
+ * "1,250.00", "12.50" and "₪ 300" become numbers; dates, ID numbers, phone numbers and
+ * anything else stay text. A date has a slash ("07/08", "07/08/2026") or two separators
+ * ("07.08.2026"); one dot between digits is a decimal.
+ */
 function value(text) {
   const t = String(text).trim();
-  if (/^\d{1,2}[/.-]\d{1,2}([/.-]\d{2,4})?$/.test(t)) return t;
+  if (/^\d{1,2}\/\d{1,2}(\/\d{2,4})?$/.test(t) || /^\d{1,2}([.-])\d{1,2}\1\d{2,4}$/.test(t)) return t;
   if (/^0\d/.test(t)) return t; // leading zeros: phone numbers, IDs
   const m = /^(?:₪\s*)?(-?\d{1,3}(?:,\d{3})+(?:\.\d+)?|-?\d+(?:\.\d+)?)(?:\s*₪)?$/.exec(t);
   if (m && t.replace(/[^\d]/g, '').length < 15) return Number(m[1].replace(/,/g, ''));

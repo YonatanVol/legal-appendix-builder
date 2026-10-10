@@ -78,7 +78,16 @@ async function ocrFile(input, { langs = 'heb' } = {}, ctx, progress = () => {}) 
   } finally {
     await reader.destroy();
   }
-  const hasText = existing.map((t) => t.replace(/\s/g, '').length >= 20);
+  // A page "has text" when it holds a real amount of it. A scanned page with a typed
+  // header, a stamped page number or a divider title has a few words and a picture: it
+  // still needs reading.
+  const { pageImages } = require('../pdf/images');
+  const hasText = existing.map((t, i) => {
+    const n = t.replace(/\s/g, '').length;
+    if (n >= 200) return true;
+    if (n < 20) return false;
+    return pageImages(doc, doc.getPage(i)).length === 0;
+  });
   const todo = [...Array(total).keys()].filter((i) => !hasText[i]);
 
   const pages = existing.slice();
@@ -95,6 +104,12 @@ async function ocrFile(input, { langs = 'heb' } = {}, ctx, progress = () => {}) 
       progress(0.05 + (k / todo.length) * 0.93, `מזהה טקסט: עמוד ${i + 1} מתוך ${total}`);
       const result = await ocr.recognise({ file: files[k], langs, dpi: DPI }, ctx.signal);
       ctx.throwIfCancelled();
+      // A page that already had a few words keeps them; the scan's words are added beside
+      // them. Words the page already carries are skipped so a search does not find them twice.
+      if (existing[i]) {
+        const have = new Set(existing[i].split(/\s+/).filter(Boolean));
+        result.words = result.words.filter((w) => !have.has(w.text.trim()));
+      }
       const size = pngSize(await fs.readFile(files[k]));
       images[i] = { ...size, dpi: DPI, file: files[k] };
       words[i] = result.words;

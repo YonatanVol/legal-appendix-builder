@@ -864,6 +864,7 @@ const shell = (() => {
     show,
     setBackBlocked,
     setPicker: (fn) => { picker = fn; },
+    pickFiles: (spec) => picker(spec),
     run,
     cancel,
     addFiles,
