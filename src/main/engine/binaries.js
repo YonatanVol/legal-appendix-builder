@@ -41,10 +41,14 @@ function locate(name) {
   if (process.env[spec.env]) tries.push(process.env[spec.env]);
   if (process.resourcesPath) tries.push(path.join(process.resourcesPath, 'vendor', ...spec.win));
   tries.push(path.join(ROOT, 'vendor', 'win', ...spec.win));
-  // An app opened from Finder or the Start menu gets a short PATH, so the usual
-  // install places are tried as well.
-  const dirs = [...String(process.env.PATH || '').split(path.delimiter), '/opt/homebrew/bin', '/usr/local/bin', '/usr/bin'];
-  for (const dir of dirs) for (const exe of spec.path) if (dir) tries.push(path.join(dir, exe));
+  // On Windows only the shipped copy (or an explicit override) is used: searching PATH
+  // there would run whatever program of that name a user or installer put first. On a
+  // development Mac, an app opened from Finder gets a short PATH, so Homebrew's places
+  // are tried as well. OFFICE_NO_SYSTEM_SEARCH lets a test see the app without them.
+  if (!isWin && !process.env.OFFICE_NO_SYSTEM_SEARCH) {
+    const dirs = [...String(process.env.PATH || '').split(path.delimiter), '/opt/homebrew/bin', '/usr/local/bin', '/usr/bin'];
+    for (const dir of dirs) for (const exe of spec.path) if (dir && path.isAbsolute(dir)) tries.push(path.join(dir, exe));
+  }
   const hit = tries.find((p) => (isWin || !p.endsWith('.exe')) && exists(p)) || null;
   found.set(name, hit);
   return hit;
@@ -67,13 +71,19 @@ function availability(...names) {
 
 /**
  * Run a program. Resolves with its exit code and output; rejects only when it could
- * not be started. `signal` stops it; `onLine` sees each line it prints.
+ * not be started. `signal` stops it; `onLine` sees each line it prints; `input` is
+ * written to its standard input, which is how passwords reach qpdf, so they never
+ * appear on a command line another program could read.
  */
-function run(name, args, { signal, onLine, cwd } = {}) {
+function run(name, args, { signal, onLine, cwd, input } = {}) {
   const bin = locate(name);
   if (!bin) return Promise.reject(new Error(MISSING[name]));
   return new Promise((resolve, reject) => {
-    const child = spawn(bin, args, { cwd, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(bin, args, { cwd, windowsHide: true, stdio: [input == null ? 'ignore' : 'pipe', 'pipe', 'pipe'] });
+    if (input != null) {
+      child.stdin.on('error', () => {});
+      child.stdin.end(input);
+    }
     let stdout = '';
     let stderr = '';
     let pending = '';

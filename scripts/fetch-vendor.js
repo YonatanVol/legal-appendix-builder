@@ -35,7 +35,7 @@ const PACKAGES = [
       const tmp = `${dest}.tmp`;
       fs.rmSync(tmp, { recursive: true, force: true });
       fs.mkdirSync(tmp, { recursive: true });
-      execFileSync('tar', ['-xf', file, '-C', tmp]);
+      execFileSync(tar(), ['-xf', file, '-C', tmp]);
       const inner = path.join(tmp, fs.readdirSync(tmp)[0]);
       fs.mkdirSync(dest, { recursive: true });
       fs.cpSync(path.join(inner, 'bin'), path.join(dest, 'bin'), { recursive: true });
@@ -66,6 +66,12 @@ const PACKAGES = [
     check: (dest) => fs.existsSync(path.join(dest, 'bin', 'gswin64c.exe')) && fs.existsSync(path.join(dest, 'bin', 'gsdll64.dll')),
   },
 ];
+
+/** Windows' own bsdtar reads zip files; a GNU tar earlier on PATH (Git's) does not. */
+function tar() {
+  if (process.platform === 'win32') return path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'tar.exe');
+  return 'tar';
+}
 
 function sevenZip() {
   const candidates = ['C:\\Program Files\\7-Zip\\7z.exe', '7z', '7zz'];

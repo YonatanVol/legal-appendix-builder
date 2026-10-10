@@ -5,6 +5,7 @@ const fs = require('fs/promises');
 const path = require('path');
 
 const bin = require('../engine/binaries');
+const text = require('../pdf/text');
 const { stage, scratchPath } = require('../engine/stage');
 
 /**
@@ -33,13 +34,16 @@ async function run({ inputs, options = {}, ctx }) {
   for (let i = 0; i < inputs.length; i++) {
     const name = path.basename(inputs[i]);
     ctx.progress(i / inputs.length, `מצפין את "${name}"…`);
+    await readable(inputs[i]);
     const src = await stage(ctx, inputs[i], i);
-    const need = await bin.run('qpdf', ['--requires-password', src], { signal: ctx.signal });
+    const need = await bin.run('qpdf', ['--requires-password', src], { cwd: ctx.scratch, signal: ctx.signal });
     if (need.code === 0 || need.code === 3) {
       throw new Error(`הקובץ "${name}" כבר מוגן. כדי להחליף סיסמה הסר קודם את הקיימת בכלי "הסרת סיסמה".`);
     }
-    const out = scratchPath(ctx, `out-${i}.pdf`);
-    const result = await bin.run('qpdf', [
+    const out = `out-${i}.pdf`;
+    // The options, passwords among them, go to qpdf through its standard input ("@-"),
+    // one per line, so they never sit on a command line another program could read.
+    const lines = [
       '--encrypt',
       `--user-password=${password}`,
       `--owner-password=${owner}`,
@@ -50,10 +54,12 @@ async function run({ inputs, options = {}, ctx }) {
       '--',
       src,
       out,
-    ], { signal: ctx.signal });
+    ];
+    if (lines.some((l) => /[\r\n]/.test(l))) throw new Error('הסיסמה לא יכולה להכיל ירידת שורה.');
+    const result = await bin.run('qpdf', ['@-'], { cwd: ctx.scratch, signal: ctx.signal, input: `${lines.join('\n')}\n` });
     ctx.throwIfCancelled();
     if (result.code !== 0 && result.code !== 3) throw new Error(`לא ניתן היה להצפין את "${name}". ${qpdfReason(result.stderr)}`);
-    outputs.push(await ctx.writeOutput(await fs.readFile(out), { source: inputs[i], label: 'מוגן', ext: 'pdf' }));
+    outputs.push(await ctx.writeOutput(await fs.readFile(scratchPath(ctx, out)), { source: inputs[i], label: 'מוגן', ext: 'pdf' }));
   }
 
   const limits = [!allowPrint && 'הדפסה', !allowCopy && 'העתקת טקסט', !allowEdit && 'עריכה'].filter(Boolean);
@@ -63,9 +69,24 @@ async function run({ inputs, options = {}, ctx }) {
   return { summary, display: outputs };
 }
 
+/**
+ * qpdf answers "not encrypted" for a file it cannot read at all, so a damaged file is
+ * caught here first and called what it is.
+ */
+async function readable(file) {
+  try {
+    const doc = await text.open(file);
+    await doc.destroy();
+  } catch (err) {
+    // Asking for a password means the file itself is sound.
+    if (err && err.name === 'PasswordException') return;
+    throw new Error(`הקובץ "${path.basename(file)}" פגום ולא ניתן לקרוא אותו. אפשר לנסות קודם את "תיקון PDF".`);
+  }
+}
+
 function qpdfReason(stderr) {
   const line = String(stderr || '').split('\n').map((l) => l.trim()).find(Boolean) || '';
   return line ? `(${line.replace(/^qpdf:\s*/, '')})` : '';
 }
 
-module.exports = { run, availability: () => bin.availability('qpdf'), qpdfReason };
+module.exports = { run, availability: () => bin.availability('qpdf'), qpdfReason, readable };

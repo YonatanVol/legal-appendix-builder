@@ -92,7 +92,7 @@ app.whenReady().then(async () => {
   lockDownNetwork();
   const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'page-tools-'));
   const scratchRoot = path.join(os.tmpdir(), 'rotem-office');
-  const scratchBefore = fs.existsSync(scratchRoot) ? fs.readdirSync(scratchRoot).length : 0;
+  const scratchBefore = new Set(fs.existsSync(scratchRoot) ? fs.readdirSync(scratchRoot) : []);
   const six = await makePdf(path.join(dir, 'שישה עמודים.pdf'), 6);
   const two = await makePdf(path.join(dir, 'other.pdf'), 2, { base: 700 });
 
@@ -342,8 +342,8 @@ app.whenReady().then(async () => {
   check('only PDFs and pictures can be read back by the page', docs.register(path.join(dir, 'runs.txt')) === null &&
     docs.register(pngFile) !== null);
 
-  const leftovers = fs.existsSync(scratchRoot) ? fs.readdirSync(scratchRoot).length : 0;
-  check('no scratch folders are left behind', jobs.running() === 0 && leftovers <= scratchBefore, `${leftovers} now, ${scratchBefore} before`);
+  const leftovers = (fs.existsSync(scratchRoot) ? fs.readdirSync(scratchRoot) : []).filter((n) => !scratchBefore.has(n));
+  check('no scratch folders are left behind', jobs.running() === 0 && leftovers.length === 0, leftovers.join(', '));
 
   disposeRenderer();
   await fsp.rm(dir, { recursive: true, force: true });

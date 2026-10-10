@@ -1,7 +1,6 @@
 'use strict';
 
 const fs = require('fs/promises');
-const { constants } = require('fs');
 const path = require('path');
 
 /**
@@ -37,16 +36,29 @@ function candidates(dir, stem, suffix) {
   return list;
 }
 
-/** Copy `fromFile` to the first free "<stem>.<ext>", "<stem> (2).<ext>", ... in `dir`. */
+/**
+ * Copy `fromFile` to the first free "<stem>.<ext>", "<stem> (2).<ext>", ... in `dir`.
+ * The name is claimed first with an exclusive create, then filled; if filling fails,
+ * the claimed file is removed, so a half-written result is never left behind.
+ */
 async function placeFile(fromFile, dir, stem, ext) {
   const suffix = ext.startsWith('.') ? ext : `.${ext}`;
   await fs.mkdir(dir, { recursive: true });
   for (const candidate of candidates(dir, stem, suffix)) {
+    let handle;
     try {
-      await fs.copyFile(fromFile, candidate, constants.COPYFILE_EXCL);
+      handle = await fs.open(candidate, 'wx');
+    } catch (err) {
+      if (err.code === 'EEXIST') continue;
+      throw err;
+    }
+    try {
+      await handle.close();
+      await fs.copyFile(fromFile, candidate);
       return candidate;
     } catch (err) {
-      if (err.code !== 'EEXIST') throw err;
+      await fs.rm(candidate, { force: true }).catch(() => {});
+      throw err;
     }
   }
   throw new Error(`יש כבר יותר מדי קבצים בשם "${safeName(stem)}" בתיקייה הזו.`);

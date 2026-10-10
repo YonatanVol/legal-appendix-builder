@@ -5,6 +5,7 @@ const path = require('path');
 
 const bin = require('../engine/binaries');
 const { stage, scratchPath } = require('../engine/stage');
+const { samePages } = require('../engine/verify');
 const { loadPdf } = require('../pdf/inspect');
 
 /**
@@ -34,7 +35,7 @@ async function run({ inputs, options = {}, ctx }) {
     const name = path.basename(inputs[i]);
     const pages = (await loadPdf(inputs[i])).getPageCount();
     const src = await stage(ctx, inputs[i], i);
-    const out = scratchPath(ctx, `out-${i}.pdf`);
+    const out = `out-${i}.pdf`;
     const args = [
       '-dNOPAUSE', '-dBATCH', '-dSAFER',
       '-sDEVICE=pdfwrite',
@@ -48,6 +49,7 @@ async function run({ inputs, options = {}, ctx }) {
     args.push(`-sOutputFile=${out}`, src);
 
     const result = await bin.run('gs', args, {
+      cwd: ctx.scratch,
       signal: ctx.signal,
       onLine: (line) => {
         const m = /^Page (\d+)/.exec(line);
@@ -57,8 +59,9 @@ async function run({ inputs, options = {}, ctx }) {
     ctx.throwIfCancelled();
     if (result.code !== 0) throw new Error(`לא ניתן היה לכווץ את "${name}". ייתכן שהקובץ פגום; אפשר לנסות קודם את "תיקון PDF".`);
 
+    await samePages(scratchPath(ctx, out), pages, name);
     const inSize = (await fs.stat(inputs[i])).size;
-    const outSize = (await fs.stat(out)).size;
+    const outSize = (await fs.stat(scratchPath(ctx, out))).size;
     before += inSize;
     if (outSize >= inSize * 0.97) {
       after += inSize;
@@ -66,7 +69,7 @@ async function run({ inputs, options = {}, ctx }) {
       continue;
     }
     after += outSize;
-    outputs.push(await ctx.writeOutput(await fs.readFile(out), { source: inputs[i], label: 'מכווץ', ext: 'pdf' }));
+    outputs.push(await ctx.writeOutput(await fs.readFile(scratchPath(ctx, out)), { source: inputs[i], label: 'מכווץ', ext: 'pdf' }));
     lines.push(`${inputs.length > 1 ? `"${name}": ` : ''}${mb(inSize)} ← ${mb(outSize)}, קטן ב-${Math.round((1 - outSize / inSize) * 100)}%.`);
   }
 

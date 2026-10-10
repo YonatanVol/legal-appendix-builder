@@ -99,7 +99,17 @@ app.whenReady().then(async () => {
 
   /* ---- protect ---- */
   console.log('\nprotect');
+  const seen = [];
+  const realRun = bin.run;
+  bin.run = (name, args, opts) => {
+    seen.push(args.join(' '));
+    return realRun(name, args, opts);
+  };
   let r = await runTool('protect', [doc], { password: 'סוד-123 abc', allowPrint: false, allowCopy: false });
+  const unlockedProbe = await runTool('unlock', [r.display[0]], { password: 'סוד-123 abc' });
+  bin.run = realRun;
+  check('the password never appears among the arguments qpdf is started with', seen.length >= 3 && unlockedProbe.ok && !seen.some((a) => a.includes('סוד-123')), seen.join(' | '));
+  check('  and qpdf is given only plain names, not paths', !seen.some((a) => a.includes(path.sep)), seen.join(' | '));
   const locked = r.display && r.display[0];
   check('the file is written beside the source', r.ok && locked && path.dirname(locked) === dir, r.error);
   check('  it cannot be opened without the password', (await opens(locked)) === 'PasswordException');
@@ -123,14 +133,18 @@ app.whenReady().then(async () => {
   check('the right password removes it', r.ok && qpdf('--requires-password', r.display[0]).code === 2 && (await opens(r.display[0])) === 3, r.error);
   r = await runTool('unlock', [doc], { password: 'x' });
   check('a file with no password says there is nothing to remove', !r.ok && /אינו מוגן/.test(r.error), r.error);
+  const junkPdf = path.join(dir, 'junk.pdf');
+  await fsp.writeFile(junkPdf, '%PDF-1.4\n' + 'x'.repeat(400));
+  r = await runTool('unlock', [junkPdf], { password: 'x' });
+  check('a damaged file is called damaged, not "not protected"', !r.ok && /פגום/.test(r.error), r.error);
   const ownerOnly = path.join(dir, 'owner-only.pdf');
   qpdf('--encrypt', '--user-password=', '--owner-password=boss', '--bits=256', '--print=none', '--', doc, ownerOnly);
   r = await runTool('unlock', [ownerOnly], {});
   check('restrictions without an opening password come off without one', r.ok && /ההגבלות/.test(r.summary) && qpdf('--requires-password', r.display[0]).code === 2, r.error || r.summary);
 
   /* ---- history never holds a password ---- */
-  const saved = runs.withoutSecrets({ password: 'a', passwordConfirm: 'a', ownerPassword: 'b', allowPrint: false });
-  check('passwords are stripped before a run is recorded', JSON.stringify(saved) === '{"allowPrint":false}', JSON.stringify(saved));
+  const saved = runs.withoutSecrets({ password: 'a', passwordConfirm: 'a', ownerPassword: 'b', forToken: 't', imageToken: 'u', allowPrint: false, pages: '3, 5' });
+  check('passwords and session tokens are stripped before a run is recorded', JSON.stringify(saved) === '{"allowPrint":false,"pages":"3, 5"}', JSON.stringify(saved));
 
   /* ---- compress ---- */
   console.log('\ncompress');
@@ -198,7 +212,11 @@ app.whenReady().then(async () => {
   const truncated = path.join(dir, 'קטוע.pdf');
   await fsp.writeFile(truncated, good.subarray(0, Math.floor(good.length * 0.7)));
   r = await runTool('repair', [truncated], {});
-  check('a cut-off download is recovered as far as it goes, and says so', r.ok && /שוחזר/.test(r.summary), r.error || r.summary);
+  const recovered = r.ok ? await text.documentText(r.display[0]).catch(() => []) : [];
+  check('a cut-off download is recovered as far as it goes: the result opens and holds the first page\'s text',
+    r.ok && recovered.length >= 1 && recovered[0].includes('כתב תביעה 1'), r.error || `${recovered.length} pages: ${r.summary}`);
+  r = await runTool('pdfa', [truncated], { level: '2b' });
+  check('PDF/A refuses to hand over a copy with pages missing', !r.ok && /(עובדו|פגום|נפתח)/.test(r.error), r.ok ? r.summary : r.error);
 
   /* ---- cancelling stops the program ---- */
   console.log('\ncancelling');
@@ -213,24 +231,26 @@ app.whenReady().then(async () => {
   /* ---- a missing program is said, not hidden ---- */
   console.log('\nwhen a program is missing');
   bin.forget();
-  const saveGs = process.env.OFFICE_GS;
-  const savePath = process.env.PATH;
-  process.env.OFFICE_GS = path.join(dir, 'nothing', 'gs');
-  process.env.PATH = '';
-  const realLocate = bin.locate;
-  const listed = await (async () => {
-    const gsPath = realLocate('gs');
-    return { gsPath, tools: await tools.list() };
-  })();
-  process.env.PATH = savePath;
-  if (saveGs === undefined) delete process.env.OFFICE_GS; else process.env.OFFICE_GS = saveGs;
-  const compressTile = listed.tools.find((t) => t.id === 'compress');
-  if (listed.gsPath) {
-    check('(skipped: Ghostscript is installed where the test cannot hide it)', true, listed.gsPath);
-  } else {
-    check('the tile says which part is missing and that reinstalling brings it back', !compressTile.available && /Ghostscript/.test(compressTile.reason) && /התקנה מחדש/.test(compressTile.reason), compressTile.reason);
-  }
+  process.env.OFFICE_NO_SYSTEM_SEARCH = '1';
+  const hidden = bin.locate('gs');
+  const listed = await tools.list();
+  delete process.env.OFFICE_NO_SYSTEM_SEARCH;
   bin.forget();
+  const compressTile = listed.find((t) => t.id === 'compress');
+  check('with no Ghostscript, its tiles say which part is missing and that reinstalling brings it back',
+    hidden === null && !compressTile.available && /Ghostscript/.test(compressTile.reason) && /התקנה מחדש/.test(compressTile.reason), compressTile.reason);
+
+  /* ---- a Hebrew user name in the temporary folder ---- */
+  console.log('\na Hebrew Windows user name');
+  const hebrewTemp = path.join(dir, 'משתמש עברי', 'Temp');
+  await fsp.mkdir(hebrewTemp, { recursive: true });
+  const saveTmp = process.env.TMPDIR;
+  process.env.TMPDIR = hebrewTemp;
+  const hebTmpOk = os.tmpdir() === hebrewTemp;
+  r = await runTool('pdfa', [doc], { level: '2b' });
+  const r2 = await runTool('protect', [doc], { password: 'abc' });
+  if (saveTmp === undefined) delete process.env.TMPDIR; else process.env.TMPDIR = saveTmp;
+  check('Ghostscript and qpdf work when the temporary folder has Hebrew in its path', hebTmpOk && r.ok && r2.ok, r.error || r2.error);
 
   /* ---- the screens ---- */
   console.log('\nthe screens');

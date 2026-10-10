@@ -76,8 +76,9 @@ async function write(entries) {
   }
 }
 
-// Passwords are never written to disk. A repeated run asks for them again.
-const SECRET = /password/i;
+// Passwords are never written to disk; a repeated run asks for them again. Tokens are
+// per session and per file version, so a recorded one would only mislead a later run.
+const SECRET = /password|token/i;
 
 function withoutSecrets(options) {
   if (!options || typeof options !== 'object') return {};

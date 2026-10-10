@@ -1,6 +1,7 @@
 'use strict';
 
 const fs = require('fs/promises');
+const fsSync = require('fs');
 const path = require('path');
 
 const bin = require('../engine/binaries');
@@ -39,7 +40,7 @@ async function pages(inputs, options, ctx) {
       ? indicesOf(parseRanges(options.pages, total))
       : doc.getPageIndices();
     const src = await stage(ctx, inputs[f], f);
-    const pattern = path.join(ctx.scratch, `p${f}-%05d.${ext}`);
+    const pattern = `p${f}-%05d.${ext}`;
     const args = [
       '-dNOPAUSE', '-dBATCH', '-dSAFER',
       `-sDEVICE=${png ? 'png16m' : 'jpeg'}`,
@@ -52,6 +53,7 @@ async function pages(inputs, options, ctx) {
     args.push(src);
     const name = path.basename(inputs[f]);
     const result = await bin.run('gs', args, {
+      cwd: ctx.scratch,
       signal: ctx.signal,
       onLine: (line) => {
         const m = /^Page (\d+)/.exec(line);
@@ -67,6 +69,10 @@ async function pages(inputs, options, ctx) {
       from: path.join(ctx.scratch, `p${f}-${String(k + 1).padStart(5, '0')}.${ext}`),
       label: `עמ' ${String(pageIndex + 1).padStart(width, '0')}`,
     }));
+    const missing = files.findIndex((file) => !fsSync.existsSync(file.from));
+    if (missing !== -1) {
+      throw new Error(`לא ניתן היה לצייר את עמוד ${wanted[missing] + 1} של "${name}". ייתכן שהקובץ פגום; אפשר לנסות קודם את "תיקון PDF".`);
+    }
     if (files.length === 1) {
       display.push(await ctx.writeOutput(await fs.readFile(files[0].from), { source: inputs[f], label: files[0].label, ext }));
     } else {

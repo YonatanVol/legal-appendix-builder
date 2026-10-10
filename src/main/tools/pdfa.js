@@ -5,7 +5,9 @@ const path = require('path');
 const { PDFDocument, PDFName } = require('pdf-lib');
 
 const bin = require('../engine/binaries');
-const { stage, scratchPath, unpacked } = require('../engine/stage');
+const { stage, stageAsset, scratchPath, unpacked } = require('../engine/stage');
+const { samePages } = require('../engine/verify');
+const { loadPdf } = require('../pdf/inspect');
 
 const ASSETS = unpacked(path.join(__dirname, '..', '..', '..', 'assets', 'pdfa'));
 
@@ -28,15 +30,17 @@ const LEVELS = {
 async function run({ inputs, options = {}, ctx }) {
   const level = LEVELS[options.level] ? options.level : '2b';
   const { part, compat } = LEVELS[level];
-  const icc = path.join(ASSETS, 'srgb.icc');
-  const def = path.join(ASSETS, 'PDFA_def.ps');
   const outputs = [];
+  // Copied into scratch so Ghostscript is given plain names, never the install path.
+  const icc = await stageAsset(ctx, path.join(ASSETS, 'srgb.icc'));
+  const def = await stageAsset(ctx, path.join(ASSETS, 'PDFA_def.ps'));
 
   for (let i = 0; i < inputs.length; i++) {
     const name = path.basename(inputs[i]);
     ctx.progress(i / inputs.length, `ממיר את "${name}"…`);
+    const pages = (await loadPdf(inputs[i])).getPageCount();
     const src = await stage(ctx, inputs[i], i);
-    const out = scratchPath(ctx, `out-${i}.pdf`);
+    const out = `out-${i}.pdf`;
     const result = await bin.run('gs', [
       '-dNOPAUSE', '-dBATCH', '-dSAFER',
       `--permit-file-read=${icc}`,
@@ -51,12 +55,13 @@ async function run({ inputs, options = {}, ctx }) {
       `-sOutputFile=${out}`,
       def,
       src,
-    ], { signal: ctx.signal });
+    ], { cwd: ctx.scratch, signal: ctx.signal });
     ctx.throwIfCancelled();
     if (result.code !== 0 || /OFFICE-PDFA-ICC-FAILED/.test(result.stdout)) {
       throw new Error(`לא ניתן היה להמיר את "${name}" ל-PDF/A. ייתכן שהקובץ פגום; אפשר לנסות קודם את "תיקון PDF".`);
     }
-    const bytes = await fs.readFile(out);
+    await samePages(scratchPath(ctx, out), pages, name);
+    const bytes = await fs.readFile(scratchPath(ctx, out));
     if (!(await declares(bytes, part))) {
       throw new Error(`ההמרה של "${name}" לא הסתיימה כמצופה: בקובץ שנוצר חסרה ההצהרה על PDF/A.`);
     }

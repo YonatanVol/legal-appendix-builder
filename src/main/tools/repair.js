@@ -6,6 +6,7 @@ const { PDFDocument } = require('pdf-lib');
 
 const bin = require('../engine/binaries');
 const { stage, scratchPath } = require('../engine/stage');
+const { strictPages } = require('../engine/verify');
 
 /**
  * Repair a damaged PDF.
@@ -35,25 +36,27 @@ async function run({ inputs, ctx }) {
     let damaged = looksDamaged(bytes);
 
     if (bin.locate('qpdf')) {
-      const out = scratchPath(ctx, `q-${f}.pdf`);
-      const r = await bin.run('qpdf', ['--object-streams=generate', '--', src, out], { signal: ctx.signal });
+      const out = `q-${f}.pdf`;
+      const r = await bin.run('qpdf', ['--object-streams=generate', '--', src, out], { cwd: ctx.scratch, signal: ctx.signal });
       ctx.throwIfCancelled();
       if (/password/i.test(r.stderr) && r.code === 2) {
         throw new Error(`הקובץ "${name}" מוגן בסיסמה. הסר אותה בכלי "הסרת סיסמה" לפני התיקון.`);
       }
       if (r.code === 3) damaged = true;
-      if ((r.code === 0 || r.code === 3) && (await pageCount(out)) > 0) fixed = { file: out, how: 'qpdf' };
+      // qpdf can write a cut-off file back out without its catalogue, which nothing opens;
+      // its result counts only if a strict reader finds pages in it.
+      if ((r.code === 0 || r.code === 3) && (await strictPages(scratchPath(ctx, out))) > 0) fixed = { file: scratchPath(ctx, out), how: 'qpdf' };
     }
 
     if (!fixed && bin.locate('gs')) {
       ctx.progress((f + 0.4) / inputs.length, `"${name}": מנסה שיטה שנייה…`);
-      const out = scratchPath(ctx, `g-${f}.pdf`);
-      const r = await bin.run('gs', ['-dNOPAUSE', '-dBATCH', '-dSAFER', '-sDEVICE=pdfwrite', '-dAutoRotatePages=/None', `-sOutputFile=${out}`, src], { signal: ctx.signal });
+      const out = `g-${f}.pdf`;
+      const r = await bin.run('gs', ['-dNOPAUSE', '-dBATCH', '-dSAFER', '-sDEVICE=pdfwrite', '-dAutoRotatePages=/None', `-sOutputFile=${out}`, src], { cwd: ctx.scratch, signal: ctx.signal });
       ctx.throwIfCancelled();
       // Ghostscript turns even pure junk into a blank page and reports success, so its
       // result counts only if some page actually has something on it.
-      if (r.code === 0 && (await pageCount(out)) > 0 && (await hasContent(out))) {
-        fixed = { file: out, how: 'gs' };
+      if (r.code === 0 && (await strictPages(scratchPath(ctx, out))) > 0 && (await hasContent(scratchPath(ctx, out)))) {
+        fixed = { file: scratchPath(ctx, out), how: 'gs' };
         damaged = true;
       }
     }
@@ -61,10 +64,11 @@ async function run({ inputs, ctx }) {
     if (!fixed) {
       ctx.progress((f + 0.7) / inputs.length, `"${name}": מנסה שיטה שלישית…`);
       fixed = await byPages(bytes, name, scratchPath(ctx, `l-${f}.pdf`));
+      if (!(await strictPages(fixed.file))) throw new Error(`לא ניתן היה לשחזר את "${name}": גם הקובץ שנבנה מחדש לא נפתח.`);
       damaged = damaged || fixed.lost > 0;
     }
 
-    const kept = await pageCount(fixed.file);
+    const kept = await strictPages(fixed.file);
     const lost = Math.max(0, (expected || kept) - kept);
     outputs.push(await ctx.writeOutput(await fs.readFile(fixed.file), { source: inputs[f], label: 'מתוקן', ext: 'pdf' }));
     notes.push(
@@ -103,15 +107,6 @@ async function byPages(bytes, name, out) {
   if (!kept) throw new Error(`לא נמצא אף עמוד שאפשר לשחזר ב-"${name}".`);
   await fs.writeFile(out, await fresh.save({ useObjectStreams: true }));
   return { file: out, how: 'pdf-lib', lost: count - kept };
-}
-
-async function pageCount(file) {
-  try {
-    const doc = await PDFDocument.load(await fs.readFile(file), { ignoreEncryption: true, updateMetadata: false });
-    return doc.getPageCount();
-  } catch {
-    return 0;
-  }
 }
 
 /** True if any page draws something: text, an image, a line. */

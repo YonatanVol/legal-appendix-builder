@@ -30,11 +30,12 @@ async function run({ inputs, options = {}, ctx }) {
       return turned ? { width: height, height: width } : { width, height };
     });
     const src = await stage(ctx, inputs[f], f);
-    const pattern = path.join(ctx.scratch, `s${f}-%05d.jpg`);
+    const pattern = `s${f}-%05d.jpg`;
     const result = await bin.run('gs', [
       '-dNOPAUSE', '-dBATCH', '-dSAFER', '-sDEVICE=jpeg', `-r${dpi}`, '-dJPEGQ=88',
       '-dTextAlphaBits=4', '-dGraphicsAlphaBits=4', '-dUseCropBox', `-sOutputFile=${pattern}`, src,
     ], {
+      cwd: ctx.scratch,
       signal: ctx.signal,
       onLine: (line) => {
         const m = /^Page (\d+)/.exec(line);
@@ -51,7 +52,13 @@ async function run({ inputs, options = {}, ctx }) {
     pptx.defineLayout({ name: 'PAGE', width: W, height: H });
     pptx.layout = 'PAGE';
     for (let i = 0; i < sizes.length; i++) {
-      const jpg = await fs.readFile(path.join(ctx.scratch, `s${f}-${String(i + 1).padStart(5, '0')}.jpg`));
+      const slideFile = path.join(ctx.scratch, `s${f}-${String(i + 1).padStart(5, '0')}.jpg`);
+      let jpg;
+      try {
+        jpg = await fs.readFile(slideFile);
+      } catch {
+        throw new Error(`לא ניתן היה לצייר את עמוד ${i + 1} של "${name}". ייתכן שהקובץ פגום; אפשר לנסות קודם את "תיקון PDF".`);
+      }
       const scale = Math.min(W / (sizes[i].width / 72), H / (sizes[i].height / 72));
       const w = (sizes[i].width / 72) * scale;
       const h = (sizes[i].height / 72) * scale;
