@@ -73,10 +73,6 @@ function problem(steps) {
     // before anything else can read it.
     if (id === 'protect' && !last) return 'הגנה בסיסמה יכולה להיות רק השלב האחרון: אחריה אף כלי לא יוכל לפתוח את הקובץ.';
     if (id === 'unlock' && i !== 0) return 'הסרת סיסמה יכולה להיות רק השלב הראשון.';
-    // A locked file cannot be opened by the step after it, and a file must be unlocked
-    // before anything else can read it.
-    if (id === 'protect' && !last) return 'הגנה בסיסמה יכולה להיות רק השלב האחרון: אחריה אף כלי לא יוכל לפתוח את הקובץ.';
-    if (id === 'unlock' && i !== 0) return 'הסרת סיסמה יכולה להיות רק השלב הראשון.';
     if (!STEP_TOOLS.includes(id) && !LAST_ONLY.includes(id)) return 'אחד השלבים אינו כלי שאפשר לשרשר.';
   }
   return null;

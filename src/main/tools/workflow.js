@@ -64,7 +64,10 @@ async function run({ inputs, options = {}, ctx }) {
             made.push(out);
             return out;
           }
-          const file = path.join(stepDir, `${made.length}.${where.ext || 'pdf'}`);
+          // Named after the original, so a later step's message names the file the user
+          // knows rather than a working copy.
+          const base = path.parse(original).name;
+          const file = path.join(stepDir, `${made.length ? `${base} (${made.length + 1})` : base}.${where.ext || 'pdf'}`);
           await fs.writeFile(file, bytes);
           made.push(file);
           return file;
@@ -74,6 +77,13 @@ async function run({ inputs, options = {}, ctx }) {
       const result = await tool.run({ inputs: current, options: { ...(step.options || {}), ...(secrets[k] || {}) }, ctx: inner });
       ctx.throwIfCancelled();
       if (last) {
+        if (!made.length && !(result.display && result.display.length) && current[0] !== original) {
+          // The last step rightly made nothing (Compress of a file already as small as it
+          // gets), but the steps before it did: their result is the workflow's result.
+          made.push(await ctx.writeOutput(await fs.readFile(current[0]), {
+            source: original, label: label || names[k - 1], ext: path.extname(current[0]).slice(1) || 'pdf',
+          }));
+        }
         display.push(...(result.display && result.display.length ? result.display : made));
         if (result.summary) notes.push(result.summary);
         break;

@@ -110,6 +110,13 @@ app.whenReady().then(async () => {
   r = await jobs.start(tools.runnable(`wf:${toWord.id}`), [a], { name: toWord.name, steps: toWord.steps }).promise;
   check('a conversion as the last step writes its own kind of file', r.ok && /\.md$/.test(r.display[0]) && fs.readFileSync(r.display[0], 'utf8').includes('Alpha 1'), r.error || r.display);
 
+  // The last step may rightly make nothing: Compress of a file already as small as it
+  // gets. The numbering before it is still the result, and the message names the file.
+  r = await jobs.start(tools.runnable('workflow'), [a], { name: 'ממוספר', steps: [{ toolId: 'page-numbers', options: { format: 'n' } }, { toolId: 'compress' }] }).promise;
+  const kept = r.ok && r.display.length === 1 ? (await text.documentText(r.display[0])).join(' | ') : '';
+  check('when the last step makes nothing, the earlier steps\' result is still written', r.ok && path.basename(r.display[0] || '') === 'מכתב א - ממוספר.pdf' && /Alpha 1\s+1\b/.test(kept), r.error || `${r.display} ${kept}`);
+  check('  and the message names the file, not a working copy', r.ok && !/"\d+\.pdf"/.test(r.summary || ''), r.summary);
+
   let jobId = null;
   const beforeCancel = fs.readdirSync(dir).sort().join('|');
   const cancelled = jobs.start(tools.runnable(`wf:${send.id}`), [a, b], { name: send.name, steps: send.steps, secrets: { 2: { password: 'x' } } }, { onProgress: (p) => { if (/מספרי עמודים/.test(p.text)) jobs.cancel(jobId); } });
@@ -167,6 +174,12 @@ app.whenReady().then(async () => {
   check('running it from the screen writes the result, named after the workflow', /מכתב א - דחיסה והגנה\.pdf$/.test(out), out);
   const history = fs.readFileSync(runs.storeFile(), 'utf8');
   check('  and the run history records it without the password', history.includes('"wf:') && !history.includes('סיסמה-ייחודית-77'));
+  check('a workflow that stays in the office says nothing about sending', !(await page(`!!document.querySelector('#tool-options .cloud-notice')`)));
+  const cloud = await workflows.save({ name: 'סיכום', steps: [{ toolId: 'compress' }, { toolId: 'summarize' }] });
+  await page(`window.shell.refreshTools().then(() => window.shell.open('wf:${cloud.id}'))`);
+  await until(`document.getElementById('screen-name').textContent === 'סיכום'`);
+  check('a workflow with a step that uses Claude says, before running, that the document goes to Anthropic',
+    /התהליך הזה שולח את המסמך ל-Anthropic/.test(await page(`(document.querySelector('#tool-options .cloud-notice') || {}).textContent || ''`)));
   check('no errors in the page console', win.consoleErrors.length === 0, win.consoleErrors.slice(0, 3).join(' / '));
 
   disposeRenderer();

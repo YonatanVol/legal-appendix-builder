@@ -524,10 +524,10 @@ function officePanel(program, how) {
 }
 
 /** Said plainly before a cloud tool runs: the document leaves the PC. */
-function cloudNotice(container) {
+function cloudNotice(container, subject = 'הכלי הזה') {
   const p = document.createElement('p');
   p.className = 'cloud-notice';
-  p.textContent = 'הכלי הזה שולח את המסמך ל-Anthropic, החברה שמפעילה את Claude, ומקבל ממנה את התוצאה. אל תשתמשו בו למסמכים שאסור שיצאו מהמשרד.';
+  p.textContent = `${subject} שולח את המסמך ל-Anthropic, החברה שמפעילה את Claude, ומקבל ממנה את התוצאה. אל תשתמשו בו למסמכים שאסור שיצאו מהמשרד.`;
   container.append(p);
 }
 
@@ -2205,6 +2205,7 @@ const panels = {
       view.set('steps', wf.steps);
       view.set('name', wf.name);
       if (!view.options.secrets) view.set('secrets', {});
+      if (wf.steps.some((step) => step.toolId === 'summarize' || step.toolId === 'translate')) cloudNotice(container, 'התהליך הזה');
       const box = ui.section(container, 'השלבים', 'כל קובץ עובר את השלבים לפי הסדר. רק התוצאה האחרונה נשמרת, ליד הקובץ המקורי.');
       const list = document.createElement('ol');
       list.className = 'wf-summary';

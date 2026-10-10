@@ -3,7 +3,7 @@
 const fs = require('fs/promises');
 const {
   PDFDocument, PDFName, PDFTextField, PDFCheckBox, PDFRadioGroup, PDFDropdown, PDFOptionList,
-  PDFSignature, PDFButton, TextAlignment, degrees,
+  PDFSignature, PDFButton, PDFDict, TextAlignment, degrees,
 } = require('pdf-lib');
 
 const { loadPdf } = require('../pdf/inspect');
@@ -87,12 +87,10 @@ async function run({ inputs, options = {}, ctx }) {
   }
 
   ctx.progress(0.4, 'מצייר את הערכים…');
-  // Every text field and dropdown that holds a value gets its own drawing, not only the
-  // ones filled now: a form saved asking viewers to draw its fields would otherwise show
-  // the untouched ones blank once that request is withdrawn, or lose them when flattened.
-  const withValues = form.getFields().filter((f) =>
-    (f instanceof PDFTextField && (f.getText() || '').trim()) || (f instanceof PDFDropdown && f.getSelected().length));
-  await drawAppearances(doc, [...new Set([...textual, ...withValues])]);
+  // Untouched fields with values are drawn too when their drawing is missing or the form
+  // asked viewers to draw them: they would otherwise show blank once that request is
+  // withdrawn, or be lost when flattened. A field with a drawing of its own keeps it.
+  await drawAppearances(doc, [...new Set([...textual, ...staleFields(form)])]);
 
   if (options.flatten) {
     try {
@@ -112,6 +110,24 @@ async function run({ inputs, options = {}, ctx }) {
   if (created.length) parts.push(created.length === 1 ? 'שדה אחד נוסף' : `${created.length} שדות נוספו`);
   if (!parts.length) parts.push('הטופס נשמר בלי שינויים');
   return { summary: `${parts.join(', ')}.${options.flatten ? ' השדות הפכו לחלק מהעמוד ואי אפשר לערוך אותם עוד.' : ''}`, display: [out] };
+}
+
+/**
+ * The text fields and dropdowns holding a value whose drawing cannot be trusted: one of
+ * their boxes has none, or the form asks viewers to draw every field themselves.
+ */
+function staleFields(form) {
+  const asked = form.acroForm.dict.lookup(PDFName.of('NeedAppearances'));
+  const viewersDraw = !!asked && asked.toString() === 'true';
+  return form.getFields().filter((f) => {
+    const valued = (f instanceof PDFTextField && (f.getText() || '').trim()) || (f instanceof PDFDropdown && f.getSelected().length);
+    if (!valued) return false;
+    if (viewersDraw) return true;
+    return f.acroField.getWidgets().some((w) => {
+      const ap = w.dict.lookup(PDFName.of('AP'));
+      return !(ap instanceof PDFDict) || !ap.get(PDFName.of('N'));
+    });
+  });
 }
 
 /** The page a widget sits on: its /P, or the page whose annotations list it. */
@@ -240,4 +256,4 @@ function toShown(frame, page, ux, uy) {
   return [vx / frame.width, 1 - vy / frame.height];
 }
 
-module.exports = { run, readFields, userRect, toShown };
+module.exports = { run, readFields, userRect, toShown, staleFields, drawAppearances };

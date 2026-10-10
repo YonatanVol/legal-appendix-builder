@@ -24,8 +24,10 @@ build differs from the plan below, it is because the plan's version did not hold
   contrast and black and white. Cropping a photo to the page's corners stays in the
   document scanner app, as the plan said.
 - **Redact** rebuilds the whole document through Ghostscript after the marked pages become
-  pictures. The plan's per-page approach left recoverable content in the file; two rounds of
-  review found the ways.
+  pictures. The plan's per-page approach left recoverable content in the file; three rounds
+  of review found the ways. Unmarked pages keep what they show: field values and stamps are
+  drawn into the page, and hidden layers stay hidden. Kept comments carry only plain values,
+  and attached files never come across.
 - **Sign** refuses a file that is already signed digitally, because rewriting it would break
   that signature; Acrobat Reader appends instead, and the message says so.
 - **Workflows**: Merge and Unlock only first; Protect, Split and conversions only last.
@@ -174,8 +176,9 @@ is available to that office. It is recorded in the README's licence section.
 - Office automation runs Word on the PC itself; nothing travels.
 - Temporary files live in the app's own temp folder and are deleted when a run ends,
   succeeds or not.
-- Redaction rasterizes, so redacted text is gone, not hidden. Metadata and annotations
-  are removed with it.
+- Redaction rasterizes, so redacted text is gone, not hidden. Metadata, annotations and
+  attached files are removed with it; what an annotation shows on an unmarked page is
+  drawn into that page.
 - What it does not protect against: a compromised PC, a compromised GitHub publishing
   token (see the README), and the AI provider's own handling of the text that is sent.
 

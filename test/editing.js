@@ -210,6 +210,30 @@ app.whenReady().then(async () => {
   r = await runTool('forms', [asking], { values: { name: 'רון' }, flatten: true });
   check('  and flattening such a form works', r.ok && (await text.documentText(r.display[0]))[0].includes('חיפה'), r.error);
 
+  // A value filled earlier in another program, with that program's own drawing (here a
+  // multi-line one): filling another field leaves that drawing alone.
+  const ownDrawing = path.join(dir, 'טופס עם ציור משלו.pdf');
+  {
+    const { PDFName } = require('pdf-lib');
+    const doc = await PDFDocument.load(await fsp.readFile(formFile));
+    const form = doc.getForm();
+    form.getDropdown('city').select('חיפה');
+    const widget = form.getDropdown('city').acroField.getWidgets()[0];
+    const own = doc.context.register(doc.context.stream('BT /Helv 9 Tf 2 14 Td (OWN-LINE-1) Tj 0 -10 Td (OWN-LINE-2) Tj ET', { Type: 'XObject', Subtype: 'Form', BBox: [0, 0, 220, 24] }));
+    widget.dict.set(PDFName.of('AP'), doc.context.obj({ N: own }));
+    form.acroForm.dict.set(PDFName.of('NeedAppearances'), doc.context.obj(false));
+    await fsp.writeFile(ownDrawing, await doc.save({ updateFieldAppearances: false }));
+  }
+  r = await runTool('forms', [ownDrawing], { values: { name: 'רון' } });
+  const kept = r.ok ? await (async () => {
+    const { PDFName, decodePDFRawStream } = require('pdf-lib');
+    const doc = await PDFDocument.load(await fsp.readFile(r.display[0]));
+    const widget = doc.getForm().getDropdown('city').acroField.getWidgets()[0];
+    const n = doc.context.lookup(widget.dict.lookup(PDFName.of('AP')).get(PDFName.of('N')));
+    return Buffer.from(decodePDFRawStream(n).decode()).toString('latin1');
+  })() : '';
+  check('  a field with its own drawing, left untouched, keeps that drawing', kept.includes('OWN-LINE-1') && kept.includes('OWN-LINE-2'), r.error || kept.slice(0, 80));
+
   const rotatedForm = await pagesPdf(path.join(dir, 'טופס מסובב.pdf'), [90]);
   r = await runTool('forms', [rotatedForm], { create: [{ type: 'text', name: 'שם מלא', page: 0, x: 0.2, y: 0.3, w: 0.4, h: 0.05 }] });
   const back = r.ok ? (await readFields(r.display[0]))[0] : null;

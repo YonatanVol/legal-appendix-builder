@@ -150,7 +150,116 @@ async function leakCases(dir) {
     await fsp.writeFile(file, await d.save());
     out.push({ label: 'kept annotations pointing back at the redacted page', file, clean: false, secrets: ['SECRET-WIDGET-PAGE', 'SECRET-NOTE-ON-1'], keep: 'PUBLIC-ANNOTS' });
   }
+  {
+    // Keeping comments: a note whose action jumps to the redacted page, a highlight
+    // whose extra data and a square whose attachment both point at it.
+    const d = await PDFDocument.create();
+    const f = await d.embedFont(StandardFonts.Helvetica);
+    const ctx = d.context;
+    const p0 = d.addPage([595, 842]);
+    const p1 = d.addPage([595, 842]);
+    p0.drawText('SECRET-AA-PAGE', { x: 50, y: 700, size: 14, font: f });
+    p1.drawText('PUBLIC-AA', { x: 50, y: 700, size: 14, font: f });
+    const jump = ctx.obj({ S: 'GoTo', D: [p0.ref, PDFName.of('Fit')] });
+    const note = ctx.register(ctx.obj({ Type: 'Annot', Subtype: 'Text', Rect: [10, 10, 30, 30], Contents: PDFString.of('PUBLIC-NOTE-KEPT'), AA: { O: jump } }));
+    const mark = ctx.register(ctx.obj({ Type: 'Annot', Subtype: 'Highlight', Rect: [50, 690, 200, 720], QuadPoints: [50, 720, 200, 720, 50, 690, 200, 690], ExData: { Type: 'ExData', Subtype: 'Markup3D', Pg: p0.ref } }));
+    const box = ctx.register(ctx.obj({ Type: 'Annot', Subtype: 'Square', Rect: [300, 300, 400, 400], FS: { Type: 'Filespec', F: PDFString.of('x'), Page: p0.ref } }));
+    p1.node.set(PDFName.of('Annots'), ctx.obj([note, mark, box]));
+    const file = path.join(dir, 'actions.pdf');
+    await fsp.writeFile(file, await d.save());
+    out.push({ label: 'kept comments whose action, data or attachment point at the redacted page', file, clean: false, secrets: ['SECRET-AA-PAGE'], keep: ['PUBLIC-AA', 'PUBLIC-NOTE-KEPT'] });
+  }
+  {
+    // A layer the document keeps hidden, on the page that is kept.
+    const d = await PDFDocument.create();
+    const f = await d.embedFont(StandardFonts.Helvetica);
+    const ctx = d.context;
+    const p0 = d.addPage([595, 842]);
+    const p1 = d.addPage([595, 842]);
+    p0.drawText('SECRET-P0-LAYERS', { x: 50, y: 700, size: 14, font: f });
+    const ocg = ctx.register(ctx.obj({ Type: 'OCG', Name: PDFString.of('notes') }));
+    d.catalog.set(PDFName.of('OCProperties'), ctx.obj({ OCGs: [ocg], D: { OFF: [ocg], Order: [ocg] } }));
+    p1.node.set(PDFName.of('Resources'), ctx.obj({ Font: { F1: f.ref }, Properties: { L1: ocg } }));
+    p1.node.set(PDFName.of('Contents'), ctx.register(ctx.flateStream('BT /F1 14 Tf 50 700 Td (PUBLIC-LAYERS) Tj ET /OC /L1 BDC BT /F1 14 Tf 50 650 Td (HIDDEN-OCG-P1) Tj ET EMC')));
+    const file = path.join(dir, 'layers.pdf');
+    await fsp.writeFile(file, await d.save());
+    out.push({ label: 'a hidden layer on the kept page stays hidden', file, clean: true, secrets: ['SECRET-P0-LAYERS', 'HIDDEN-OCG-P1'], keep: 'PUBLIC-LAYERS' });
+  }
   return out;
+}
+
+/**
+ * Page 1 holds a secret; page 2 a filled text field with its drawing, a field whose form
+ * asks viewers to draw it, a checked box, a stamp whose drawing sits away from the origin
+ * (its BBox is offset, so a wrong placement shows), a hidden stamp and a comment.
+ */
+async function shownPdf(file) {
+  const { PDFDocument, StandardFonts, PDFString } = require('pdf-lib');
+  const d = await PDFDocument.create();
+  const f = await d.embedFont(StandardFonts.Helvetica);
+  const ctx = d.context;
+  const p0 = d.addPage([595, 842]);
+  const p1 = d.addPage([595, 842]);
+  p0.drawText('SECRET-SHOWN-P0', { x: 50, y: 760, size: 14, font: f });
+  p1.drawText('PUBLIC-SHOWN', { x: 50, y: 790, size: 14, font: f });
+  const form = d.getForm();
+  const filled = form.createTextField('filled');
+  filled.addToPage(p1, { x: 50, y: 700, width: 250, height: 24 });
+  filled.setText('FILLED-VALUE-P1');
+  const box = form.createCheckBox('agree');
+  box.addToPage(p1, { x: 50, y: 600, width: 30, height: 30 });
+  box.check();
+  const late = form.createTextField('late');
+  late.addToPage(p1, { x: 320, y: 700, width: 220, height: 24 });
+  late.setText('LATE-VALUE');
+  form.updateFieldAppearances(f);
+  // The second field loses its drawing and the form asks viewers to draw it.
+  late.acroField.getWidgets()[0].dict.delete(PDFName.of('AP'));
+  form.acroForm.dict.set(PDFName.of('NeedAppearances'), ctx.obj(true));
+  const look = (body) => ctx.register(ctx.stream(body, { Type: 'XObject', Subtype: 'Form', BBox: [100, 100, 200, 150], Resources: { Font: { F1: f.ref } } }));
+  const stampAp = look('0 g 100 100 100 50 re f 1 g BT /F1 10 Tf 105 120 Td (STAMP-P1) Tj ET');
+  const hiddenAp = look('BT /F1 10 Tf 105 120 Td (HIDDEN-STAMP) Tj ET');
+  const stampAnnot = ctx.register(ctx.obj({ Type: 'Annot', Subtype: 'Stamp', Rect: [300, 400, 400, 450], AP: { N: stampAp } }));
+  const hidden = ctx.register(ctx.obj({ Type: 'Annot', Subtype: 'Stamp', Rect: [300, 300, 400, 350], F: 2, AP: { N: hiddenAp } }));
+  const note = ctx.register(ctx.obj({ Type: 'Annot', Subtype: 'Text', Rect: [10, 10, 30, 30], Contents: PDFString.of('a comment') }));
+  const annots = p1.node.lookup(PDFName.of('Annots'));
+  p1.node.set(PDFName.of('Annots'), ctx.obj([...annots.asArray(), stampAnnot, hidden, note]));
+  await fsp.writeFile(file, await d.save({ updateFieldAppearances: false }));
+  return file;
+}
+
+/** Whether a page's text holds `value`, read independently with pdf.js. */
+async function valueDrawn(file, page, value) {
+  return (await linesOf(file, page)).join(' ').includes(value);
+}
+
+/**
+ * How dark three areas of a page are, from 0 to 1, rendered at 72 DPI: the stamp's box
+ * (300..400 by 400..450), the checkbox (50..80 by 600..630), and the area where the
+ * stamp's drawing would land if it were not moved into its box (100..200 by 100..150).
+ */
+function darkIn(file, page, dir) {
+  const out = path.join(dir, `dark-${Math.random().toString(36).slice(2)}.pgm`);
+  execFileSync(bin.locate('gs'), ['-q', '-dNOPAUSE', '-dBATCH', '-dSAFER', '-sDEVICE=pgmraw', '-r72', `-dFirstPage=${page}`, `-dLastPage=${page}`, `-sOutputFile=${out}`, file]);
+  const buf = fs.readFileSync(out);
+  fs.rmSync(out, { force: true });
+  // Ghostscript writes a comment line into the header.
+  const header = buf.toString('latin1', 0, 200).match(/^P5\s+(?:#[^\n]*\n\s*)*(\d+)\s+(\d+)\s+(\d+)\s/);
+  const [width, height] = [Number(header[1]), Number(header[2])];
+  const pixels = buf.subarray(header[0].length);
+  const dark = (x0, x1, y0, y1) => {
+    let n = 0;
+    let black = 0;
+    // Inset by two points so edges do not count.
+    for (let y = height - y1 + 2; y < height - y0 - 2; y++) {
+      for (let x = x0 + 2; x < x1 - 2; x++) {
+        n++;
+        if (pixels[y * width + x] < 128) black++;
+      }
+    }
+    return Math.round((black / n) * 1000) / 1000;
+  };
+  return { stamp: dark(300, 400, 400, 450), check: dark(50, 80, 600, 630), origin: dark(100, 200, 100, 150) };
 }
 
 /** Every object of a PDF, streams decompressed, as one string. */
@@ -333,7 +442,33 @@ app.whenReady().then(async () => {
     r = await runTool('redact', [c.file], { marks: [{ page: 0, x: 0.05, y: 0.05, w: 0.9, h: 0.9 }], clean: c.clean });
     const rawCase = r.ok ? expanded(r.display[0], dir) : '';
     const leaks = c.secrets.filter((x) => rawCase.includes(x));
-    check(`  ${c.label}: nothing of the redacted page survives`, r.ok && leaks.length === 0 && rawCase.includes(c.keep), r.error || `still inside: ${leaks.join(', ')}`);
+    const lost = [].concat(c.keep).filter((x) => !rawCase.includes(x));
+    check(`  ${c.label}: nothing of the redacted page survives`, r.ok && leaks.length === 0 && lost.length === 0,
+      r.error || `still inside: ${leaks.join(', ')}; lost: ${lost.join(', ')}`);
+  }
+
+  r = await runTool('redact', [hiding], { marks: [{ page: 0, x: 0.05, y: 0.05, w: 0.9, h: 0.2 }], clean: false });
+  check('keeping comments, an attached file is still left out, and the summary says why',
+    r.ok && !expanded(r.display[0], dir).includes('SECRET-ATTACH') && /המצורפים לא הועתקו/.test(r.summary), r.error || r.summary);
+
+  // What an unmarked page shows stays on it: filled fields (with a drawing, and one whose
+  // drawing the form left to viewers), a checked box and a stamp, in both modes, each
+  // where it was; a hidden stamp is not drawn.
+  const shown = await shownPdf(path.join(dir, 'טופס מלא.pdf'));
+  for (const clean of [true, false]) {
+    r = await runTool('redact', [shown], { marks: [{ page: 0, x: 0.05, y: 0.05, w: 0.9, h: 0.9 }], clean });
+    const words = r.ok ? (await linesOf(r.display[0], 2)).join(' ') : '';
+    const missing = ['FILLED-VALUE-P1', 'STAMP-P1', 'PUBLIC-SHOWN'].filter((x) => !words.includes(x));
+    check(`  ${clean ? 'removing' : 'keeping'} comments, the kept page still shows its field values and stamp`, r.ok && missing.length === 0, r.error || `missing: ${missing.join(', ')} in ${words}`);
+    const late = r.ok ? await valueDrawn(r.display[0], 2, 'LATE-VALUE') : false;
+    check('    a value the form left for viewers to draw is drawn too', late);
+    check('    and a hidden stamp stays hidden', r.ok && !words.includes('HIDDEN-STAMP'), words);
+    const ink = r.ok ? darkIn(r.display[0], 2, dir) : null;
+    check('    each drawn where it was: the stamp\'s box and the checked box are dark, the drawing\'s own corner is not',
+      ink && ink.stamp > 0.8 && ink.check > 0.05 && ink.origin < 0.01, JSON.stringify(ink));
+    const annots = r.ok ? (await PDFDocument.load(await fsp.readFile(r.display[0]))).getPage(1).node.lookup(PDFName.of('Annots')) : null;
+    check(`    ${clean ? 'no annotation is left' : 'the comment stays a comment, and nothing else stays an annotation'}`,
+      clean ? !annots : annots && annots.size() === 1, annots ? `${annots.size()} annotations` : 'none');
   }
 
   /* ---- PDF to Excel ---- */

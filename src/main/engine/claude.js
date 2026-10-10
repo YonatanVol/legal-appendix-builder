@@ -1,6 +1,6 @@
 'use strict';
 
-const { session } = require('electron');
+const { app, session } = require('electron');
 const Anthropic = require('@anthropic-ai/sdk');
 
 const settings = require('../settings');
@@ -10,8 +10,11 @@ const { lockDownAi, AI_PARTITION } = require('../security');
  * Claude, for Summarize and Translate.
  *
  * Every request goes through a session of its own that may reach api.anthropic.com
- * and nothing else (security.js), by handing the SDK that session's fetch. A test may
- * point it at a local stand-in on the loopback address, never another machine.
+ * and nothing else (security.js), by handing the SDK that session's fetch. A test run
+ * from the source may point it at a local stand-in on the loopback address, never
+ * another machine; an installed copy ignores that. Nor does an installed copy take the
+ * address, credentials, extra headers or logging the SDK would otherwise read from the
+ * environment: each is set here.
  *
  * The model is Claude Opus 5.5. If it declines a request, the API's server-side fallback
  * re-runs it on another model in the same call, so a legal document about an injury is
@@ -22,22 +25,43 @@ const FALLBACK_BETA = 'server-side-fallback-2026-07-01';
 
 let aiSession = null;
 
+const API_BASE = 'https://api.anthropic.com';
+
+/** The loopback stand-in a test names, only when running from the source. */
+function testBase() {
+  return app.isPackaged ? null : process.env.OFFICE_AI_TEST_BASE || null;
+}
+
 function sessionFor() {
   if (aiSession) return aiSession;
   aiSession = session.fromPartition(AI_PARTITION);
-  lockDownAi(aiSession, { testBase: process.env.OFFICE_AI_TEST_BASE });
+  lockDownAi(aiSession, { testBase: testBase() });
   return aiSession;
+}
+
+/** Header names ANTHROPIC_CUSTOM_HEADERS would add to every request; they are removed. */
+function envHeaderNames() {
+  return String(process.env.ANTHROPIC_CUSTOM_HEADERS || '').split('\n')
+    .map((line) => (line.includes(':') ? line.slice(0, line.indexOf(':')).trim().toLowerCase() : ''))
+    .filter((name) => name && name !== 'x-api-key' && name !== 'anthropic-version' && name !== 'anthropic-beta' && name !== 'content-type');
 }
 
 async function client() {
   const apiKey = await settings.getApiKey();
   if (!apiKey) throw new Error('לא הוזן מפתח API של Claude. אפשר להזין אותו בהגדרות.');
   const ses = sessionFor();
-  const base = process.env.OFFICE_AI_TEST_BASE;
+  const foreign = envHeaderNames();
   return new Anthropic({
     apiKey,
-    baseURL: base || undefined,
-    fetch: (url, init) => ses.fetch(String(url), init),
+    authToken: null,
+    baseURL: testBase() || API_BASE,
+    logLevel: 'off',
+    fetch: (url, init = {}) => {
+      if (!foreign.length) return ses.fetch(String(url), init);
+      const headers = new Headers(init.headers);
+      for (const name of foreign) headers.delete(name);
+      return ses.fetch(String(url), { ...init, headers });
+    },
     maxRetries: 2,
     timeout: 10 * 60 * 1000,
   });
