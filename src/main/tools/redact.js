@@ -3,13 +3,13 @@
 const fs = require('fs/promises');
 const path = require('path');
 const {
-  PDFDocument, PDFPage, PDFName, PDFDict, PDFArray, PDFStream, PDFNumber, PDFRef, PDFString, PDFHexString, PDFObjectCopier,
+  PDFDocument, PDFPage, PDFName, PDFDict, PDFArray, PDFStream, PDFNumber, PDFRef, PDFNull, PDFString, PDFHexString, PDFObjectCopier,
   pushGraphicsState, popGraphicsState, concatTransformationMatrix, drawObject,
 } = require('pdf-lib');
 
 const bin = require('../engine/binaries');
 const imaging = require('../engine/imaging');
-const { drawPages } = require('../engine/pagepicture');
+const pagepicture = require('../engine/pagepicture');
 const { ocrFile } = require('./ocr');
 const { loadPdf } = require('../pdf/inspect');
 const { samePages } = require('../engine/verify');
@@ -60,13 +60,40 @@ async function run({ inputs, options = {}, ctx }) {
 
   // The marked pages are drawn by pdf.js from the original, as the screen drew them when
   // the user marked them (engine/pagepicture.js), so the picture holds what they saw.
+  // First the pages are matched: the marks are numbered as pdf.js numbers the pages, and
+  // the pictures replace pages as pdf-lib numbers them. A file can be made so that the two
+  // disagree, and a picture would then replace a page other than the one marked.
   ctx.progress(0.05, 'מצייר את העמודים המסומנים…');
-  let images;
+  const view = pagepicture.open(source, { signal: ctx.signal });
+  const blacked = new Map();
   try {
-    images = await drawPages(source, pages, { dpi: DPI, ctx });
-  } catch (err) {
-    if (ctx.signal && ctx.signal.aborted) throw err;
-    throw new Error('לא ניתן היה לצייר את העמודים המסומנים, ולכן לא נוצר עותק. אפשר לנסות קודם את "תיקון PDF".');
+    let shown;
+    try {
+      shown = await view.pageList();
+    } catch (err) {
+      failed(ctx, err);
+    }
+    const same = shown.length === total && doc.getPages().every((p, i) =>
+      shown[i][0] === p.ref.objectNumber && shown[i][1] === p.ref.generationNumber);
+    if (!same) {
+      throw new Error('העמודים בקובץ הזה בנויים כך שאין ודאות איזה עמוד סומן, ולכן לא נוצר עותק. אפשר להריץ קודם "תיקון PDF" ולסמן שוב בקובץ המתוקן.');
+    }
+    for (let k = 0; k < pages.length; k++) {
+      const i = pages[k];
+      ctx.progress(0.1 + (k / pages.length) * 0.5, `משחיר את עמוד ${i + 1}`);
+      let picture;
+      try {
+        picture = await view.draw(i, DPI);
+      } catch (err) {
+        failed(ctx, err);
+      }
+      // Beyond each mark by a little, so anti-aliased edges of letters do not peek out.
+      const boxes = byPage.get(i).map((m) => ({ x: m.x - 0.002, y: m.y - 0.002, w: m.w + 0.004, h: m.h + 0.004 }));
+      blacked.set(i, { jpg: (await imaging.blackOut(picture.png, 'image/png', boxes)).bytes, width: picture.width, height: picture.height });
+      ctx.throwIfCancelled();
+    }
+  } finally {
+    await view.release();
   }
   const layers = settleLayers(doc);
 
@@ -82,16 +109,6 @@ async function run({ inputs, options = {}, ctx }) {
     if (stale.length) await drawAppearances(doc, stale);
   } catch {
     // A form pdf-lib cannot read keeps whatever drawings it already has.
-  }
-  const blacked = new Map();
-  for (let k = 0; k < pages.length; k++) {
-    const i = pages[k];
-    ctx.progress(0.1 + (k / pages.length) * 0.5, `משחיר את עמוד ${i + 1}`);
-    const png = images[k];
-    // Beyond each mark by a little, so anti-aliased edges of letters do not peek out.
-    const boxes = byPage.get(i).map((m) => ({ x: m.x - 0.002, y: m.y - 0.002, w: m.w + 0.004, h: m.h + 0.004 }));
-    blacked.set(i, (await imaging.blackOut(png, 'image/png', boxes)).bytes);
-    ctx.throwIfCancelled();
   }
 
   // Every unmarked page is prepared before any is copied. Pages often share one set of
@@ -114,11 +131,9 @@ async function run({ inputs, options = {}, ctx }) {
     ctx.progress(0.6 + (i / total) * 0.15, `בונה את עמוד ${i + 1}`);
     const source = doc.getPage(i);
     if (blacked.has(i)) {
-      const crop = source.getCropBox();
-      const turned = source.getRotation().angle % 180 !== 0;
-      const w = turned ? crop.height : crop.width;
-      const h = turned ? crop.width : crop.height;
-      const image = await out.embedJpg(blacked.get(i));
+      // The size pdf.js showed the page at, so the picture is not stretched.
+      const { jpg, width: w, height: h } = blacked.get(i);
+      const image = await out.embedJpg(jpg);
       out.addPage([w, h]).drawImage(image, { x: 0, y: 0, width: w, height: h });
       continue;
     }
@@ -127,7 +142,7 @@ async function run({ inputs, options = {}, ctx }) {
   }
   // The layers, so Ghostscript leaves out the marked content of the hidden ones; the list
   // itself is taken out of the result after (see withoutLayers).
-  if (layers) out.catalog.set(PDFName.of('OCProperties'), copier.copy(layers.list));
+  if (layers.list) out.catalog.set(PDFName.of('OCProperties'), copier.copy(layers.list));
 
   if (options.clean === false) {
     // Asked to keep the document's details: only the standard, visible ones.
@@ -160,7 +175,7 @@ async function run({ inputs, options = {}, ctx }) {
   if (r.code !== 0) throw new Error('הבנייה האחרונה של הקובץ המושחר נכשלה, ולכן לא נוצר עותק. אפשר לנסות קודם את "תיקון PDF".');
   await samePages(path.join(ctx.scratch, 'pruned.pdf'), total, path.basename(source));
   bytes = await fs.readFile(path.join(ctx.scratch, 'pruned.pdf'));
-  if (layers) bytes = await withoutLayers(bytes, options.clean === false ? doc : null);
+  if (layers.list) bytes = await withoutLayers(bytes, options.clean === false ? doc : null);
   let searchable = '';
   if (options.ocr && bin.locate('gs')) {
     const temp = path.join(ctx.scratch, 'redacted.pdf');
@@ -183,6 +198,13 @@ function notedRemovals({ handwriting, typed }) {
   const kinds = [handwriting && 'כתב יד', typed && 'טקסט שהוקלד על העמוד'].filter(Boolean);
   if (!kinds.length) return '';
   return ` בין ההערות שהוסרו יש גם ${kinds.join(' וגם ')}. כדי לשמור ${kinds.length === 1 ? 'אותו' : 'אותם'}, אפשר להשחיר שוב בלי "הסרת פרטי המסמך, הערות וקבצים מצורפים".`;
+}
+
+/** A page pdf.js could not draw: Esc is passed on, anything else said in Hebrew. */
+function failed(ctx, err) {
+  ctx.throwIfCancelled();
+  console.error('[redact] drawing the marked pages failed:', err);
+  throw new Error('לא ניתן היה לצייר את העמודים המסומנים, ולכן לא נוצר עותק. אפשר לנסות קודם את "תיקון PDF".');
 }
 
 function valid(m) {
@@ -233,7 +255,7 @@ function strip(page, clean, layers = null) {
       // treated as any comment.
       const typed = sub === '/FreeText' && String(a.get(PDFName.of('IT'))) === '/FreeTextTypeWriter' && !!appearanceOf(a);
       // A comment on a hidden layer is not shown, so it does not come across.
-      if (layers && !layers.visible(a.get(PDFName.of('OC')))) continue;
+      if (layers && !layers.visible(a.get(PDFName.of('OC')), 'annot')) continue;
       if (!clean && REDRAWN.has(sub) && !typed) {
         const copy = ctxt.obj({});
         for (const key of KEPT_KEYS) {
@@ -301,7 +323,8 @@ function flatten(page, annot, layers) {
   if (!found) return;
   const { look } = found;
   let { ref } = found;
-  if (!visible(annot.get(PDFName.of('OC'))) || !visible(look.dict.get(PDFName.of('OC')))) return;
+  // The drawing's own /OC does not count: pdf.js ignores it for an annotation's drawing.
+  if (!visible(annot.get(PDFName.of('OC')), 'annot')) return;
   if (!(ref instanceof PDFRef)) ref = ctxt.register(look);
 
   const rect = numbers(annot.lookup(PDFName.of('Rect')));
@@ -346,28 +369,38 @@ function flatten(page, annot, layers) {
  * Everything is found by going through every object in the file once, not by following
  * references from the pages: following them missed a new place each review round.
  *
- * Returns { list, visible(oc) }, or null when the file has no layers.
+ * pdf.js resolves every value it reads, so this reads every value through lookup too.
+ * Where pdf.js fails on an /OC (a value that is not a dictionary, a /null among a rule's
+ * layers), it leaves out the picture, drawing or annotation that carries it, and shows
+ * marked content: so does this.
+ *
+ * Returns { list, visible(oc, use) }, `use` being 'content' (marked content), 'xobject'
+ * or 'annot'. `list` is null when the file has no layer list, and then nothing is
+ * rewritten for Ghostscript; only what pdf.js leaves out on error is.
  */
 function settleLayers(doc) {
   const ctxt = doc.context;
   const props = doc.catalog.lookup(PDFName.of('OCProperties'));
-  if (!(props instanceof PDFDict)) return null;
-  const typeOf = (o) => (o instanceof PDFDict ? String(o.get(PDFName.of('Type'))) : '');
+  const typeOf = (o) => (o instanceof PDFDict ? String(o.lookup(PDFName.of('Type'))) : '');
 
   // The layers pdf.js knows: those in /OCGs, with no /D or no /OCGs list meaning none.
   // Each starts shown; BaseState /OFF hides all; then /ON shows and /OFF hides (OFF last,
   // so it wins). A layer whose /Usage /View /ViewState is /OFF never shows on screen.
   const groups = new Map();
-  const d = props.lookup(PDFName.of('D'));
-  const listed = props.lookup(PDFName.of('OCGs'));
+  const d = props instanceof PDFDict ? props.lookup(PDFName.of('D')) : null;
+  const listed = props instanceof PDFDict ? props.lookup(PDFName.of('OCGs')) : null;
   if (d instanceof PDFDict && listed instanceof PDFArray) {
     for (const ref of listed.asArray()) {
       if (!(ref instanceof PDFRef) || groups.has(String(ref))) continue;
       const layer = ctxt.lookup(ref);
-      if (!(layer instanceof PDFDict)) return null;
+      // pdf.js gives up on the whole list then, and shows everything.
+      if (!(layer instanceof PDFDict)) {
+        groups.clear();
+        break;
+      }
       const usage = layer.lookup(PDFName.of('Usage'));
       const view = usage instanceof PDFDict ? usage.lookup(PDFName.of('View')) : null;
-      const viewState = view instanceof PDFDict ? String(view.get(PDFName.of('ViewState'))) : '';
+      const viewState = view instanceof PDFDict ? String(view.lookup(PDFName.of('ViewState'))) : '';
       groups.set(String(ref), { on: true, viewOff: viewState === '/OFF' });
     }
     const set = (key, on) => {
@@ -375,7 +408,7 @@ function settleLayers(doc) {
       if (!(a instanceof PDFArray)) return;
       for (const r of a.asArray()) if (r instanceof PDFRef && groups.has(String(r))) groups.get(String(r)).on = on;
     };
-    if (String(d.get(PDFName.of('BaseState'))) === '/OFF') for (const g of groups.values()) g.on = false;
+    if (String(d.lookup(PDFName.of('BaseState'))) === '/OFF') for (const g of groups.values()) g.on = false;
     set('ON', true);
     set('OFF', false);
   }
@@ -458,28 +491,47 @@ function settleLayers(doc) {
   };
   // Whether an /OC value (or a /Properties entry) shows: parseMarkedContentProps, then
   // isVisible. `raw` is the value as written, so a layer is known by its reference.
-  const visible = (raw) => {
-    if (!groups.size) return true;
-    if (!raw) return true;
+  // What pdf.js's parseMarkedContentProps makes of an /OC value: 'error' where it throws,
+  // null where it yields nothing (shown), else a function giving the answer.
+  const ERROR = 'error';
+  const parsed = (raw) => {
     const o = ctxt.lookup(raw);
+    if (!(o instanceof PDFDict) || o instanceof PDFStream) return ERROR;
     const type = typeOf(o);
     if (type === '/OCG') {
-      const g = raw instanceof PDFRef ? known(String(raw)) : undefined;
-      return g ? groupShown(g) : true;
+      return () => {
+        const g = raw instanceof PDFRef ? known(String(raw)) : undefined;
+        return g ? groupShown(g) : true;
+      };
     }
-    if (type !== '/OCMD') return true;
+    if (type !== '/OCMD') return null;
     const ve = o.lookup(PDFName.of('VE'));
-    if (ve instanceof PDFArray) {
-      const shown = expression(ve, 0);
-      if (shown !== undefined) return shown;
-    }
+    if (ve instanceof PDFArray && expression(ve, 0) !== undefined) return () => expression(ve, 0);
     const membersRaw = o.get(PDFName.of('OCGs'));
     const members = ctxt.lookup(membersRaw);
     const policyName = o.lookup(PDFName.of('P'));
     const policy = policyName instanceof PDFName ? policyName.asString().slice(1) : 'AnyOn';
-    if (members instanceof PDFArray) return policyShown(members.asArray().map(String), policy, members);
-    if (members instanceof PDFDict) return policyShown([membersRaw instanceof PDFRef ? String(membersRaw) : ''], policy, null);
-    return true;
+    if (members instanceof PDFArray) {
+      if (members.asArray().some((m) => m === PDFNull)) return ERROR;
+      return () => policyShown(members.asArray().map(String), policy, members);
+    }
+    if (members instanceof PDFDict) return () => policyShown([membersRaw instanceof PDFRef ? String(membersRaw) : ''], policy, null);
+    return null;
+  };
+  // Whether something carrying this /OC is on screen. With no /OC at all it is. An
+  // annotation's /OC counts only when it is a dictionary (setOptionalContent). On an
+  // error, /OC null included, pdf.js leaves out a picture or drawing and an annotation,
+  // and shows marked content. (An /OC that is a name is read by pdf.js through the
+  // resources of whatever draws the picture, which differ by use; it is taken as an
+  // error, so such a picture is left out.)
+  const visible = (raw, use = 'content') => {
+    if (raw === undefined) return true;
+    const o = ctxt.lookup(raw);
+    if (use === 'annot' && (!(o instanceof PDFDict) || o instanceof PDFStream)) return true;
+    const p = parsed(raw);
+    if (p === ERROR) return use === 'content';
+    if (!p || !groups.size) return true;
+    return p();
   };
 
   // Every rule, stream and /Properties dictionary in the file, found by going through
@@ -487,6 +539,7 @@ function settleLayers(doc) {
   const rules = [];
   const streams = [];
   const properties = [];
+  const annotations = [];
   const seen = new Set();
   const visit = (o) => {
     if (!o || typeof o !== 'object' || o instanceof PDFRef || seen.has(o)) return;
@@ -501,6 +554,7 @@ function settleLayers(doc) {
     }
     if (o instanceof PDFDict) {
       if (typeOf(o) === '/OCMD') rules.push(o);
+      if (o.has(PDFName.of('AP')) && o.has(PDFName.of('Rect'))) annotations.push(o);
       const named = o.lookup(PDFName.of('Properties'));
       if (named instanceof PDFDict) properties.push(named);
       for (const [, v] of o.entries()) visit(v);
@@ -513,17 +567,41 @@ function settleLayers(doc) {
 
   // Decided before anything is changed.
   const ruleAnswers = new Map(rules.map((o) => [o, visible(o)]));
+  const ruleErrors = new Set(rules.filter((o) => parsed(o) === ERROR));
   // Only pictures and drawings: pdf.js and every viewer ignore /OC on any other stream (a
   // page's own content, a colour profile, a font), so those are left as they are.
-  const hiddenStreams = streams.filter(([, x]) => ['/Image', '/Form'].includes(String(x.dict.get(PDFName.of('Subtype')))) &&
-    !visible(x.dict.get(PDFName.of('OC'))));
+  // (Read raw: pdf-lib's get turns /OC null into no /OC, and pdf.js does not.)
+  const rawOC = (dict) => dict.dict.get(PDFName.of('OC'));
+  const hiddenStreams = streams.filter(([, x]) => ['/Image', '/Form'].includes(String(x.dict.lookup(PDFName.of('Subtype')))) &&
+    !visible(rawOC(x.dict), 'xobject'));
   const propertyAnswers = properties.map((named) => [named, named.entries()
     .filter(([, value]) => typeOf(ctxt.lookup(value)) === '/OCG')
     .map(([key, value]) => [key, visible(value)])]);
 
+  // An annotation's own drawing is shown whatever its /OC says (pdf.js ignores it there),
+  // while the same drawing placed in a page is not. So before a hidden drawing is
+  // emptied, an annotation that shows it gets a copy of its own, without the /OC.
+  const hiddenRefs = new Set(hiddenStreams.map(([ref]) => String(ref)));
+  const ownCopy = (ref) => {
+    const copy = ctxt.lookup(ref).clone(ctxt);
+    copy.dict.delete(PDFName.of('OC'));
+    return ctxt.register(copy);
+  };
+  for (const annot of annotations) {
+    const ap = annot.lookup(PDFName.of('AP'));
+    if (!(ap instanceof PDFDict)) continue;
+    const n = ap.get(PDFName.of('N'));
+    if (n instanceof PDFRef && hiddenRefs.has(String(n))) ap.set(PDFName.of('N'), ownCopy(n));
+    const states = ctxt.lookup(n);
+    if (states instanceof PDFDict && !(states instanceof PDFStream)) {
+      for (const [state, ref] of states.entries()) if (ref instanceof PDFRef && hiddenRefs.has(String(ref))) states.set(state, ownCopy(ref));
+    }
+  }
+  for (const [ref] of hiddenStreams) ctxt.assign(ref, ctxt.stream('', { Type: 'XObject', Subtype: 'Form', BBox: [0, 0, 0, 0] }));
+  if (!(props instanceof PDFDict)) return { list: null, visible: (raw, use) => visible(raw, use) };
+
   const shown = ctxt.register(ctxt.obj({ Type: 'OCG', Name: PDFHexString.fromText('מוצג') }));
   const hidden = ctxt.register(ctxt.obj({ Type: 'OCG', Name: PDFHexString.fromText('מוסתר') }));
-  for (const [ref] of hiddenStreams) ctxt.assign(ref, ctxt.stream('', { Type: 'XObject', Subtype: 'Form', BBox: [0, 0, 0, 0] }));
   // Only the keys of a rule are replaced: the same dictionary may serve as something else
   // too, and its other keys are left for that.
   for (const [o, answer] of ruleAnswers) {
@@ -535,10 +613,10 @@ function settleLayers(doc) {
   }
   const list = ctxt.obj({ OCGs: [shown, hidden], D: { Order: [shown, hidden], OFF: [hidden] } });
   // After the rewrite every rule names a plain layer, so answers come from the record.
-  const decided = (raw) => {
+  const decided = (raw, use = 'content') => {
     const o = ctxt.lookup(raw);
-    if (ruleAnswers.has(o)) return ruleAnswers.get(o);
-    return visible(raw);
+    if (ruleAnswers.has(o)) return use !== 'content' && ruleErrors.has(o) ? false : ruleAnswers.get(o);
+    return visible(raw, use);
   };
   return { list, visible: decided };
 }

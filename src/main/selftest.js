@@ -266,6 +266,13 @@ function run() {
       if (result.ok) outputsOf[toolId] = result.display || result.outputs;
     }
 
+    // Redact from inside the package: the marked page is drawn by pdf.js in a hidden
+    // window served from the installed program, and no text of it may be left.
+    const redacted = await page(`window.api.startJob(${JSON.stringify({ toolId: 'redact', inputs: [a], options: { marks: [{ page: 0, x: 0, y: 0, w: 1, h: 1 }] } })})`);
+    const redactedText = redacted.ok ? (await require('./pdf/text').documentText(redacted.display[0])) : [];
+    check('a page is redacted, drawn by pdf.js inside the package, with none of its text left',
+      redacted.ok && redactedText.length > 0 && redactedText[0].trim() === '', redacted.ok ? JSON.stringify(redactedText[0]).slice(0, 80) : redacted.error);
+
     // Recognition from inside the package: Hebrew stamped by Chromium, drawn as a picture
     // by Ghostscript, then scanned back, cleaned and read by Tesseract in its own process.
     const numbered = (outputsOf['page-numbers'] || [])[0];

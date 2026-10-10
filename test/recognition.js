@@ -282,7 +282,7 @@ async function shownPdf(file) {
  * soft mask. Page 3 shares page 2's list of contents.
  */
 async function fidelityPdf(file) {
-  const { PDFDocument, StandardFonts, PDFString, PDFRef } = require('pdf-lib');
+  const { PDFDocument, StandardFonts, PDFString, PDFRef, PDFNull } = require('pdf-lib');
   const d = await PDFDocument.create();
   const f = await d.embedFont(StandardFonts.Helvetica);
   const ctx = d.context;
@@ -296,7 +296,8 @@ async function fidelityPdf(file) {
   const strayOff = ctx.register(ctx.obj({ Type: 'OCG', Name: PDFString.of('stray') }));
   const viewOff = ctx.register(ctx.obj({ Type: 'OCG', Name: PDFString.of('print only'), Usage: { View: { ViewState: 'OFF' } } }));
   const both = ctx.register(ctx.obj({ Type: 'OCG', Name: PDFString.of('on and off') }));
-  d.catalog.set(PDFName.of('OCProperties'), ctx.obj({ OCGs: [shownLayer, offLayer, viewOff, both], D: { ON: [both], OFF: [offLayer, strayOff, both] } }));
+  const layerList = ctx.obj([shownLayer, offLayer, viewOff, both]);
+  d.catalog.set(PDFName.of('OCProperties'), ctx.obj({ OCGs: layerList, D: { ON: [both], OFF: [offLayer, strayOff, both] } }));
   const notShown = ctx.register(ctx.obj({ Type: 'OCMD', VE: [PDFName.of('Not'), shownLayer] }));
   const andShown = ctx.register(ctx.obj({ Type: 'OCMD', VE: [PDFName.of('And'), shownLayer] }));
   const form = (body, extra = {}) => ctx.register(ctx.stream(body, { Type: 'XObject', Subtype: 'Form', BBox: [0, 0, 595, 842], Resources: { Font: { F1: f.ref } }, ...extra }));
@@ -331,6 +332,24 @@ async function fidelityPdf(file) {
   for (let i = 0; i < 12; i++) twelve = ctx.register(ctx.obj([PDFName.of('And'), twelve]));
   const pastTen = ctx.register(ctx.obj({ Type: 'OCMD', VE: twelve }));
   const unknownIn = ctx.register(ctx.obj({ Type: 'OCMD', VE: [PDFName.of('And'), strayOff] }));
+  // Values pdf.js resolves before reading: a rule whose /Type is a reference, a layer
+  // switched off for viewing through references, a drawing whose /Subtype is a reference.
+  const refType = ctx.register(PDFName.of('OCMD'));
+  // (Added to the document's list of layers below.)
+  const typeByRef = ctx.register(ctx.obj({ Type: refType, OCGs: [offLayer] }));
+  const viewRef = ctx.register(ctx.obj({ Type: 'OCG', Name: PDFString.of('view by ref'), Usage: { View: { ViewState: ctx.register(PDFName.of('OFF')) } } }));
+  layerList.push(viewRef);
+  const formSubtype = ctx.register(PDFName.of('Form'));
+  // Drawings whose /OC pdf.js cannot read, which it leaves out: a number, null, an
+  // array, a stream, a rule with null among its layers, and a name.
+  const odd = (marker, oc, y) => [ctx.register(ctx.stream(`BT /F1 12 Tf 50 ${y} Td (${marker}) Tj ET`, { Type: 'XObject', Subtype: formSubtype, BBox: [0, 0, 595, 842], Resources: { Font: { F1: f.ref } }, OC: oc })), marker];
+  const oddForms = [
+    odd('OC-ODD-NUMBER', 5, 380), odd('OC-ODD-NULL', PDFNull, 370), odd('OC-ODD-ARRAY', [offLayer], 360),
+    odd('OC-ODD-STREAM', ctx.register(ctx.stream('x')), 350), odd('OC-ODD-NAME', PDFName.of('Ve'), 340),
+    odd('OC-ODD-NULLMEMBER', ctx.register(ctx.obj({ Type: 'OCMD', OCGs: [shownLayer, PDFNull], P: 'AnyOn' })), 330),
+    odd('OC-SUBTYPE-REF', offLayer, 320),
+  ];
+  const nullMember = ctx.register(ctx.obj({ Type: 'OCMD', OCGs: [offLayer, PDFNull], P: 'AllOn' }));
   const notSelf = ctx.register(ctx.obj({ Type: 'OCMD', VE: selfNot }));
   const orSelf = ctx.register(ctx.obj({ Type: 'OCMD', VE: selfOr }));
   const deep = ctx.register(ctx.obj({ Type: 'OCMD', VE: chain }));
@@ -358,8 +377,8 @@ async function fidelityPdf(file) {
   const maskGroup = form('/Hm Do', { Group: { S: 'Transparency', CS: 'DeviceGray' }, Resources: { XObject: { Hm: inMask } } });
   const resources = ctx.register(ctx.obj({
     Font: { F1: f.ref, T3: type3 },
-    Properties: { Ve: notShown, Vs: andShown, St: strayOff, Cy: cyclic, Mf: malformed, Ms: tooShort, Ns: notSelf, Os: orSelf, Dp: deep, Mm: memoRule, Nt: notTwo, Uv: viewOff, Bo: both, Pt: pastTen, Uk: unknownIn, So: singleOff, Sn: singleOn },
-    XObject: { Vf: veForm }, Pattern: { P1: pattern },
+    Properties: { Ve: notShown, Vs: andShown, St: strayOff, Cy: cyclic, Mf: malformed, Ms: tooShort, Ns: notSelf, Os: orSelf, Dp: deep, Mm: memoRule, Nt: notTwo, Uv: viewOff, Bo: both, Pt: pastTen, Uk: unknownIn, Tr: typeByRef, Vr: viewRef, Nm: nullMember, So: singleOff, Sn: singleOn },
+    XObject: { Vf: veForm, ...Object.fromEntries(oddForms.map(([form], k) => [`Od${k}`, form])) }, Pattern: { P1: pattern },
     ExtGState: { M1: { Type: 'ExtGState', SMask: { Type: 'Mask', S: 'Luminosity', G: maskGroup } }, G3: { Type: 'ExtGState', Font: [gsType3, 12] } },
   }));
   const body = ctx.register(ctx.stream([
@@ -378,6 +397,10 @@ async function fidelityPdf(file) {
     '/OC /Bo BDC BT /F1 12 Tf 50 410 Td (OC-ONOFF) Tj ET EMC',
     '/OC /Pt BDC BT /F1 12 Tf 50 400 Td (OC-PASTTEN) Tj ET EMC',
     '/OC /Uk BDC BT /F1 12 Tf 50 390 Td (OC-UNKNOWNIN) Tj ET EMC',
+    '/OC /Tr BDC BT /F1 12 Tf 50 310 Td (OC-TYPE-REF) Tj ET EMC',
+    '/OC /Vr BDC BT /F1 12 Tf 50 300 Td (OC-VIEW-REF) Tj ET EMC',
+    '/OC /Nm BDC BT /F1 12 Tf 50 290 Td (OC-NULLMEMBER-MARKED) Tj ET EMC',
+    ...oddForms.map((_, k) => `/Od${k} Do`),
     '/OC /Nt BDC BT /F1 12 Tf 50 430 Td (OC-NOTTWO) Tj ET EMC',
     '/OC /Os BDC BT /F1 12 Tf 50 460 Td (OC-ORSELF) Tj ET EMC',
     '/OC /Dp BDC BT /F1 12 Tf 50 450 Td (OC-DEEPCHAIN) Tj ET EMC',
@@ -399,8 +422,16 @@ async function fidelityPdf(file) {
     annot({ Subtype: 'FreeText', IT: 'FreeTextTypeWriter', Rect: [50, 400, 250, 430], DA: PDFString.of('/Helv 10 Tf 0 g'), Contents: PDFString.of('TYPED-ON-PAGE'), AP: { N: look('TYPED-ON-PAGE') } }),
     annot({ Subtype: 'Ink', Rect: [300, 400, 400, 450], InkList: [[300, 400, 400, 450]], AP: { N: look('INK-MARK') } }),
     annot({ Subtype: 'Stamp', Rect: [300, 200, 400, 250], AP: { N: look('STAMPONLYONE') } }),
-    // A comment on a hidden layer: never shown, so it never comes across.
+    // A stamp whose /OC is a rule with null among its layers, which pdf.js leaves out; one
+    // whose /OC is a number, which pdf.js ignores; and a stamp whose drawing carries a
+    // hidden /OC, which pdf.js ignores for a drawing.
+    annot({ Subtype: 'Stamp', Rect: [400, 600, 500, 650], OC: ctx.register(ctx.obj({ Type: 'OCMD', OCGs: [shownLayer, PDFNull] })), AP: { N: look('OC-ANNOT-NULLMEMBER') } }),
+    annot({ Subtype: 'Stamp', Rect: [400, 480, 500, 530], OC: 5, AP: { N: look('OC-ANNOT-NUMBER') } }),
+    annot({ Subtype: 'Stamp', Rect: [400, 540, 500, 590], AP: { N: ctx.register(ctx.stream('BT /F1 10 Tf 105 120 Td (OC-AP-OWN-OC) Tj ET', { Type: 'XObject', Subtype: 'Form', BBox: [100, 100, 200, 150], OC: offLayer, Resources: { Font: { F1: f.ref } } })) } }),
+    // A comment on a hidden layer, and one whose /OC is a rule pdf.js cannot read (it
+    // leaves the comment out): never shown, so they never come across.
     annot({ Subtype: 'Text', Rect: [10, 10, 30, 30], OC: offLayer, Contents: PDFString.of('HIDDENCOMMENT') }),
+    annot({ Subtype: 'Text', Rect: [40, 10, 60, 30], OC: ctx.register(ctx.obj({ Type: 'OCMD', OCGs: [shownLayer, PDFNull] })), Contents: PDFString.of('NULLMEMBERCOMMENT') }),
     // Typed text with no drawing of its own, and typed text whose drawing is missing.
     annot({ Subtype: 'FreeText', IT: 'FreeTextTypeWriter', Rect: [50, 100, 250, 130], DA: PDFString.of('/Helv 10 Tf 0 g'), Contents: PDFString.of('TYPEDNOAP') }),
     annot({ Subtype: 'FreeText', IT: 'FreeTextTypeWriter', Rect: [50, 60, 250, 90], DA: PDFString.of('/Helv 10 Tf 0 g'), Contents: PDFString.of('TYPEDDANGLING'), AP: { N: PDFRef.of(99999) } }),
@@ -688,6 +719,7 @@ app.whenReady().then(async () => {
   // drawing the form left to viewers), a checked box and a stamp, in both modes, each
   // where it was; a hidden stamp is not drawn.
   const shown = await shownPdf(path.join(dir, 'טופס מלא.pdf'));
+  const shownScreen = await screenText(shown, 2);
   for (const clean of [true, false]) {
     r = await runTool('redact', [shown], { marks: [{ page: 0, x: 0.05, y: 0.05, w: 0.9, h: 0.9 }], clean });
     const words = r.ok ? (await linesOf(r.display[0], 2)).join(' ') : '';
@@ -699,7 +731,9 @@ app.whenReady().then(async () => {
     // Read as text, not searched for in the bytes: Chromium writes drawn text as glyph
     // numbers, so a byte search would pass whether or not the password is on the page.
     check('    a password is not drawn in the clear', r.ok && !words.includes('PASSWORDPLAIN') && words.includes('FILLED-VALUE-P1'), words);
-    check('    a drawing or a stamp on a hidden layer stays hidden', r.ok && !words.includes('OFFLAYERFORM') && !words.includes('OFFLAYERSTAMP'), words);
+    // pdf.js ignores the /OC of an annotation's own drawing, so that stamp shows on screen.
+    check('    a drawing on a hidden layer stays hidden; a stamp whose own drawing carries a hidden layer shows, as on screen',
+      r.ok && !words.includes('OFFLAYERFORM') && words.includes('OFFLAYERSTAMP') && shownScreen.has('OFFLAYERSTAMP') && !shownScreen.has('OFFLAYERFORM'), words);
     const third = r.ok ? (await linesOf(r.display[0], 3)).join(' ') : '';
     check('    a page sharing its resources with another keeps its own stamp', third.includes('STAMPTWO'), third);
     const freeText = r.ok ? (await linesOf(r.display[0], 2)).join(' ').includes('COMMENT-TEXT') : true;
@@ -729,9 +763,11 @@ app.whenReady().then(async () => {
     // Type3 letter or a soft mask, which this reading does not reach, are on a plain hidden
     // layer and must simply be gone.
     const judged = ['PUBLIC-FIDELITY', 'OC-VE-MARKED', 'OC-VE-FORM', 'OC-VE-AND', 'OC-UNLISTED', 'OC-CYCLIC', 'OC-MALFORMED', 'OC-SHORTVE',
-      'OC-NOTSELF', 'OC-ORSELF', 'OC-DEEPCHAIN', 'OC-MEMO', 'OC-NOTTWO', 'OC-SINGLEREF-OFF', 'OC-SINGLEREF-ON', 'OC-USAGE-VIEWOFF', 'OC-ONOFF', 'OC-PASTTEN', 'OC-UNKNOWNIN'];
+      'OC-NOTSELF', 'OC-ORSELF', 'OC-DEEPCHAIN', 'OC-MEMO', 'OC-NOTTWO', 'OC-SINGLEREF-OFF', 'OC-SINGLEREF-ON', 'OC-USAGE-VIEWOFF', 'OC-ONOFF', 'OC-PASTTEN', 'OC-UNKNOWNIN',
+      'OC-TYPE-REF', 'OC-VIEW-REF', 'OC-NULLMEMBER-MARKED', 'OC-ODD-NUMBER', 'OC-ODD-NULL', 'OC-ODD-ARRAY', 'OC-ODD-STREAM', 'OC-ODD-NAME',
+      'OC-ODD-NULLMEMBER', 'OC-SUBTYPE-REF', 'OC-ANNOT-NULLMEMBER', 'OC-AP-OWN-OC', 'OC-ANNOT-NUMBER'];
     const differs = judged.filter((x) => raw.includes(x) !== onScreen.has(x));
-    const nested = ['PATTERNHIDDEN', 'GSTHREEFORMHIDDEN', 'GSTHREEMCHIDDEN', 'TYPETHREEMCHIDDEN', 'TYPETHREEFORMHIDDEN', 'SMASKHIDDEN', 'HIDDENCOMMENT', 'SECRET-FIDELITY-P0']
+    const nested = ['PATTERNHIDDEN', 'GSTHREEFORMHIDDEN', 'GSTHREEMCHIDDEN', 'TYPETHREEMCHIDDEN', 'TYPETHREEFORMHIDDEN', 'SMASKHIDDEN', 'HIDDENCOMMENT', 'NULLMEMBERCOMMENT', 'SECRET-FIDELITY-P0']
       .filter((x) => raw.includes(x));
     check(`  ${mode} comments: what shows matches what pdf.js showed on screen, marker by marker; what is hidden inside patterns, Type3 letters, soft masks or a comment stays out; the page's own content stays`,
       r.ok && differs.length === 0 && nested.length === 0 && two.includes('PUBLIC-FIDELITY'), r.error || `differs from the screen: ${differs.join(', ')}; hidden but inside: ${nested.join(', ')}`);
@@ -761,7 +797,8 @@ app.whenReady().then(async () => {
     p0.drawText('SECRET-BASE-P0', { x: 50, y: 700, size: 14, font: f });
     const listedOn = ctx.register(ctx.obj({ Type: 'OCG', Name: PDFString.of('on') }));
     const other = ctx.register(ctx.obj({ Type: 'OCG', Name: PDFString.of('other') }));
-    d.catalog.set(PDFName.of('OCProperties'), ctx.obj({ OCGs: [listedOn, other], D: { BaseState: 'OFF', ON: [listedOn] } }));
+    // (The default given through a reference, which pdf.js resolves.)
+    d.catalog.set(PDFName.of('OCProperties'), ctx.obj({ OCGs: [listedOn, other], D: { BaseState: ctx.register(PDFName.of('OFF')), ON: [listedOn] } }));
     // A layer written in place, in no list: hidden by default here, as in the original.
     p1.node.set(PDFName.of('Resources'), ctx.obj({ Font: { F1: f.ref }, Properties: { On: listedOn, Ot: other, Dr: { Type: 'OCG', Name: PDFString.of('direct') } } }));
     p1.node.set(PDFName.of('Contents'), ctx.register(ctx.stream('/OC /On BDC BT /F1 12 Tf 50 700 Td (OC-BASE-ON) Tj ET EMC /OC /Ot BDC BT /F1 12 Tf 50 650 Td (OC-BASE-OTHER) Tj ET EMC /OC /Dr BDC BT /F1 12 Tf 50 600 Td (OC-BASE-DIRECT) Tj ET EMC')));
@@ -866,6 +903,58 @@ app.whenReady().then(async () => {
     check('  a file made to be slow to work out is still redacted in moments, and judged right',
       r.ok && took < 15000 && ['OC-SLOW-VE', 'OC-SLOW-ALLOFF', 'OC-SLOW-LATE'].every((x) => raw.includes(x) === slowScreen.has(x)) && slowScreen.has('OC-SLOW-LATE'),
       r.error || `${took} ms; screen: ${[...slowScreen].join(' ')}`);
+  }
+
+  {
+    // A page in the page tree with no /Type: pdf.js counts it, pdf-lib does not, so the
+    // page the user marked on screen is not the page a picture would replace.
+    const { StandardFonts } = require('pdf-lib');
+    const d = await PDFDocument.create();
+    const f = await d.embedFont(StandardFonts.Helvetica);
+    const secret = d.addPage([595, 842]);
+    const open = d.addPage([595, 842]);
+    secret.drawText('SECRET-MISCOUNT', { x: 50, y: 700, size: 14, font: f });
+    open.drawText('PUBLIC-MISCOUNT', { x: 50, y: 700, size: 14, font: f });
+    const kids = d.catalog.Pages().lookup(PDFName.of('Kids'));
+    const stray = d.context.register(d.context.obj({ Parent: d.catalog.get(PDFName.of('Pages')), MediaBox: [0, 0, 595, 842], Resources: {}, Contents: d.context.register(d.context.stream('')) }));
+    kids.insert(0, stray);
+    d.catalog.Pages().set(PDFName.of('Count'), d.context.obj(3));
+    const miscount = path.join(dir, 'miscount.pdf');
+    await fsp.writeFile(miscount, await d.save());
+    const before = fs.readdirSync(dir).length;
+    r = await runTool('redact', [miscount], { marks: [{ page: 1, x: 0, y: 0, w: 1, h: 1 }] });
+    check('  a file whose pages pdf.js and pdf-lib count differently is refused, and nothing is written',
+      !r.ok && /אין ודאות איזה עמוד סומן/.test(r.error || '') && fs.readdirSync(dir).length === before, r.error || r.display);
+  }
+  {
+    // Esc while pdf.js is still drawing a page that takes long to draw.
+    const d = await PDFDocument.create();
+    const ctx = d.context;
+    const heavy = ctx.register(ctx.flateStream(Array.from({ length: 200000 }, (_, i) => `${i % 500} ${(i * 7) % 800} 1 1 re f`).join('\n'), { Type: 'XObject', Subtype: 'Form', BBox: [0, 0, 595, 842] }));
+    const p0 = d.addPage([595, 842]);
+    d.addPage([595, 842]);
+    p0.node.set(PDFName.of('Resources'), ctx.obj({ XObject: { H: heavy } }));
+    p0.node.set(PDFName.of('Contents'), ctx.register(ctx.stream(Array.from({ length: 60 }, () => '/H Do').join(' '))));
+    const slowPage = path.join(dir, 'slow-page.pdf');
+    await fsp.writeFile(slowPage, await d.save());
+    let jobId = null;
+    let askedAt = 0;
+    const job = jobs.start(tools.runnable('redact'), [slowPage], { marks: [{ page: 0, x: 0.1, y: 0.1, w: 0.2, h: 0.2 }] }, {
+      onProgress: (p) => {
+        // Progress is sent at most every 33 ms, so the drawing stage is caught by its
+        // first message; Esc comes a second and a half into drawing.
+        if (!askedAt && /מצייר את העמודים המסומנים/.test(p.text || '')) {
+          setTimeout(() => {
+            askedAt = Date.now();
+            jobs.cancel(jobId);
+          }, 1500);
+        }
+      },
+    });
+    jobId = job.id;
+    const c = await job.promise;
+    const after = askedAt ? Date.now() - askedAt : -1;
+    check('  Esc stops a page that is still being drawn, within moments', c.cancelled && after >= 0 && after < 4000, `${c.cancelled ? 'cancelled' : c.error || 'finished'} after ${after} ms`);
   }
 
   /* ---- PDF to Excel ---- */

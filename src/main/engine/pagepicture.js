@@ -16,6 +16,9 @@ const docs = require('../docs');
  */
 
 const URL = 'app://office/page-picture.html';
+// A page pdf.js has not drawn in this long is given up on: a file can be made so that
+// drawing it never ends.
+const PAGE_LIMIT_MS = 120000;
 
 let win = null;
 let opening = null;
@@ -26,12 +29,19 @@ async function page() {
     opening = (async () => {
       require('../window').serveRenderer();
       const w = new BrowserWindow({ show: false, webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true } });
-      await w.loadURL(URL);
-      const deadline = Date.now() + 15000;
-      while (!(await w.webContents.executeJavaScript('window.pagePictureReady === true', true))) {
-        if (Date.now() > deadline) throw new Error('page pictures did not load');
-        await new Promise((r) => setTimeout(r, 30));
+      try {
+        await w.loadURL(URL);
+        const deadline = Date.now() + 15000;
+        while (!(await w.webContents.executeJavaScript('window.pagePictureReady === true', true))) {
+          if (Date.now() > deadline) throw new Error('page pictures did not load');
+          await new Promise((r) => setTimeout(r, 30));
+        }
+      } catch (err) {
+        if (!w.isDestroyed()) w.destroy();
+        throw err;
       }
+      // A page that ran out of memory takes the window with it; the next call opens anew.
+      w.webContents.on('render-process-gone', () => { if (win === w) dispose(); });
       win = w;
       return w;
     })().finally(() => { opening = null; });
@@ -40,26 +50,57 @@ async function page() {
 }
 
 /**
- * Pictures of the given pages (0-based) of `file`, as PNG buffers, in that order.
- * @param {string} file
- * @param {number[]} pages
- * @param {{dpi?: number, ctx?: {throwIfCancelled: Function}}} [options]
+ * Runs code in the window, stopping at once when `signal` aborts or the time is up: the
+ * window is then closed, which is the only way to stop pdf.js mid-page.
  */
-async function drawPages(file, pages, { dpi = 200, ctx } = {}) {
-  const token = docs.register(file);
-  if (!token) throw new Error('הקובץ אינו PDF שאפשר לצייר.');
-  const w = await page();
-  const out = [];
-  try {
-    for (const index of pages) {
-      const b64 = await w.webContents.executeJavaScript(`window.drawPage(${JSON.stringify(token)}, ${Number(index)}, ${Number(dpi)})`, true);
-      out.push(Buffer.from(b64, 'base64'));
-      if (ctx) ctx.throwIfCancelled();
+function call(code, { signal, limit = PAGE_LIMIT_MS } = {}) {
+  return page().then((w) => new Promise((resolve, reject) => {
+    let done = false;
+    const finish = (fn, value) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      if (signal) signal.removeEventListener('abort', onAbort);
+      fn(value);
+    };
+    const onAbort = () => {
+      dispose();
+      finish(reject, Object.assign(new Error('cancelled'), { cancelled: true }));
+    };
+    const timer = setTimeout(() => {
+      dispose();
+      finish(reject, new Error('drawing the page took too long'));
+    }, limit);
+    if (signal) {
+      if (signal.aborted) return onAbort();
+      signal.addEventListener('abort', onAbort, { once: true });
     }
-  } finally {
-    if (!w.isDestroyed()) await w.webContents.executeJavaScript(`window.release(${JSON.stringify(token)})`, true).catch(() => {});
-  }
-  return out;
+    w.webContents.executeJavaScript(code, true).then((v) => finish(resolve, v), (e) => finish(reject, e));
+  }));
+}
+
+/**
+ * A view of one file: its pages as pdf.js counts them, and pictures of them one at a time.
+ * Release it when done.
+ * @param {string} file
+ * @param {{signal?: AbortSignal}} [options]
+ */
+function open(file, { signal } = {}) {
+  const token = docs.register(file);
+  if (!token) throw new Error('not a PDF this app can draw');
+  const t = JSON.stringify(token);
+  return {
+    /** [[objectNumber, generation], ...] for every page, in pdf.js's order. */
+    pageList: () => call(`window.pageList(${t})`, { signal }),
+    /** One page (0-based): { png: Buffer, width, height } with the size in points as shown. */
+    async draw(index, dpi = 200) {
+      const r = await call(`window.drawPage(${t}, ${Number(index)}, ${Number(dpi)})`, { signal });
+      return { png: Buffer.from(r.png, 'base64'), width: r.width, height: r.height };
+    },
+    async release() {
+      if (win && !win.isDestroyed()) await win.webContents.executeJavaScript(`window.release(${t})`, true).catch(() => {});
+    },
+  };
 }
 
 function dispose() {
@@ -67,4 +108,4 @@ function dispose() {
   win = null;
 }
 
-module.exports = { drawPages, dispose };
+module.exports = { open, dispose };

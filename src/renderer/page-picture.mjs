@@ -28,7 +28,21 @@ function load(token) {
 // can hold; such a page is drawn at a lower resolution.
 const MAX_SIDE = 12000;
 
-/** One page as a PNG, base64, at `dpi`. */
+/**
+ * The pages as pdf.js counts them, each by its object number and generation, so the
+ * caller can confirm they are the pages it means to replace.
+ */
+window.pageList = async (token) => {
+  const doc = await load(token);
+  const refs = [];
+  for (let i = 1; i <= doc.numPages; i++) {
+    const { num, gen } = (await doc.getPage(i)).ref || {};
+    refs.push([num, gen]);
+  }
+  return refs;
+};
+
+/** One page as a PNG, base64, at `dpi`, with its size in points as shown. */
 window.drawPage = async (token, pageIndex, dpi) => {
   const doc = await load(token);
   const page = await doc.getPage(pageIndex + 1);
@@ -51,7 +65,7 @@ window.drawPage = async (token, pageIndex, dpi) => {
     for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
     canvas.width = 0;
     canvas.height = 0;
-    return btoa(binary);
+    return { png: btoa(binary), width: base.width, height: base.height };
   } finally {
     page.cleanup();
   }
