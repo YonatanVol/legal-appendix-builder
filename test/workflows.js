@@ -187,7 +187,7 @@ app.whenReady().then(async () => {
   await page(`window.shell.refreshTools().then(() => window.shell.open('wf:${cloud.id}'))`);
   await until(`document.getElementById('screen-name').textContent === 'סיכום'`);
   check('a workflow with a step that uses Claude says, before running, that the document goes to Anthropic',
-    /התהליך הזה שולח את המסמך ל-Anthropic/.test(await page(`(document.querySelector('#tool-options .cloud-notice') || {}).textContent || ''`)));
+    await page(`(() => { const n = document.querySelector('#tool-options .cloud-notice'); return !!n && n.getClientRects().length > 0 && /התהליך הזה שולח את המסמך ל-Anthropic/.test(n.textContent); })()`));
   check('no errors in the page console', win.consoleErrors.length === 0, win.consoleErrors.slice(0, 3).join(' / '));
 
   disposeRenderer();

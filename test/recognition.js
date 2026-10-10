@@ -273,6 +273,56 @@ async function shownPdf(file) {
   return file;
 }
 
+/**
+ * Page 1 holds a secret. Page 2 has text typed onto it (a typewriter annotation), a
+ * handwritten mark, a stamp, and content a viewer hides in three harder ways: a rule
+ * with a visibility expression, a layer named only in the hidden list, and a fill pattern
+ * that draws a drawing on a hidden layer. Page 3 shares page 2's list of contents.
+ */
+async function fidelityPdf(file) {
+  const { PDFDocument, StandardFonts, PDFString } = require('pdf-lib');
+  const d = await PDFDocument.create();
+  const f = await d.embedFont(StandardFonts.Helvetica);
+  const ctx = d.context;
+  const p0 = d.addPage([595, 842]);
+  const p1 = d.addPage([595, 842]);
+  const p2 = d.addPage([595, 842]);
+  p0.drawText('SECRET-FIDELITY-P0', { x: 50, y: 760, size: 14, font: f });
+  const shownLayer = ctx.register(ctx.obj({ Type: 'OCG', Name: PDFString.of('shown') }));
+  const offLayer = ctx.register(ctx.obj({ Type: 'OCG', Name: PDFString.of('off') }));
+  const strayOff = ctx.register(ctx.obj({ Type: 'OCG', Name: PDFString.of('stray') }));
+  d.catalog.set(PDFName.of('OCProperties'), ctx.obj({ OCGs: [shownLayer, offLayer], D: { OFF: [offLayer, strayOff] } }));
+  const notShown = ctx.register(ctx.obj({ Type: 'OCMD', VE: [PDFName.of('Not'), shownLayer] }));
+  const andShown = ctx.register(ctx.obj({ Type: 'OCMD', VE: [PDFName.of('And'), shownLayer] }));
+  const form = (body, extra = {}) => ctx.register(ctx.stream(body, { Type: 'XObject', Subtype: 'Form', BBox: [0, 0, 595, 842], Resources: { Font: { F1: f.ref } }, ...extra }));
+  const veForm = form('BT /F1 12 Tf 50 560 Td (VEHIDDEN-FORM) Tj ET', { OC: notShown });
+  const inPattern = form('BT /F1 12 Tf 2 2 Td (PATTERNHIDDEN) Tj ET', { OC: offLayer });
+  const pattern = ctx.register(ctx.stream('/Hf Do', { Type: 'Pattern', PatternType: 1, PaintType: 1, TilingType: 1, BBox: [0, 0, 200, 40], XStep: 200, YStep: 40, Resources: { XObject: { Hf: inPattern } } }));
+  const resources = ctx.register(ctx.obj({ Font: { F1: f.ref }, Properties: { Ve: notShown, Vs: andShown, St: strayOff }, XObject: { Vf: veForm }, Pattern: { P1: pattern } }));
+  const body = ctx.register(ctx.stream([
+    'BT /F1 14 Tf 50 790 Td (PUBLIC-FIDELITY) Tj ET',
+    '/OC /Ve BDC BT /F1 12 Tf 50 600 Td (VEHIDDEN-MARKED) Tj ET EMC',
+    '/OC /Vs BDC BT /F1 12 Tf 50 620 Td (VE-SHOWN) Tj ET EMC',
+    '/OC /St BDC BT /F1 12 Tf 50 580 Td (UNLISTEDHIDDEN) Tj ET EMC',
+    '/Vf Do',
+    '/Pattern cs /P1 scn 50 300 200 40 re f',
+  ].join('\n')));
+  const shared = ctx.register(ctx.obj([body]));
+  for (const p of [p1, p2]) {
+    p.node.set(PDFName.of('Resources'), resources);
+    p.node.set(PDFName.of('Contents'), shared);
+  }
+  const look = (text) => ctx.register(ctx.stream(`BT /F1 10 Tf 105 120 Td (${text}) Tj ET`, { Type: 'XObject', Subtype: 'Form', BBox: [100, 100, 200, 150], Resources: { Font: { F1: f.ref } } }));
+  const annot = (dict) => ctx.register(ctx.obj({ Type: 'Annot', ...dict }));
+  p1.node.set(PDFName.of('Annots'), ctx.obj([
+    annot({ Subtype: 'FreeText', IT: 'FreeTextTypeWriter', Rect: [50, 400, 250, 430], DA: PDFString.of('/Helv 10 Tf 0 g'), Contents: PDFString.of('TYPED-ON-PAGE'), AP: { N: look('TYPED-ON-PAGE') } }),
+    annot({ Subtype: 'Ink', Rect: [300, 400, 400, 450], InkList: [[300, 400, 400, 450]], AP: { N: look('INK-MARK') } }),
+    annot({ Subtype: 'Stamp', Rect: [300, 200, 400, 250], AP: { N: look('STAMPONLYONE') } }),
+  ]));
+  await fsp.writeFile(file, await d.save());
+  return file;
+}
+
 /** Whether a page's text holds `value`, read independently with pdf.js. */
 async function valueDrawn(file, page, value) {
   return (await linesOf(file, page)).join(' ').includes(value);
@@ -522,6 +572,28 @@ app.whenReady().then(async () => {
     const annots = r.ok ? (await PDFDocument.load(await fsp.readFile(r.display[0]))).getPage(1).node.lookup(PDFName.of('Annots')) : null;
     check(`    ${clean ? 'no annotation is left' : 'the two comments stay comments, and nothing else stays an annotation'}`,
       clean ? !annots : annots && annots.size() === 2, annots ? `${annots.size()} annotations` : 'none');
+  }
+
+  // Harder cases on an unmarked page, found by review: what a viewer hides stays hidden,
+  // typed text stays, and a page sharing another's contents gets only its own stamp.
+  const fidelity = await fidelityPdf(path.join(dir, 'נאמנות.pdf'));
+  for (const clean of [true, false]) {
+    r = await runTool('redact', [fidelity], { marks: [{ page: 0, x: 0.05, y: 0.05, w: 0.9, h: 0.9 }], clean });
+    const raw = r.ok ? expanded(r.display[0], dir) : '';
+    const two = r.ok ? (await linesOf(r.display[0], 2)).join(' ') : '';
+    const three = r.ok ? (await linesOf(r.display[0], 3)).join(' ') : '';
+    const mode = clean ? 'removing' : 'keeping';
+    const shownHidden = ['VEHIDDEN-MARKED', 'VEHIDDEN-FORM', 'UNLISTEDHIDDEN', 'PATTERNHIDDEN', 'SECRET-FIDELITY-P0'].filter((x) => raw.includes(x));
+    check(`  ${mode} comments: content hidden by a visibility rule, an unlisted hidden layer or inside a pattern stays out`,
+      r.ok && shownHidden.length === 0 && two.includes('PUBLIC-FIDELITY') && two.includes('VE-SHOWN'), r.error || `in the file: ${shownHidden.join(', ')}; page 2: ${two}`);
+    check('    text typed onto the page stays on it', two.includes('TYPED-ON-PAGE'), two);
+    check('    a stamp on a page sharing its contents with another is not drawn on that other page', two.includes('STAMPONLYONE') && !three.includes('STAMPONLYONE'), three);
+    if (clean) {
+      check('    a handwritten mark goes with the comments, and the summary says how to keep it',
+        !two.includes('INK-MARK') && /סימון אחד בכתב יד/.test(r.summary || ''), r.summary);
+    } else {
+      check('    a handwritten mark stays a comment', !two.includes('INK-MARK') && /Ink/.test(raw), two);
+    }
   }
 
   /* ---- PDF to Excel ---- */

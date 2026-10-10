@@ -93,12 +93,15 @@ async function run({ inputs, options = {}, ctx }) {
   // What the page shows stays on it; the things that can lead back to other pages or
   // carry hidden text are left behind: a link's destination would pull a redacted page
   // across with it.
-  const layers = bareLayers(doc);
+  const layers = settleLayers(doc);
+  const removed = { comments: 0, handwriting: 0 };
   for (let i = 0; i < total; i++) {
     if (blacked.has(i)) continue;
     const page = doc.getPage(i);
-    hideHidden(page, layers.visible);
-    strip(page, options.clean !== false, layers.visible);
+    if (layers) settleLayersOn(page, layers);
+    const r = strip(page, options.clean !== false, layers);
+    removed.comments += r.comments;
+    removed.handwriting += r.handwriting;
   }
   await doc.flush();
   const copier = PDFObjectCopier.for(doc.context, out.context);
@@ -117,8 +120,8 @@ async function run({ inputs, options = {}, ctx }) {
     const node = copier.copy(source.node);
     out.addPage(PDFPage.of(node, out.context.register(node), out));
   }
-  // The layers, bare, so Ghostscript leaves out what a hidden layer holds on a page.
-  if (layers.list) out.catalog.set(PDFName.of('OCProperties'), copier.copy(layers.list));
+  // The two plain layers, so Ghostscript leaves out what the hidden one holds.
+  if (layers) out.catalog.set(PDFName.of('OCProperties'), copier.copy(layers.list));
 
   if (options.clean === false) {
     // Asked to keep the document's details: only the standard, visible ones.
@@ -163,7 +166,7 @@ async function run({ inputs, options = {}, ctx }) {
   const what = pages.length === 1 ? 'עמוד אחד הושחר' : `${pages.length} עמודים הושחרו`;
   const how = options.ocr ? '' : ' העמודים המושחרים הפכו לתמונה, ולכן אי אפשר לחפש בהם טקסט.';
   return {
-    summary: `${what}. ${marks.length === 1 ? 'האזור המסומן נמחק' : `${marks.length} האזורים המסומנים נמחקו`} מהקובץ עצמו, לא רק הוסתרו.${how}${searchable}${options.clean !== false ? ' גם פרטי המסמך, ההערות והקבצים המצורפים הוסרו.' : attached ? ' הקבצים המצורפים לא הועתקו, כי אחד מהם יכול להיות המסמך המקורי לפני ההשחרה.' : ''}`,
+    summary: `${what}. ${marks.length === 1 ? 'האזור המסומן נמחק' : `${marks.length} האזורים המסומנים נמחקו`} מהקובץ עצמו, לא רק הוסתרו.${how}${searchable}${options.clean !== false ? ` גם פרטי המסמך, ההערות והקבצים המצורפים הוסרו.${removed.handwriting ? ` בין ההערות שהוסרו יש גם ${removed.handwriting === 1 ? 'סימון אחד בכתב יד' : `${removed.handwriting} סימונים בכתב יד`}. כדי לשמור אותם, אפשר להשחיר שוב בלי "הסרת פרטי המסמך, הערות וקבצים מצורפים".` : ''}` : attached ? ' הקבצים המצורפים לא הועתקו, כי אחד מהם יכול להיות המסמך המקורי לפני ההשחרה.' : ''}`,
     display: [outputPath],
   };
 }
@@ -195,34 +198,46 @@ const KEPT_KEYS = ['Type', 'Subtype', 'Rect', 'Contents', 'NM', 'M', 'F', 'C', '
  * and without it the comments a viewer can draw again stay, holding only plain values.
  * Page-level metadata, thumbnails and article beads go too.
  */
-function strip(page, clean, visible = () => true) {
+function strip(page, clean, layers = null) {
   const node = page.node;
   const ctxt = page.doc.context;
+  // A page whose list of contents is shared with another gets its own list, so what is
+  // drawn into this page is not drawn into the other too.
+  const contents = node.get(PDFName.of('Contents'));
+  const list = ctxt.lookup(contents);
+  if (contents instanceof PDFRef && list instanceof PDFArray) node.set(PDFName.of('Contents'), ctxt.obj(list.asArray()));
   const annots = node.lookup(PDFName.of('Annots'));
   const keep = [];
+  const removed = { comments: 0, handwriting: 0 };
   if (annots instanceof PDFArray) {
     for (const ref of annots.asArray()) {
       const a = ctxt.lookup(ref);
       if (!(a instanceof PDFDict)) continue;
       const sub = String(a.get(PDFName.of('Subtype')) || '');
       if (NEVER.has(sub)) continue;
-      if (!clean && REDRAWN.has(sub)) {
+      const typed = sub === '/FreeText' && String(a.get(PDFName.of('IT'))) === '/FreeTextTypeWriter';
+      if (!clean && REDRAWN.has(sub) && !typed) {
         const copy = ctxt.obj({});
         for (const key of KEPT_KEYS) {
           const value = a.get(PDFName.of(key));
           if (value !== undefined && plain(value)) copy.set(PDFName.of(key), value);
         }
         keep.push(ctxt.register(copy));
-      } else if (!REDRAWN.has(sub)) {
-        // A comment goes with the others when they are removed; what is not a comment (a
-        // filled field, a stamp, a signature picture) is drawn into the page.
-        flatten(page, a, visible);
+      } else if (!REDRAWN.has(sub) || typed) {
+        // What is not a comment (a filled field, a stamp, a signature picture, text typed
+        // onto the page) is drawn into the page.
+        flatten(page, a, layers);
+      } else {
+        // A comment goes with the others when they are removed.
+        removed.comments++;
+        if (sub === '/Ink') removed.handwriting++;
       }
     }
   }
   if (keep.length) node.set(PDFName.of('Annots'), ctxt.obj(keep));
   else node.delete(PDFName.of('Annots'));
   for (const key of ['B', 'Thumb', 'AA', 'PieceInfo', 'Metadata', 'StructParents', 'Tabs', 'AF']) node.delete(PDFName.of(key));
+  return removed;
 }
 
 /** A value with no reference to another object anywhere inside it. */
@@ -241,7 +256,8 @@ const numbers = (arr) => (arr instanceof PDFArray ? arr.asArray().map((n) => (n 
  * as a viewer would show it (PDF 32000, 12.5.5). A hidden annotation is not drawn, nor
  * one whose layer, or whose drawing's layer, is hidden.
  */
-function flatten(page, annot, visible) {
+function flatten(page, annot, layers) {
+  const visible = layers ? layers.visible : () => true;
   const ctxt = page.doc.context;
   const flags = annot.lookup(PDFName.of('F'));
   if (flags instanceof PDFNumber && (flags.asNumber() & (2 | 32))) return;
@@ -257,7 +273,7 @@ function flatten(page, annot, visible) {
   }
   if (!(look instanceof PDFStream)) return;
   if (!visible(annot.get(PDFName.of('OC'))) || !visible(look.dict.get(PDFName.of('OC')))) return;
-  hideIn(ctxt, look.dict.lookup(PDFName.of('Resources')), visible);
+  if (layers) settleIn(ctxt, look.dict.lookup(PDFName.of('Resources')), layers);
   if (!(ref instanceof PDFRef)) ref = ctxt.register(look);
 
   const rect = numbers(annot.lookup(PDFName.of('Rect')));
@@ -280,39 +296,59 @@ function flatten(page, annot, visible) {
 }
 
 /**
- * The document's layers, read for which are hidden, then stripped bare in place: each
- * layer keeps only its type and a plain name, so neither its name nor anything it points
- * to can come across. Returns the bare list to copy, and a test of whether an /OC value
- * (a layer, or a rule over layers) is shown.
+ * The document's layers, settled once: which are shown is decided here as a viewer
+ * decides it (PDF 32000, 8.11), and the kept pages are then made to use two plain layers
+ * only, one shown and one hidden, so Ghostscript has nothing left to evaluate. It does not
+ * evaluate a visibility expression, and draws a whole drawing on a hidden layer as shown.
+ *
+ * Every layer of the original is also stripped bare in place, keeping only its type and a
+ * plain name, so neither its name nor anything it points to can come across.
+ *
+ * Returns { list, visible(oc), shown, hidden }: the layers to copy, a test of whether an
+ * /OC value is shown, and the two plain layers. With no layers: null.
  */
-function bareLayers(doc) {
+function settleLayers(doc) {
   const ctxt = doc.context;
   const props = doc.catalog.lookup(PDFName.of('OCProperties'));
-  if (!(props instanceof PDFDict)) return { list: null, visible: () => true };
+  if (!(props instanceof PDFDict)) return null;
   const isLayer = (o) => o instanceof PDFDict && String(o.get(PDFName.of('Type'))) === '/OCG';
-  const listed = props.lookup(PDFName.of('OCGs'));
-  const refs = listed instanceof PDFArray ? listed.asArray().filter((r) => r instanceof PDFRef && isLayer(ctxt.lookup(r))) : [];
   const d = props.lookup(PDFName.of('D'));
-  const named = (key) => {
-    const a = d instanceof PDFDict ? d.lookup(PDFName.of(key)) : null;
-    return new Set(a instanceof PDFArray ? a.asArray().map(String) : []);
+  const listOf = (dict, key) => {
+    const a = dict instanceof PDFDict ? dict.lookup(PDFName.of(key)) : null;
+    return a instanceof PDFArray ? a.asArray().filter((r) => r instanceof PDFRef && isLayer(ctxt.lookup(r))) : [];
   };
+  // A layer named only in the default ON or OFF list counts as much as a listed one.
+  const refs = [...new Map([...listOf(props, 'OCGs'), ...listOf(d, 'ON'), ...listOf(d, 'OFF')].map((r) => [String(r), r])).values()];
+  const on = new Set(listOf(d, 'ON').map(String));
+  const off = new Set(listOf(d, 'OFF').map(String));
   const allOff = d instanceof PDFDict && String(d.get(PDFName.of('BaseState'))) === '/OFF';
-  const on = named('ON');
-  const off = named('OFF');
-  const hidden = new Set(refs.map(String).filter((r) => (allOff ? !on.has(r) : off.has(r))));
+  const hiddenLayers = new Set(refs.map(String).filter((r) => (allOff ? !on.has(r) : off.has(r))));
 
-  const shown = (oc) => {
+  const layerShown = (ref) => !hiddenLayers.has(String(ref));
+  // A visibility expression: [/And|/Or|/Not operand...], each operand a layer or another
+  // expression. Anything malformed in it hides, never shows.
+  const expression = (ve, depth = 0) => {
+    const v = ctxt.lookup(ve);
+    if (isLayer(v)) return layerShown(ve);
+    if (!(v instanceof PDFArray) || depth > 20 || v.size() < 2) return false;
+    const [op, ...rest] = v.asArray();
+    const values = rest.map((x) => expression(x, depth + 1));
+    if (String(op) === '/And') return values.every(Boolean);
+    if (String(op) === '/Or') return values.some(Boolean);
+    if (String(op) === '/Not') return values.length === 1 && !values[0];
+    return false;
+  };
+  const visible = (oc) => {
     if (!oc) return true;
     const o = ctxt.lookup(oc);
-    if (isLayer(o)) return !hidden.has(String(oc));
+    if (isLayer(o)) return layerShown(oc);
     if (!(o instanceof PDFDict) || String(o.get(PDFName.of('Type'))) !== '/OCMD') return true;
-    // A rule over layers (PDF 32000, 8.11.2.2). A visibility expression (/VE) is not
-    // read; its layers count as listed, which shows rather than loses content.
-    const members = o.lookup(PDFName.of('OCGs'));
-    const group = (members instanceof PDFArray ? members.asArray() : members ? [o.get(PDFName.of('OCGs'))] : [])
+    if (o.get(PDFName.of('VE'))) return expression(o.get(PDFName.of('VE')));
+    const members = o.get(PDFName.of('OCGs'));
+    const m = ctxt.lookup(members);
+    const group = (m instanceof PDFArray ? m.asArray() : members ? [members] : [])
       .filter((r) => isLayer(ctxt.lookup(r)))
-      .map((r) => !hidden.has(String(r)));
+      .map(layerShown);
     if (!group.length) return true;
     const rule = String(o.get(PDFName.of('P')) || '/AnyOn');
     if (rule === '/AllOn') return group.every(Boolean);
@@ -327,32 +363,60 @@ function bareLayers(doc) {
     layer.set(PDFName.of('Type'), PDFName.of('OCG'));
     layer.set(PDFName.of('Name'), PDFString.of(`Layer ${k + 1}`));
   });
-  const list = ctxt.obj({ OCGs: refs, D: { Order: refs, OFF: refs.filter((r) => hidden.has(String(r))) } });
-  return { list, visible: shown };
+  const shown = ctxt.register(ctxt.obj({ Type: 'OCG', Name: PDFString.of('Shown') }));
+  const hidden = ctxt.register(ctxt.obj({ Type: 'OCG', Name: PDFString.of('Hidden') }));
+  // Pages can share resources, so a set already settled may be met again: the plain hidden
+  // layer must then read as hidden.
+  hiddenLayers.add(String(hidden));
+  const list = ctxt.obj({ OCGs: [shown, hidden], D: { Order: [shown, hidden], OFF: [hidden] } });
+  return { list, visible, shown, hidden };
+}
+
+/** A kept page's resources, made to use the two plain layers only (see settleLayers). */
+function settleLayersOn(page, layers) {
+  const ctxt = page.doc.context;
+  settleIn(ctxt, ctxt.lookup(page.node.getInheritableAttribute(PDFName.of('Resources'))), layers);
 }
 
 /**
- * Pictures and drawings on a page that belong to a hidden layer are replaced by an empty
- * drawing. Ghostscript leaves out hidden marked content by itself, but draws a picture or
- * drawing placed whole on a hidden layer as if it were shown.
+ * In a set of resources and every set it leads to (drawings, fill patterns, soft masks):
+ * each layer that marked content names becomes the plain shown or hidden layer, and a
+ * picture or drawing placed whole on a hidden layer is replaced by an empty drawing.
  */
-function hideHidden(page, visible) {
-  const ctxt = page.doc.context;
-  hideIn(ctxt, ctxt.lookup(page.node.getInheritableAttribute(PDFName.of('Resources'))), visible);
-}
-
-function hideIn(ctxt, resources, visible, seen = new Set()) {
+function settleIn(ctxt, resources, layers, seen = new Set()) {
   if (!(resources instanceof PDFDict) || seen.has(resources)) return;
   seen.add(resources);
+  const into = (stream) => {
+    if (stream instanceof PDFStream) settleIn(ctxt, stream.dict.lookup(PDFName.of('Resources')), layers, seen);
+  };
+  const properties = resources.lookup(PDFName.of('Properties'));
+  if (properties instanceof PDFDict) {
+    for (const [name, value] of properties.entries()) {
+      const o = ctxt.lookup(value);
+      const type = o instanceof PDFDict ? String(o.get(PDFName.of('Type'))) : '';
+      if (type === '/OCG' || type === '/OCMD') properties.set(name, layers.visible(value) ? layers.shown : layers.hidden);
+    }
+  }
   const xobjects = resources.lookup(PDFName.of('XObject'));
-  if (!(xobjects instanceof PDFDict)) return;
-  for (const [name, ref] of xobjects.entries()) {
-    const x = ctxt.lookup(ref);
-    if (!(x instanceof PDFStream)) continue;
-    if (!visible(x.dict.get(PDFName.of('OC')))) {
-      xobjects.set(name, ctxt.register(ctxt.stream('', { Type: 'XObject', Subtype: 'Form', BBox: [0, 0, 0, 0] })));
-    } else if (String(x.dict.get(PDFName.of('Subtype'))) === '/Form') {
-      hideIn(ctxt, x.dict.lookup(PDFName.of('Resources')), visible, seen);
+  if (xobjects instanceof PDFDict) {
+    for (const [name, ref] of xobjects.entries()) {
+      const x = ctxt.lookup(ref);
+      if (!(x instanceof PDFStream)) continue;
+      if (!layers.visible(x.dict.get(PDFName.of('OC')))) {
+        xobjects.set(name, ctxt.register(ctxt.stream('', { Type: 'XObject', Subtype: 'Form', BBox: [0, 0, 0, 0] })));
+      } else if (String(x.dict.get(PDFName.of('Subtype'))) === '/Form') {
+        into(x);
+      }
+    }
+  }
+  const patterns = resources.lookup(PDFName.of('Pattern'));
+  if (patterns instanceof PDFDict) for (const [, ref] of patterns.entries()) into(ctxt.lookup(ref));
+  const states = resources.lookup(PDFName.of('ExtGState'));
+  if (states instanceof PDFDict) {
+    for (const [, ref] of states.entries()) {
+      const gs = ctxt.lookup(ref);
+      const mask = gs instanceof PDFDict ? gs.lookup(PDFName.of('SMask')) : null;
+      if (mask instanceof PDFDict) into(mask.lookup(PDFName.of('G')));
     }
   }
 }
