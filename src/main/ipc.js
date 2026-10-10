@@ -13,6 +13,7 @@ const jobs = require('./jobs');
 const tools = require('./tools');
 const wia = require('./engine/wia');
 const signatures = require('./signatures');
+const settings = require('./settings');
 // Read from the manifest rather than app.getVersion(): that only resolves the app's
 // own package.json in some launch contexts, and reports Electron's version otherwise.
 const { version } = require('../../package.json');
@@ -375,6 +376,34 @@ function registerToolIpc() {
   ipcMain.handle('scan:cancel', () => {
     if (scanning) scanning.abort();
     return { ok: true };
+  });
+
+  // The Claude API key. It is never sent to the page: only a short hint of it is.
+  ipcMain.handle('settings:get', async () => ({ ok: true, apiKeyHint: await settings.apiKeyHint() }));
+  ipcMain.handle('settings:setKey', async (_event, key) => {
+    try {
+      const hint = await settings.setApiKey(key);
+      try {
+        await require('./engine/claude').check();
+        return { ok: true, apiKeyHint: hint, checked: true };
+      } catch (err) {
+        if (/שגוי|בוטל|הרשאה/.test(err.message)) {
+          await settings.clearApiKey();
+          return fail(err);
+        }
+        return { ok: true, apiKeyHint: hint, checked: false, warning: `המפתח נשמר, אבל לא ניתן היה לבדוק אותו כרגע: ${err.message}` };
+      }
+    } catch (err) {
+      return fail(err);
+    }
+  });
+  ipcMain.handle('settings:clearKey', async () => {
+    try {
+      await settings.clearApiKey();
+      return { ok: true };
+    } catch (err) {
+      return fail(err);
+    }
   });
 
   ipcMain.handle('signatures:list', async () => {

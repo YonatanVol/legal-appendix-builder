@@ -402,6 +402,15 @@ const shell = (() => {
     const banner = $('tool-unavailable');
     banner.textContent = t.available ? '' : t.reason;
     banner.classList.toggle('hidden', t.available);
+    if (!t.available && t.cloud) {
+      // The way out of "off until a key is entered" is one press away.
+      const go = document.createElement('button');
+      go.type = 'button';
+      go.className = 'link';
+      go.textContent = 'פתיחת ההגדרות';
+      go.addEventListener('click', openSettings);
+      banner.append(' ', go);
+    }
 
     const kinds = [...new Set(t.accepts.map((e) => (e === 'pdf' ? 'PDF' : e.toUpperCase())))];
     $('tool-drop-title').textContent = t.multiple
@@ -822,6 +831,70 @@ const shell = (() => {
   /* ---------------- wiring ---------------- */
 
   $('nav-back').addEventListener('click', goHome);
+  $('nav-settings').addEventListener('click', openSettings);
+
+  /* ---------------- settings ---------------- */
+
+  async function openSettings() {
+    if (view.job) return;
+    setHeader('הגדרות', 'מפתח ה-API לכלי הבינה המלאכותית.');
+    show('settings');
+    $('settings-result').textContent = '';
+    $('settings-key').value = '';
+    await paintSettings();
+  }
+
+  async function paintSettings() {
+    const r = await window.api.settingsGet();
+    const hint = r.ok && r.apiKeyHint;
+    $('settings-status').textContent = hint ? `מפתח שמור: ${hint}. הכלים פעילים.` : 'לא נשמר מפתח. הכלים כבויים.';
+    $('settings-status').classList.toggle('on', !!hint);
+    $('settings-clear').disabled = !hint;
+  }
+
+  async function refreshTools() {
+    const response = await window.api.listTools();
+    if (response.ok) view.tools = response.tools;
+  }
+
+  $('settings-show').addEventListener('click', () => {
+    const input = $('settings-key');
+    const show = input.type === 'password';
+    input.type = show ? 'text' : 'password';
+    $('settings-show').textContent = show ? 'הסתר' : 'הצג';
+  });
+  $('settings-save').addEventListener('click', async () => {
+    const key = $('settings-key').value.trim();
+    const result = $('settings-result');
+    if (!key) {
+      result.textContent = 'הדבק את המפתח בשדה.';
+      result.className = 'opt-preview bad';
+      return;
+    }
+    $('settings-save').disabled = true;
+    result.textContent = 'בודק את המפתח מול Anthropic…';
+    result.className = 'opt-preview';
+    const r = await window.api.settingsSetKey(key);
+    $('settings-save').disabled = false;
+    $('settings-key').value = '';
+    if (!r.ok) {
+      result.textContent = r.error;
+      result.className = 'opt-preview bad';
+    } else {
+      result.textContent = r.warning || 'המפתח נשמר ונבדק. כלי הסיכום והתרגום פעילים.';
+      result.className = r.warning ? 'opt-preview bad' : 'opt-preview good';
+    }
+    await paintSettings();
+    await refreshTools();
+  });
+  $('settings-clear').addEventListener('click', async () => {
+    if (!window.confirm('להסיר את המפתח? כלי הסיכום והתרגום ייכבו.')) return;
+    await window.api.settingsClearKey();
+    $('settings-result').textContent = 'המפתח הוסר.';
+    $('settings-result').className = 'opt-preview';
+    await paintSettings();
+    await refreshTools();
+  });
   $('tool-browse').addEventListener('click', browse);
   $('tool-add').addEventListener('click', browse);
   $('tool-clear').addEventListener('click', () => {
@@ -861,6 +934,8 @@ const shell = (() => {
     ready,
     open,
     goHome,
+    openSettings,
+    refreshTools,
     show,
     setBackBlocked,
     setPicker: (fn) => { picker = fn; },

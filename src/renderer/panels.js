@@ -523,6 +523,14 @@ function officePanel(program, how) {
   };
 }
 
+/** Said plainly before a cloud tool runs: the document leaves the PC. */
+function cloudNotice(container) {
+  const p = document.createElement('p');
+  p.className = 'cloud-notice';
+  p.textContent = 'הכלי הזה שולח את המסמך ל-Anthropic, החברה שמפעילה את Claude, ומקבל ממנה את התוצאה. אל תשתמשו בו למסמכים שאסור שיצאו מהמשרד.';
+  container.append(p);
+}
+
 /* ---------------- the panels ---------------- */
 
 const panels = {
@@ -2137,6 +2145,52 @@ const panels = {
     render(container) {
       ui.section(container, 'איך זה עובד',
         'Word פותח את ה-PDF ובונה ממנו מסמך שאפשר לערוך: פסקאות, טבלאות וכיוון הכתיבה. קובץ סרוק עובר קודם זיהוי טקסט, והמסמך נבנה מהטקסט שזוהה בעיצוב פשוט.');
+    },
+    blocked: () => null,
+  },
+
+  summarize: {
+    defaults: () => ({ length: 'standard', language: 'he', focus: ['facts', 'parties', 'dates', 'amounts', 'claims', 'deadlines'] }),
+    render(container, view) {
+      const o = view.options;
+      cloudNotice(container);
+      const box = ui.section(container, 'אורך');
+      ui.choice(box, {
+        value: o.length,
+        choices: [{ value: 'short', label: 'קצר' }, { value: 'standard', label: 'רגיל' }, { value: 'detailed', label: 'מפורט' }],
+        onChange: (v) => view.set('length', v),
+      });
+      ui.choice(box, { label: 'שפת הסיכום', value: o.language, choices: [{ value: 'he', label: 'עברית' }, { value: 'en', label: 'אנגלית' }], onChange: (v) => view.set('language', v) });
+      const focus = ui.section(container, 'מה לכלול');
+      const labels = { facts: 'העובדות', parties: 'הצדדים', dates: 'תאריכים', amounts: 'סכומים', claims: 'הטענות', deadlines: 'מועדים ופעולות נדרשות' };
+      for (const [key, label] of Object.entries(labels)) {
+        ui.check(focus, {
+          label,
+          value: o.focus.includes(key),
+          onChange: (on) => view.set('focus', on ? [...new Set([...view.options.focus, key])] : view.options.focus.filter((k) => k !== key)),
+        });
+      }
+      ui.note(focus, 'הסיכום נשמר כקובץ Word ליד המסמך.', 'muted');
+    },
+    blocked: (view) => (view.options.focus.length ? null : 'בחר לפחות נושא אחד לסיכום.'),
+  },
+
+  translate: {
+    defaults: () => ({ target: 'en' }),
+    render(container, view) {
+      cloudNotice(container);
+      const box = ui.section(container, 'לאיזו שפה');
+      ui.choice(box, {
+        value: view.options.target,
+        vertical: true,
+        choices: [
+          { value: 'en', label: 'אנגלית' }, { value: 'he', label: 'עברית' }, { value: 'ar', label: 'ערבית' },
+          { value: 'ru', label: 'רוסית' }, { value: 'fr', label: 'צרפתית' }, { value: 'es', label: 'ספרדית' },
+          { value: 'de', label: 'גרמנית' }, { value: 'am', label: 'אמהרית' },
+        ],
+        onChange: (v) => view.set('target', v),
+      });
+      ui.note(box, 'התרגום נשמר כקובץ Word וכ-PDF. כל הטקסט מתורגם, כולל טבלאות וחותמות, אבל העיצוב פשוט מהמקור ולא עמוד מול עמוד.', 'muted');
     },
     blocked: () => null,
   },

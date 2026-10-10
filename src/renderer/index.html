@@ -12,6 +12,9 @@
   <button type="button" class="ghost icon back hidden" id="nav-back" aria-label="חזרה למסך הראשי" title="חזרה (Esc)">
     <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M9 6l6 6-6 6" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
   </button>
+  <button type="button" class="ghost icon settings-button" id="nav-settings" aria-label="הגדרות" title="הגדרות">
+    <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>
+  </button>
   <div class="topbar-text">
     <h1><span id="screen-name">כלי המשרד</span> <span class="version" id="version"></span></h1>
     <p class="sub" id="screen-sub">כל כלי ה-PDF של המשרד במקום אחד. שום קובץ לא יוצא מהמחשב.</p>
@@ -103,6 +106,26 @@
         </div>
       </aside>
     </div>
+  </section>
+
+  <!-- ============ settings ============ -->
+  <section class="screen hidden" id="screen-settings" data-screen="settings">
+    <section class="card settings-card">
+      <h2>סיכום ותרגום בבינה מלאכותית</h2>
+      <p class="opt-hint">הכלים "סיכום מסמך" ו"תרגום PDF" שולחים את המסמך ל-Anthropic, החברה שמפעילה את Claude, ומקבלים ממנה את הסיכום או התרגום. כל שאר הכלים עובדים רק במחשב הזה. שני הכלים האלה כבויים עד שמזינים כאן מפתח API, והם פועלים רק כשלוחצים עליהם.</p>
+      <p class="opt-hint">אל תשתמשו בהם למסמכים שאסור שיצאו מהמשרד. מפתח API מקבלים בחשבון של המשרד ב-console.anthropic.com, והשימוש מחויב לפי כמות.</p>
+      <p class="settings-status" id="settings-status"></p>
+      <div class="field">
+        <span class="field-label">מפתח API של Claude</span>
+        <span class="password-row"><input type="password" id="settings-key" autocomplete="off" spellcheck="false" dir="ltr" placeholder="sk-ant-..."><button type="button" class="ghost small" id="settings-show">הצג</button></span>
+      </div>
+      <div class="opt-row">
+        <button type="button" class="primary" id="settings-save">שמירה ובדיקה</button>
+        <button type="button" class="ghost" id="settings-clear">הסרת המפתח</button>
+      </div>
+      <p class="opt-preview" id="settings-result"></p>
+      <p class="opt-hint">המפתח נשמר מוצפן בהגנה של Windows למשתמש הזה. משתמשים אחרים במחשב לא יכולים לקרוא אותו, אבל תוכנה שרצה בשם אותו משתמש יכולה.</p>
+    </section>
   </section>
 
   <!-- ============ the appendix builder ============ -->

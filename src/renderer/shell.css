@@ -555,3 +555,12 @@ button.small { padding: 4px 10px; font-size: 12.5px; }
 .field-row input[type="text"], .field-row select { font: inherit; padding: 7px 9px; border: 1px solid var(--line); border-radius: 8px; }
 .field-row input[type="checkbox"] { width: 18px; height: 18px; accent-color: var(--accent); }
 .field-name, .field-kind { font-size: 12.5px; color: var(--muted); }
+
+/* ---------------- settings ---------------- */
+.settings-button { flex: none; margin-inline-start: auto; order: 2; }
+.settings-card { display: flex; flex-direction: column; gap: 12px; max-width: 640px; }
+.settings-card h2 { margin: 0; font-size: 16px; }
+.settings-status { margin: 0; padding: 8px 12px; border-radius: 8px; background: #fff6e5; color: #7a4b00; }
+.settings-status.on { background: #e8f5ee; color: var(--ok); }
+.opt-preview.good { color: var(--ok); }
+.cloud-notice { padding: 10px 12px; border-radius: 10px; background: #efeafd; color: #3f2a8c; font-size: 13px; }
