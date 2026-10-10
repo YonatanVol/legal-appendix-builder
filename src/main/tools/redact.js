@@ -59,7 +59,18 @@ async function run({ inputs, options = {}, ctx }) {
       });
     });
 
-  const src = await stage(ctx, source, 'redact');
+  // Layers first, and the marked pages drawn from the settled copy: Ghostscript, drawing
+  // the original, would show what a viewer hides by a rule it does not work out, and that
+  // would then be burned into the picture of the redacted page.
+  const layers = settleLayers(doc);
+  let src;
+  if (layers) {
+    doc.catalog.set(PDFName.of('OCProperties'), layers.list);
+    src = 'settled.pdf';
+    await fs.writeFile(path.join(ctx.scratch, src), await doc.save({ updateFieldAppearances: false }));
+  } else {
+    src = await stage(ctx, source, 'redact');
+  }
   ctx.progress(0.05, 'מצייר את העמודים המסומנים…');
   const images = await renderPages(ctx, src, pages, { dpi: DPI, device: 'png16m', tag: 'red' });
 
@@ -93,7 +104,6 @@ async function run({ inputs, options = {}, ctx }) {
   // What the page shows stays on it; the things that can lead back to other pages or
   // carry hidden text are left behind: a link's destination would pull a redacted page
   // across with it.
-  const layers = settleLayers(doc);
   const removed = { handwriting: 0, typed: 0 };
   for (let i = 0; i < total; i++) {
     if (blacked.has(i)) continue;
@@ -226,6 +236,8 @@ function strip(page, clean, layers = null) {
       // Text typed onto the page, with a drawing of it to put there; without one it is
       // treated as any comment.
       const typed = sub === '/FreeText' && String(a.get(PDFName.of('IT'))) === '/FreeTextTypeWriter' && !!appearanceOf(a);
+      // A comment on a hidden layer is not shown, so it does not come across.
+      if (layers && !layers.visible(a.get(PDFName.of('OC')))) continue;
       if (!clean && REDRAWN.has(sub) && !typed) {
         const copy = ctxt.obj({});
         for (const key of KEPT_KEYS) {
@@ -327,8 +339,10 @@ function flatten(page, annot, layers) {
  * - every rule over layers anywhere in the file is rewritten in place to name one plain
  *   layer, shown or hidden, by its worked-out answer (Ghostscript does not work out
  *   visibility expressions);
- * - every layer is stripped bare in place, keeping only its type and a plain name, and
- *   listed with its state, so Ghostscript leaves out the marked content of hidden ones.
+ * - every layer that marked content names, in any /Properties dictionary in the file,
+ *   is replaced there by the plain shown or hidden layer, so Ghostscript leaves out the
+ *   marked content of hidden ones knowing only those two. The list of the two is taken
+ *   out of the result afterwards (withoutLayers).
  *
  * Returns { list, visible(oc) }: the layer list for Ghostscript, and a test of whether an
  * /OC value is shown. With no layers: null.
@@ -353,6 +367,7 @@ function settleLayers(doc) {
   const layers = [];
   const rules = [];
   const streams = [];
+  const properties = [];
   const seen = new Set();
   const visit = (o) => {
     if (!o || typeof o !== 'object' || o instanceof PDFRef || seen.has(o)) return;
@@ -367,6 +382,8 @@ function settleLayers(doc) {
     }
     if (o instanceof PDFDict) {
       if (isRule(o)) rules.push(o);
+      const named = o.lookup(PDFName.of('Properties'));
+      if (named instanceof PDFDict) properties.push(named);
       for (const [, v] of o.entries()) visit(v);
     }
   };
@@ -376,50 +393,79 @@ function settleLayers(doc) {
     visit(o);
   }
   const hiddenLayers = new Set(layers.map(String).filter((r) => (allOff ? !on.has(r) : off.has(r))));
-  const layerShown = (ref) => !hiddenLayers.has(String(ref));
+  // A layer written in place rather than as an object of its own is in no list, so it
+  // takes the default state.
+  const layerShown = (ref) => (ref instanceof PDFRef ? !hiddenLayers.has(String(ref)) : !allOff);
+
+  // A file can be made so that working out its rules takes very long. Past this much work
+  // every rule still unanswered hides; no real file comes near it.
+  let budget = 2000000;
 
   // A visibility expression: [/And|/Or|/Not operand...], each operand a layer or another
   // expression. If anything in it is malformed or nests deeper than any real file would
   // (an expression that contains itself nests forever), the whole expression hides. The
   // first such part ends the work, and parts already worked out are remembered, so no
   // file can make this slow.
+  // A part that failed is remembered as failed, along with every part that contained it,
+  // so a shared bad part is not worked through again by each rule that uses it.
   const known = new Map();
   const BAD = Symbol('bad');
   const expression = (ve) => {
+    const stack = [];
     const go = (x, depth) => {
+      if (--budget < 0) throw BAD;
       const v = ctxt.lookup(x);
       if (isLayer(v)) return layerShown(x);
       if (!(v instanceof PDFArray) || v.size() < 2 || depth > 50) throw BAD;
-      if (known.has(v)) return known.get(v);
+      if (known.has(v)) {
+        if (known.get(v) === BAD) throw BAD;
+        return known.get(v);
+      }
+      stack.push(v);
       const [op, ...rest] = v.asArray();
       let result;
       if (String(op) === '/And') result = rest.every((y) => go(y, depth + 1));
       else if (String(op) === '/Or') result = rest.some((y) => go(y, depth + 1));
       else if (String(op) === '/Not' && rest.length === 1) result = !go(rest[0], depth + 1);
       else throw BAD;
+      stack.pop();
       known.set(v, result);
       return result;
     };
     try {
       return go(ve, 0);
     } catch (err) {
-      if (err === BAD) return false;
-      throw err;
+      if (err !== BAD) throw err;
+      for (const v of stack) known.set(v, BAD);
+      return false;
     }
   };
+  // The answer for a list of layers under a rule, remembered per list, so many rules
+  // sharing one long list cost one reading of it.
+  const groups = new Map();
   const ruleShown = (o) => {
     if (o.get(PDFName.of('VE'))) return expression(o.get(PDFName.of('VE')));
     const members = o.get(PDFName.of('OCGs'));
     const m = ctxt.lookup(members);
-    const group = (m instanceof PDFArray ? m.asArray() : members ? [members] : [])
+    const rule = String(o.get(PDFName.of('P')) || '/AnyOn');
+    const key = m instanceof PDFArray ? m : null;
+    if (key && groups.has(key) && groups.get(key).has(rule)) return groups.get(key).get(rule);
+    budget -= key ? key.size() : 1;
+    if (budget < 0) return false;
+    const group = (key ? key.asArray() : members ? [members] : [])
       .filter((r) => isLayer(ctxt.lookup(r)))
       .map(layerShown);
-    if (!group.length) return true;
-    const rule = String(o.get(PDFName.of('P')) || '/AnyOn');
-    if (rule === '/AllOn') return group.every(Boolean);
-    if (rule === '/AnyOff') return group.some((v) => !v);
-    if (rule === '/AllOff') return group.every((v) => !v);
-    return group.some(Boolean);
+    let answer;
+    if (!group.length) answer = true;
+    else if (rule === '/AllOn') answer = group.every(Boolean);
+    else if (rule === '/AnyOff') answer = group.some((v) => !v);
+    else if (rule === '/AllOff') answer = group.every((v) => !v);
+    else answer = group.some(Boolean);
+    if (key) {
+      if (!groups.has(key)) groups.set(key, new Map());
+      groups.get(key).set(rule, answer);
+    }
+    return answer;
   };
 
   // Decided before anything is changed.
@@ -431,25 +477,31 @@ function settleLayers(doc) {
     if (isRule(o)) return answers.has(o) ? answers.get(o) : ruleShown(o);
     return true;
   };
-  const hiddenStreams = streams.filter(([, x]) => !visible(x.dict.get(PDFName.of('OC'))));
+  // Only pictures and drawings: a viewer ignores /OC on any other stream (a page's own
+  // content, a colour profile, a font), so those are left as they are.
+  const hiddenStreams = streams.filter(([, x]) => ['/Image', '/Form'].includes(String(x.dict.get(PDFName.of('Subtype')))) &&
+    !visible(x.dict.get(PDFName.of('OC'))));
 
   const shown = ctxt.register(ctxt.obj({ Type: 'OCG', Name: PDFHexString.fromText('מוצג') }));
   const hidden = ctxt.register(ctxt.obj({ Type: 'OCG', Name: PDFHexString.fromText('מוסתר') }));
   hiddenLayers.add(String(hidden));
   for (const [ref] of hiddenStreams) ctxt.assign(ref, ctxt.stream('', { Type: 'XObject', Subtype: 'Form', BBox: [0, 0, 0, 0] }));
+  // Only the keys of a rule are replaced: the same dictionary may serve as something else
+  // too, and its other keys are left for that.
   for (const [o, answer] of answers) {
-    for (const key of o.keys()) o.delete(key);
-    o.set(PDFName.of('Type'), PDFName.of('OCMD'));
+    for (const key of ['VE', 'P', 'OCGs']) o.delete(PDFName.of(key));
     o.set(PDFName.of('OCGs'), answer ? shown : hidden);
   }
-  layers.forEach((ref, k) => {
-    const layer = ctxt.lookup(ref);
-    for (const key of layer.keys()) layer.delete(key);
-    layer.set(PDFName.of('Type'), PDFName.of('OCG'));
-    layer.set(PDFName.of('Name'), PDFHexString.fromText(`שכבה ${k + 1}`));
-  });
-  const all = [shown, hidden, ...layers];
-  const list = ctxt.obj({ OCGs: all, D: { Order: all, OFF: all.filter((r) => hiddenLayers.has(String(r))) } });
+  // Marked content names its layer in a /Properties dictionary; each of those, anywhere in
+  // the file, now names the plain shown or hidden layer. Rules there already do (above).
+  for (const named of properties) {
+    for (const [key, value] of named.entries()) {
+      if (isLayer(ctxt.lookup(value))) named.set(key, layerShown(value) ? shown : hidden);
+    }
+  }
+  // So Ghostscript needs to know only the two plain layers. (A list of every original
+  // layer makes it very slow on a file with many.)
+  const list = ctxt.obj({ OCGs: [shown, hidden], D: { Order: [shown, hidden], OFF: [hidden] } });
   return { list, visible };
 }
 

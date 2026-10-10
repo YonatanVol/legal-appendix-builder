@@ -315,6 +315,13 @@ async function fidelityPdf(file) {
   for (const x of [PDFName.of('Or'), selfOr, shownLayer]) ctx.lookup(selfOr).push(x);
   let chain = shownLayer;
   for (let i = 0; i < 20000; i++) chain = ctx.register(ctx.obj([PDFName.of('Not'), chain]));
+  // Forty levels of [/And x x] over one shown layer: shown, and only quick to work out
+  // when shared parts are remembered (2^40 otherwise). And [/Not off shown], which is
+  // malformed (read carelessly, it would show).
+  let shared = shownLayer;
+  for (let i = 0; i < 40; i++) shared = ctx.register(ctx.obj([PDFName.of('And'), shared, shared]));
+  const memoRule = ctx.register(ctx.obj({ Type: 'OCMD', VE: shared }));
+  const notTwo = ctx.register(ctx.obj({ Type: 'OCMD', VE: [PDFName.of('Not'), offLayer, shownLayer] }));
   const notSelf = ctx.register(ctx.obj({ Type: 'OCMD', VE: selfNot }));
   const orSelf = ctx.register(ctx.obj({ Type: 'OCMD', VE: selfOr }));
   const deep = ctx.register(ctx.obj({ Type: 'OCMD', VE: chain }));
@@ -342,7 +349,7 @@ async function fidelityPdf(file) {
   const maskGroup = form('/Hm Do', { Group: { S: 'Transparency', CS: 'DeviceGray' }, Resources: { XObject: { Hm: inMask } } });
   const resources = ctx.register(ctx.obj({
     Font: { F1: f.ref, T3: type3 },
-    Properties: { Ve: notShown, Vs: andShown, St: strayOff, Cy: cyclic, Mf: malformed, Ms: tooShort, Ns: notSelf, Os: orSelf, Dp: deep, So: singleOff, Sn: singleOn },
+    Properties: { Ve: notShown, Vs: andShown, St: strayOff, Cy: cyclic, Mf: malformed, Ms: tooShort, Ns: notSelf, Os: orSelf, Dp: deep, Mm: memoRule, Nt: notTwo, So: singleOff, Sn: singleOn },
     XObject: { Vf: veForm }, Pattern: { P1: pattern },
     ExtGState: { M1: { Type: 'ExtGState', SMask: { Type: 'Mask', S: 'Luminosity', G: maskGroup } }, G3: { Type: 'ExtGState', Font: [gsType3, 12] } },
   }));
@@ -357,6 +364,8 @@ async function fidelityPdf(file) {
     '/OC /Mf BDC BT /F1 12 Tf 50 520 Td (MALFORMEDHIDDEN) Tj ET EMC',
     '/OC /Ms BDC BT /F1 12 Tf 50 510 Td (SHORTVEHIDDEN) Tj ET EMC',
     '/OC /Ns BDC BT /F1 12 Tf 50 470 Td (NOTSELFHIDDEN) Tj ET EMC',
+    '/OC /Mm BDC BT /F1 12 Tf 50 440 Td (MEMO-SHOWN) Tj ET EMC',
+    '/OC /Nt BDC BT /F1 12 Tf 50 430 Td (NOTTWOHIDDEN) Tj ET EMC',
     '/OC /Os BDC BT /F1 12 Tf 50 460 Td (ORSELFHIDDEN) Tj ET EMC',
     '/OC /Dp BDC BT /F1 12 Tf 50 450 Td (DEEPCHAINHIDDEN) Tj ET EMC',
     'q /G3 gs BT 50 230 Td (a) Tj ET Q',
@@ -364,11 +373,12 @@ async function fidelityPdf(file) {
     '/OC /Sn BDC BT /F1 12 Tf 50 480 Td (SINGLEREF-SHOWN) Tj ET EMC',
     'BT /T3 12 Tf 50 250 Td (a) Tj ET',
     'q /M1 gs 0 0 1 rg 40 190 300 40 re f Q',
-  ].join('\n')));
-  const shared = ctx.register(ctx.obj([body]));
+  ].join('\n'), { OC: offLayer }));
+  // (The page's own content carries an /OC too, which viewers ignore: it must stay.)
+  const sharedContents = ctx.register(ctx.obj([body]));
   for (const p of [p1, p2]) {
     p.node.set(PDFName.of('Resources'), resources);
-    p.node.set(PDFName.of('Contents'), shared);
+    p.node.set(PDFName.of('Contents'), sharedContents);
   }
   const look = (text) => ctx.register(ctx.stream(`BT /F1 10 Tf 105 120 Td (${text}) Tj ET`, { Type: 'XObject', Subtype: 'Form', BBox: [100, 100, 200, 150], Resources: { Font: { F1: f.ref } } }));
   const annot = (dict) => ctx.register(ctx.obj({ Type: 'Annot', ...dict }));
@@ -376,6 +386,8 @@ async function fidelityPdf(file) {
     annot({ Subtype: 'FreeText', IT: 'FreeTextTypeWriter', Rect: [50, 400, 250, 430], DA: PDFString.of('/Helv 10 Tf 0 g'), Contents: PDFString.of('TYPED-ON-PAGE'), AP: { N: look('TYPED-ON-PAGE') } }),
     annot({ Subtype: 'Ink', Rect: [300, 400, 400, 450], InkList: [[300, 400, 400, 450]], AP: { N: look('INK-MARK') } }),
     annot({ Subtype: 'Stamp', Rect: [300, 200, 400, 250], AP: { N: look('STAMPONLYONE') } }),
+    // A comment on a hidden layer: never shown, so it never comes across.
+    annot({ Subtype: 'Text', Rect: [10, 10, 30, 30], OC: offLayer, Contents: PDFString.of('HIDDENCOMMENT') }),
     // Typed text with no drawing of its own, and typed text whose drawing is missing.
     annot({ Subtype: 'FreeText', IT: 'FreeTextTypeWriter', Rect: [50, 100, 250, 130], DA: PDFString.of('/Helv 10 Tf 0 g'), Contents: PDFString.of('TYPEDNOAP') }),
     annot({ Subtype: 'FreeText', IT: 'FreeTextTypeWriter', Rect: [50, 60, 250, 90], DA: PDFString.of('/Helv 10 Tf 0 g'), Contents: PDFString.of('TYPEDDANGLING'), AP: { N: PDFRef.of(99999) } }),
@@ -416,6 +428,28 @@ function darkIn(file, page, dir) {
     return Math.round((black / n) * 1000) / 1000;
   };
   return { stamp: dark(300, 400, 400, 450), check: dark(50, 80, 600, 630), origin: dark(100, 200, 100, 150) };
+}
+
+/** How dark each box [x0, x1, y0, y1] (points) of a page is, from 0 to 1, at 72 DPI. */
+function darkAt(file, page, dir, boxes) {
+  const out = path.join(dir, `dark-${Math.random().toString(36).slice(2)}.pgm`);
+  execFileSync(bin.locate('gs'), ['-q', '-dNOPAUSE', '-dBATCH', '-dSAFER', '-sDEVICE=pgmraw', '-r72', `-dFirstPage=${page}`, `-dLastPage=${page}`, `-sOutputFile=${out}`, file]);
+  const buf = fs.readFileSync(out);
+  fs.rmSync(out, { force: true });
+  const header = buf.toString('latin1', 0, 200).match(/^P5\s+(?:#[^\n]*\n\s*)*(\d+)\s+(\d+)\s+(\d+)\s/);
+  const [width, height] = [Number(header[1]), Number(header[2])];
+  const pixels = buf.subarray(header[0].length);
+  return boxes.map(([x0, x1, y0, y1]) => {
+    let n = 0;
+    let black = 0;
+    for (let y = height - y1 + 2; y < height - y0 - 2; y++) {
+      for (let x = x0 + 2; x < x1 - 2; x++) {
+        n++;
+        if (pixels[y * width + x] < 128) black++;
+      }
+    }
+    return Math.round((black / n) * 1000) / 1000;
+  });
 }
 
 /** Every object of a PDF, streams decompressed, as one string. */
@@ -644,10 +678,10 @@ app.whenReady().then(async () => {
     const two = r.ok ? (await linesOf(r.display[0], 2)).join(' ') : '';
     const three = r.ok ? (await linesOf(r.display[0], 3)).join(' ') : '';
     const mode = clean ? 'removing' : 'keeping';
-    const shownHidden = ['VEHIDDEN-MARKED', 'VEHIDDEN-FORM', 'UNLISTEDHIDDEN', 'PATTERNHIDDEN', 'CYCLICHIDDEN', 'MALFORMEDHIDDEN', 'SHORTVEHIDDEN', 'NOTSELFHIDDEN', 'ORSELFHIDDEN', 'DEEPCHAINHIDDEN', 'GSTHREEFORMHIDDEN', 'GSTHREEMCHIDDEN',
+    const shownHidden = ['VEHIDDEN-MARKED', 'VEHIDDEN-FORM', 'UNLISTEDHIDDEN', 'PATTERNHIDDEN', 'CYCLICHIDDEN', 'MALFORMEDHIDDEN', 'SHORTVEHIDDEN', 'NOTSELFHIDDEN', 'ORSELFHIDDEN', 'DEEPCHAINHIDDEN', 'GSTHREEFORMHIDDEN', 'GSTHREEMCHIDDEN', 'NOTTWOHIDDEN', 'HIDDENCOMMENT',
       'SINGLEREFHIDDEN', 'TYPETHREEMCHIDDEN', 'TYPETHREEFORMHIDDEN', 'SMASKHIDDEN', 'SECRET-FIDELITY-P0'].filter((x) => raw.includes(x));
-    check(`  ${mode} comments: what a viewer hides stays out (visibility rules, malformed or self-containing ones too, a layer only in the hidden list, patterns, Type3 letters however chosen, soft masks)`,
-      r.ok && shownHidden.length === 0 && ['PUBLIC-FIDELITY', 'VE-SHOWN', 'SINGLEREF-SHOWN'].every((x) => two.includes(x)), r.error || `in the file: ${shownHidden.join(', ')}; page 2: ${two}`);
+    check(`  ${mode} comments: what a viewer hides stays out (visibility rules, malformed or self-containing ones too, a layer only in the hidden list, patterns, Type3 letters however chosen, soft masks, a comment), while what shows stays, the page's own content too`,
+      r.ok && shownHidden.length === 0 && ['PUBLIC-FIDELITY', 'VE-SHOWN', 'SINGLEREF-SHOWN', 'MEMO-SHOWN'].every((x) => two.includes(x)), r.error || `in the file: ${shownHidden.join(', ')}; page 2: ${two}`);
     check('    text typed onto the page stays on it', two.includes('TYPED-ON-PAGE'), two);
     check('    a stamp on a page sharing its contents with another is not drawn on that other page', two.includes('STAMPONLYONE') && !three.includes('STAMPONLYONE'), three);
     if (clean) {
@@ -675,8 +709,9 @@ app.whenReady().then(async () => {
     const listedOn = ctx.register(ctx.obj({ Type: 'OCG', Name: PDFString.of('on') }));
     const other = ctx.register(ctx.obj({ Type: 'OCG', Name: PDFString.of('other') }));
     d.catalog.set(PDFName.of('OCProperties'), ctx.obj({ OCGs: [listedOn, other], D: { BaseState: 'OFF', ON: [listedOn] } }));
-    p1.node.set(PDFName.of('Resources'), ctx.obj({ Font: { F1: f.ref }, Properties: { On: listedOn, Ot: other } }));
-    p1.node.set(PDFName.of('Contents'), ctx.register(ctx.stream('/OC /On BDC BT /F1 12 Tf 50 700 Td (BASEON-SHOWN) Tj ET EMC /OC /Ot BDC BT /F1 12 Tf 50 650 Td (BASEOFF-HIDDEN) Tj ET EMC')));
+    // A layer written in place, in no list: hidden by default here, as in the original.
+    p1.node.set(PDFName.of('Resources'), ctx.obj({ Font: { F1: f.ref }, Properties: { On: listedOn, Ot: other, Dr: { Type: 'OCG', Name: PDFString.of('direct') } } }));
+    p1.node.set(PDFName.of('Contents'), ctx.register(ctx.stream('/OC /On BDC BT /F1 12 Tf 50 700 Td (BASEON-SHOWN) Tj ET EMC /OC /Ot BDC BT /F1 12 Tf 50 650 Td (BASEOFF-HIDDEN) Tj ET EMC /OC /Dr BDC BT /F1 12 Tf 50 600 Td (DIRECTOCGHIDDEN) Tj ET EMC')));
     // A stamp whose drawing holds hidden content: marked, and a drawing placed whole under
     // a visibility expression. On a page with resources of its own, so only the walk
     // through the stamp's drawing keeps these out.
@@ -690,8 +725,70 @@ app.whenReady().then(async () => {
     await fsp.writeFile(base, await d.save());
     r = await runTool('redact', [base], { marks: [{ page: 0, x: 0.05, y: 0.05, w: 0.9, h: 0.9 }] });
     const raw = r.ok ? expanded(r.display[0], dir) : '';
-    check('  where layers start hidden, a listed one shows and another stays hidden', r.ok && raw.includes('BASEON-SHOWN') && !raw.includes('BASEOFF-HIDDEN'), r.error);
+    check('  where layers start hidden, a listed one shows, and another and one written in place stay hidden', r.ok && raw.includes('BASEON-SHOWN') && !raw.includes('BASEOFF-HIDDEN') && !raw.includes('DIRECTOCGHIDDEN'), r.error);
     check('  a stamp is drawn into the page without what its drawing hides', r.ok && raw.includes('APSHOWN') && !raw.includes('APHIDDENMC') && !raw.includes('APHIDDENFORM'), r.error);
+  }
+
+  {
+    // On the page being redacted, a rectangle a viewer hides by a visibility expression,
+    // drawn once as a drawing and once as marked content, outside the marked area: it must
+    // not be burned into the picture. On the kept page, a rule that is also used as a
+    // graphics state with no opacity: what it paints stays invisible.
+    const { StandardFonts, PDFString } = require('pdf-lib');
+    const d = await PDFDocument.create();
+    const f = await d.embedFont(StandardFonts.Helvetica);
+    const ctx = d.context;
+    const p0 = d.addPage([595, 842]);
+    const p1 = d.addPage([595, 842]);
+    const on = ctx.register(ctx.obj({ Type: 'OCG', Name: PDFString.of('on') }));
+    d.catalog.set(PDFName.of('OCProperties'), ctx.obj({ OCGs: [on], D: {} }));
+    const notOn = ctx.register(ctx.obj({ Type: 'OCMD', VE: [PDFName.of('Not'), on], ca: 0 }));
+    const box = ctx.register(ctx.stream('0 g 300 100 100 50 re f', { Type: 'XObject', Subtype: 'Form', BBox: [0, 0, 595, 842], OC: notOn }));
+    p0.node.set(PDFName.of('Resources'), ctx.obj({ Font: { F1: f.ref }, Properties: { H: notOn }, XObject: { B: box } }));
+    p0.node.set(PDFName.of('Contents'), ctx.register(ctx.stream('BT /F1 14 Tf 50 760 Td (SECRET-BURN) Tj ET /B Do /OC /H BDC 0 g 300 400 100 50 re f EMC')));
+    p1.node.set(PDFName.of('Resources'), ctx.obj({ Font: { F1: f.ref }, ExtGState: { Z: notOn } }));
+    p1.node.set(PDFName.of('Contents'), ctx.register(ctx.stream('BT /F1 14 Tf 50 760 Td (PUBLIC-BURN) Tj ET q /Z gs 0 g 300 400 100 50 re f Q')));
+    const burn = path.join(dir, 'burn.pdf');
+    await fsp.writeFile(burn, await d.save());
+    r = await runTool('redact', [burn], { marks: [{ page: 0, x: 0.05, y: 0.05, w: 0.9, h: 0.1 }] });
+    const out0 = r.ok ? darkAt(r.display[0], 1, dir, [[300, 400, 100, 150], [300, 400, 400, 450]]) : null;
+    check('  on the redacted page, what a viewer hides is not burned into its picture', out0 && out0.every((x) => x < 0.01), r.error || JSON.stringify(out0));
+    const out1 = r.ok ? darkAt(r.display[0], 2, dir, [[300, 400, 400, 450]]) : null;
+    check('  a rule that is also a graphics state keeps what it paints invisible', out1 && out1[0] < 0.01, r.error || JSON.stringify(out1));
+  }
+  {
+    // A file made so that working out its rules is slow: 20,000 layers, 3,000 rules sharing
+    // one expression over all of them that ends in a malformed part, and 3,000 sharing one
+    // list of all of them. Redaction must still finish in moments.
+    const { StandardFonts } = require('pdf-lib');
+    const d = await PDFDocument.create();
+    const f = await d.embedFont(StandardFonts.Helvetica);
+    const ctx = d.context;
+    const p0 = d.addPage([595, 842]);
+    const p1 = d.addPage([595, 842]);
+    p0.drawText('SECRET-SLOW', { x: 50, y: 700, size: 14, font: f });
+    const many = Array.from({ length: 20000 }, () => ctx.register(ctx.obj({ Type: 'OCG' })));
+    d.catalog.set(PDFName.of('OCProperties'), ctx.obj({ OCGs: many, D: { OFF: many } }));
+    const longVe = ctx.register(ctx.obj([PDFName.of('Or'), ...many, ctx.obj([PDFName.of('Xor')])]));
+    const longList = ctx.register(ctx.obj(many));
+    const props = { };
+    for (let i = 0; i < 3000; i++) {
+      props[`V${i}`] = ctx.register(ctx.obj({ Type: 'OCMD', VE: longVe }));
+      props[`L${i}`] = ctx.register(ctx.obj({ Type: 'OCMD', OCGs: longList, P: 'AllOff' }));
+    }
+    // An ordinary rule after all of those, which must still be worked out, not given up on.
+    const lateOn = ctx.register(ctx.obj({ Type: 'OCG' }));
+    props.Late = ctx.register(ctx.obj({ Type: 'OCMD', OCGs: lateOn }));
+    p1.node.set(PDFName.of('Resources'), ctx.obj({ Font: { F1: f.ref }, Properties: props }));
+    p1.node.set(PDFName.of('Contents'), ctx.register(ctx.stream('/OC /V0 BDC BT /F1 12 Tf 50 700 Td (SLOWVEHIDDEN) Tj ET EMC /OC /L0 BDC BT /F1 12 Tf 50 650 Td (SLOW-ALLOFF-SHOWN) Tj ET EMC /OC /Late BDC BT /F1 12 Tf 50 600 Td (SLOW-LATE-SHOWN) Tj ET EMC')));
+    const slow = path.join(dir, 'slow.pdf');
+    await fsp.writeFile(slow, await d.save());
+    const started = Date.now();
+    r = await runTool('redact', [slow], { marks: [{ page: 0, x: 0.05, y: 0.05, w: 0.9, h: 0.9 }] });
+    const took = Date.now() - started;
+    const raw = r.ok ? expanded(r.display[0], dir) : '';
+    check('  a file made to be slow to work out is still redacted in moments, and judged right',
+      r.ok && took < 15000 && !raw.includes('SLOWVEHIDDEN') && raw.includes('SLOW-ALLOFF-SHOWN') && raw.includes('SLOW-LATE-SHOWN'), r.error || `${took} ms`);
   }
 
   /* ---- PDF to Excel ---- */
