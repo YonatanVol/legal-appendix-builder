@@ -298,7 +298,32 @@ async function fidelityPdf(file) {
   const veForm = form('BT /F1 12 Tf 50 560 Td (VEHIDDEN-FORM) Tj ET', { OC: notShown });
   const inPattern = form('BT /F1 12 Tf 2 2 Td (PATTERNHIDDEN) Tj ET', { OC: offLayer });
   const pattern = ctx.register(ctx.stream('/Hf Do', { Type: 'Pattern', PatternType: 1, PaintType: 1, TilingType: 1, BBox: [0, 0, 200, 40], XStep: 200, YStep: 40, Resources: { XObject: { Hf: inPattern } } }));
-  const resources = ctx.register(ctx.obj({ Font: { F1: f.ref }, Properties: { Ve: notShown, Vs: andShown, St: strayOff }, XObject: { Vf: veForm }, Pattern: { P1: pattern } }));
+  // A rule whose expression contains itself, four times over: worked out once, and hidden.
+  const loop = ctx.register(ctx.obj([]));
+  const loopArray = ctx.lookup(loop);
+  for (const x of [PDFName.of('Or'), loop, loop, loop, loop]) loopArray.push(x);
+  const cyclic = ctx.register(ctx.obj({ Type: 'OCMD', VE: loop }));
+  const malformed = ctx.register(ctx.obj({ Type: 'OCMD', VE: [PDFName.of('Xor'), shownLayer] }));
+  const tooShort = ctx.register(ctx.obj({ Type: 'OCMD', VE: [PDFName.of('And')] }));
+  const singleOff = ctx.register(ctx.obj({ Type: 'OCMD', OCGs: offLayer }));
+  const singleOn = ctx.register(ctx.obj({ Type: 'OCMD', OCGs: shownLayer }));
+  // A Type3 font whose letter draws hidden marked content and a hidden drawing.
+  const t3form = form('BT /F1 12 Tf 0 30 Td (TYPETHREEFORMHIDDEN) Tj ET', { OC: offLayer });
+  const glyph = ctx.register(ctx.stream('1000 0 d0 /OC /H BDC BT /F1 12 Tf 0 0 Td (TYPETHREEMCHIDDEN) Tj ET EMC /Xh Do'));
+  const type3 = ctx.register(ctx.obj({
+    Type: 'Font', Subtype: 'Type3', FontBBox: [0, 0, 1000, 1000], FontMatrix: [0.001, 0, 0, 0.001, 0, 0],
+    CharProcs: { a: glyph }, Encoding: { Type: 'Encoding', Differences: [97, PDFName.of('a')] }, FirstChar: 97, LastChar: 97, Widths: [1000],
+    Resources: { Font: { F1: f.ref }, Properties: { H: offLayer }, XObject: { Xh: t3form } },
+  }));
+  // A soft mask whose group draws a drawing on a hidden layer.
+  const inMask = form('BT /F1 12 Tf 50 200 Td (SMASKHIDDEN) Tj ET', { OC: offLayer });
+  const maskGroup = form('/Hm Do', { Group: { S: 'Transparency', CS: 'DeviceGray' }, Resources: { XObject: { Hm: inMask } } });
+  const resources = ctx.register(ctx.obj({
+    Font: { F1: f.ref, T3: type3 },
+    Properties: { Ve: notShown, Vs: andShown, St: strayOff, Cy: cyclic, Mf: malformed, Ms: tooShort, So: singleOff, Sn: singleOn },
+    XObject: { Vf: veForm }, Pattern: { P1: pattern },
+    ExtGState: { M1: { Type: 'ExtGState', SMask: { Type: 'Mask', S: 'Luminosity', G: maskGroup } } },
+  }));
   const body = ctx.register(ctx.stream([
     'BT /F1 14 Tf 50 790 Td (PUBLIC-FIDELITY) Tj ET',
     '/OC /Ve BDC BT /F1 12 Tf 50 600 Td (VEHIDDEN-MARKED) Tj ET EMC',
@@ -306,6 +331,13 @@ async function fidelityPdf(file) {
     '/OC /St BDC BT /F1 12 Tf 50 580 Td (UNLISTEDHIDDEN) Tj ET EMC',
     '/Vf Do',
     '/Pattern cs /P1 scn 50 300 200 40 re f',
+    '/OC /Cy BDC BT /F1 12 Tf 50 540 Td (CYCLICHIDDEN) Tj ET EMC',
+    '/OC /Mf BDC BT /F1 12 Tf 50 520 Td (MALFORMEDHIDDEN) Tj ET EMC',
+    '/OC /Ms BDC BT /F1 12 Tf 50 510 Td (SHORTVEHIDDEN) Tj ET EMC',
+    '/OC /So BDC BT /F1 12 Tf 50 500 Td (SINGLEREFHIDDEN) Tj ET EMC',
+    '/OC /Sn BDC BT /F1 12 Tf 50 480 Td (SINGLEREF-SHOWN) Tj ET EMC',
+    'BT /T3 12 Tf 50 250 Td (a) Tj ET',
+    'q /M1 gs 0 0 1 rg 40 190 300 40 re f Q',
   ].join('\n')));
   const shared = ctx.register(ctx.obj([body]));
   for (const p of [p1, p2]) {
@@ -318,6 +350,8 @@ async function fidelityPdf(file) {
     annot({ Subtype: 'FreeText', IT: 'FreeTextTypeWriter', Rect: [50, 400, 250, 430], DA: PDFString.of('/Helv 10 Tf 0 g'), Contents: PDFString.of('TYPED-ON-PAGE'), AP: { N: look('TYPED-ON-PAGE') } }),
     annot({ Subtype: 'Ink', Rect: [300, 400, 400, 450], InkList: [[300, 400, 400, 450]], AP: { N: look('INK-MARK') } }),
     annot({ Subtype: 'Stamp', Rect: [300, 200, 400, 250], AP: { N: look('STAMPONLYONE') } }),
+    // Typed text with no drawing of its own.
+    annot({ Subtype: 'FreeText', IT: 'FreeTextTypeWriter', Rect: [50, 100, 250, 130], DA: PDFString.of('/Helv 10 Tf 0 g'), Contents: PDFString.of('TYPEDNOAP') }),
   ]));
   await fsp.writeFile(file, await d.save());
   return file;
@@ -583,17 +617,49 @@ app.whenReady().then(async () => {
     const two = r.ok ? (await linesOf(r.display[0], 2)).join(' ') : '';
     const three = r.ok ? (await linesOf(r.display[0], 3)).join(' ') : '';
     const mode = clean ? 'removing' : 'keeping';
-    const shownHidden = ['VEHIDDEN-MARKED', 'VEHIDDEN-FORM', 'UNLISTEDHIDDEN', 'PATTERNHIDDEN', 'SECRET-FIDELITY-P0'].filter((x) => raw.includes(x));
-    check(`  ${mode} comments: content hidden by a visibility rule, an unlisted hidden layer or inside a pattern stays out`,
-      r.ok && shownHidden.length === 0 && two.includes('PUBLIC-FIDELITY') && two.includes('VE-SHOWN'), r.error || `in the file: ${shownHidden.join(', ')}; page 2: ${two}`);
+    const shownHidden = ['VEHIDDEN-MARKED', 'VEHIDDEN-FORM', 'UNLISTEDHIDDEN', 'PATTERNHIDDEN', 'CYCLICHIDDEN', 'MALFORMEDHIDDEN', 'SHORTVEHIDDEN',
+      'SINGLEREFHIDDEN', 'TYPETHREEMCHIDDEN', 'TYPETHREEFORMHIDDEN', 'SMASKHIDDEN', 'SECRET-FIDELITY-P0'].filter((x) => raw.includes(x));
+    check(`  ${mode} comments: what a viewer hides stays out (visibility rules, malformed or self-containing ones too, a layer only in the hidden list, patterns, Type3 letters, soft masks)`,
+      r.ok && shownHidden.length === 0 && ['PUBLIC-FIDELITY', 'VE-SHOWN', 'SINGLEREF-SHOWN'].every((x) => two.includes(x)), r.error || `in the file: ${shownHidden.join(', ')}; page 2: ${two}`);
     check('    text typed onto the page stays on it', two.includes('TYPED-ON-PAGE'), two);
     check('    a stamp on a page sharing its contents with another is not drawn on that other page', two.includes('STAMPONLYONE') && !three.includes('STAMPONLYONE'), three);
     if (clean) {
-      check('    a handwritten mark goes with the comments, and the summary says how to keep it',
-        !two.includes('INK-MARK') && /סימון אחד בכתב יד/.test(r.summary || ''), r.summary);
+      check('    handwriting, and typed text with no drawing, go with the comments, and the summary names both and how to keep them',
+        !two.includes('INK-MARK') && !raw.includes('TYPEDNOAP') && /כתב יד וגם טקסט שהוקלד על העמוד\. כדי לשמור אותם/.test(r.summary || ''), r.summary);
     } else {
-      check('    a handwritten mark stays a comment', !two.includes('INK-MARK') && /Ink/.test(raw), two);
+      check('    a handwritten mark, and typed text with no drawing, stay comments', !two.includes('INK-MARK') && /Ink/.test(raw) && raw.includes('TYPEDNOAP'), two);
     }
+  }
+
+  {
+    // Every layer starts hidden but the ones listed as shown.
+    const { StandardFonts, PDFString } = require('pdf-lib');
+    const d = await PDFDocument.create();
+    const f = await d.embedFont(StandardFonts.Helvetica);
+    const ctx = d.context;
+    const p0 = d.addPage([595, 842]);
+    const p1 = d.addPage([595, 842]);
+    p0.drawText('SECRET-BASE-P0', { x: 50, y: 700, size: 14, font: f });
+    const listedOn = ctx.register(ctx.obj({ Type: 'OCG', Name: PDFString.of('on') }));
+    const other = ctx.register(ctx.obj({ Type: 'OCG', Name: PDFString.of('other') }));
+    d.catalog.set(PDFName.of('OCProperties'), ctx.obj({ OCGs: [listedOn, other], D: { BaseState: 'OFF', ON: [listedOn] } }));
+    p1.node.set(PDFName.of('Resources'), ctx.obj({ Font: { F1: f.ref }, Properties: { On: listedOn, Ot: other } }));
+    p1.node.set(PDFName.of('Contents'), ctx.register(ctx.stream('/OC /On BDC BT /F1 12 Tf 50 700 Td (BASEON-SHOWN) Tj ET EMC /OC /Ot BDC BT /F1 12 Tf 50 650 Td (BASEOFF-HIDDEN) Tj ET EMC')));
+    // A stamp whose drawing holds hidden content: marked, and a drawing placed whole under
+    // a visibility expression. On a page with resources of its own, so only the walk
+    // through the stamp's drawing keeps these out.
+    const both = ctx.register(ctx.obj({ Type: 'OCMD', VE: [PDFName.of('And'), listedOn, other] }));
+    const inner = ctx.register(ctx.stream('BT /F1 10 Tf 105 110 Td (APHIDDENFORM) Tj ET', { Type: 'XObject', Subtype: 'Form', BBox: [0, 0, 595, 842], OC: both, Resources: { Font: { F1: f.ref } } }));
+    const stampLook = ctx.register(ctx.stream('/OC /Ha BDC BT /F1 10 Tf 105 120 Td (APHIDDENMC) Tj ET EMC /Hx Do BT /F1 10 Tf 105 140 Td (APSHOWN) Tj ET', {
+      Type: 'XObject', Subtype: 'Form', BBox: [100, 100, 200, 150], Resources: { Font: { F1: f.ref }, Properties: { Ha: other }, XObject: { Hx: inner } },
+    }));
+    p1.node.set(PDFName.of('Annots'), ctx.obj([ctx.register(ctx.obj({ Type: 'Annot', Subtype: 'Stamp', Rect: [300, 100, 400, 150], AP: { N: stampLook } }))]));
+    const base = path.join(dir, 'base-off.pdf');
+    await fsp.writeFile(base, await d.save());
+    r = await runTool('redact', [base], { marks: [{ page: 0, x: 0.05, y: 0.05, w: 0.9, h: 0.9 }] });
+    const raw = r.ok ? expanded(r.display[0], dir) : '';
+    check('  where layers start hidden, a listed one shows and another stays hidden', r.ok && raw.includes('BASEON-SHOWN') && !raw.includes('BASEOFF-HIDDEN'), r.error);
+    check('  a stamp is drawn into the page without what its drawing hides', r.ok && raw.includes('APSHOWN') && !raw.includes('APHIDDENMC') && !raw.includes('APHIDDENFORM'), r.error);
   }
 
   /* ---- PDF to Excel ---- */

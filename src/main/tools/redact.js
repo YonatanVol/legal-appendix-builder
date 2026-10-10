@@ -3,7 +3,7 @@
 const fs = require('fs/promises');
 const path = require('path');
 const {
-  PDFDocument, PDFPage, PDFName, PDFDict, PDFArray, PDFStream, PDFNumber, PDFRef, PDFString, PDFObjectCopier,
+  PDFDocument, PDFPage, PDFName, PDFDict, PDFArray, PDFStream, PDFNumber, PDFRef, PDFString, PDFHexString, PDFObjectCopier,
   pushGraphicsState, popGraphicsState, concatTransformationMatrix, drawObject,
 } = require('pdf-lib');
 
@@ -94,14 +94,14 @@ async function run({ inputs, options = {}, ctx }) {
   // carry hidden text are left behind: a link's destination would pull a redacted page
   // across with it.
   const layers = settleLayers(doc);
-  const removed = { comments: 0, handwriting: 0 };
+  const removed = { handwriting: 0, typed: 0 };
   for (let i = 0; i < total; i++) {
     if (blacked.has(i)) continue;
     const page = doc.getPage(i);
     if (layers) settleLayersOn(page, layers);
     const r = strip(page, options.clean !== false, layers);
-    removed.comments += r.comments;
     removed.handwriting += r.handwriting;
+    removed.typed += r.typed;
   }
   await doc.flush();
   const copier = PDFObjectCopier.for(doc.context, out.context);
@@ -166,9 +166,16 @@ async function run({ inputs, options = {}, ctx }) {
   const what = pages.length === 1 ? 'עמוד אחד הושחר' : `${pages.length} עמודים הושחרו`;
   const how = options.ocr ? '' : ' העמודים המושחרים הפכו לתמונה, ולכן אי אפשר לחפש בהם טקסט.';
   return {
-    summary: `${what}. ${marks.length === 1 ? 'האזור המסומן נמחק' : `${marks.length} האזורים המסומנים נמחקו`} מהקובץ עצמו, לא רק הוסתרו.${how}${searchable}${options.clean !== false ? ` גם פרטי המסמך, ההערות והקבצים המצורפים הוסרו.${removed.handwriting ? ` בין ההערות שהוסרו יש גם ${removed.handwriting === 1 ? 'סימון אחד בכתב יד' : `${removed.handwriting} סימונים בכתב יד`}. כדי לשמור אותם, אפשר להשחיר שוב בלי "הסרת פרטי המסמך, הערות וקבצים מצורפים".` : ''}` : attached ? ' הקבצים המצורפים לא הועתקו, כי אחד מהם יכול להיות המסמך המקורי לפני ההשחרה.' : ''}`,
+    summary: `${what}. ${marks.length === 1 ? 'האזור המסומן נמחק מהקובץ עצמו, לא רק הוסתר.' : `${marks.length} האזורים המסומנים נמחקו מהקובץ עצמו, לא רק הוסתרו.`}${how}${searchable}${options.clean !== false ? ` גם פרטי המסמך, ההערות והקבצים המצורפים הוסרו.${notedRemovals(removed)}` : attached ? ' הקבצים המצורפים לא הועתקו, כי אחד מהם יכול להיות המסמך המקורי לפני ההשחרה.' : ''}`,
     display: [outputPath],
   };
+}
+
+/** What a person would not think of as a comment, among the comments removed. */
+function notedRemovals({ handwriting, typed }) {
+  const kinds = [handwriting && 'כתב יד', typed && 'טקסט שהוקלד על העמוד'].filter(Boolean);
+  if (!kinds.length) return '';
+  return ` בין ההערות שהוסרו יש גם ${kinds.join(' וגם ')}. כדי לשמור ${kinds.length === 1 ? 'אותו' : 'אותם'}, אפשר להשחיר שוב בלי "הסרת פרטי המסמך, הערות וקבצים מצורפים".`;
 }
 
 function valid(m) {
@@ -208,14 +215,18 @@ function strip(page, clean, layers = null) {
   if (contents instanceof PDFRef && list instanceof PDFArray) node.set(PDFName.of('Contents'), ctxt.obj(list.asArray()));
   const annots = node.lookup(PDFName.of('Annots'));
   const keep = [];
-  const removed = { comments: 0, handwriting: 0 };
+  const removed = { handwriting: 0, typed: 0 };
   if (annots instanceof PDFArray) {
     for (const ref of annots.asArray()) {
       const a = ctxt.lookup(ref);
       if (!(a instanceof PDFDict)) continue;
       const sub = String(a.get(PDFName.of('Subtype')) || '');
       if (NEVER.has(sub)) continue;
-      const typed = sub === '/FreeText' && String(a.get(PDFName.of('IT'))) === '/FreeTextTypeWriter';
+      // Text typed onto the page, with a drawing of it to put there; without one it is
+      // treated as any comment.
+      const look = a.lookup(PDFName.of('AP'));
+      const typed = sub === '/FreeText' && String(a.get(PDFName.of('IT'))) === '/FreeTextTypeWriter' &&
+        look instanceof PDFDict && !!look.get(PDFName.of('N'));
       if (!clean && REDRAWN.has(sub) && !typed) {
         const copy = ctxt.obj({});
         for (const key of KEPT_KEYS) {
@@ -229,8 +240,8 @@ function strip(page, clean, layers = null) {
         flatten(page, a, layers);
       } else {
         // A comment goes with the others when they are removed.
-        removed.comments++;
         if (sub === '/Ink') removed.handwriting++;
+        if (sub === '/FreeText' && String(a.get(PDFName.of('IT'))) === '/FreeTextTypeWriter') removed.typed++;
       }
     }
   }
@@ -326,17 +337,22 @@ function settleLayers(doc) {
 
   const layerShown = (ref) => !hiddenLayers.has(String(ref));
   // A visibility expression: [/And|/Or|/Not operand...], each operand a layer or another
-  // expression. Anything malformed in it hides, never shows.
-  const expression = (ve, depth = 0) => {
+  // expression. Anything malformed in it hides, never shows; so does an expression that
+  // contains itself. Each expression is worked out once, so no file can make this slow.
+  const known = new Map();
+  const expression = (ve) => {
     const v = ctxt.lookup(ve);
     if (isLayer(v)) return layerShown(ve);
-    if (!(v instanceof PDFArray) || depth > 20 || v.size() < 2) return false;
+    if (!(v instanceof PDFArray) || v.size() < 2) return false;
+    if (known.has(v)) return known.get(v);
+    known.set(v, false);
     const [op, ...rest] = v.asArray();
-    const values = rest.map((x) => expression(x, depth + 1));
-    if (String(op) === '/And') return values.every(Boolean);
-    if (String(op) === '/Or') return values.some(Boolean);
-    if (String(op) === '/Not') return values.length === 1 && !values[0];
-    return false;
+    let result = false;
+    if (String(op) === '/And') result = rest.every((x) => expression(x));
+    else if (String(op) === '/Or') result = rest.some((x) => expression(x));
+    else if (String(op) === '/Not') result = rest.length === 1 && !expression(rest[0]);
+    known.set(v, result);
+    return result;
   };
   const visible = (oc) => {
     if (!oc) return true;
@@ -361,14 +377,17 @@ function settleLayers(doc) {
     const layer = ctxt.lookup(ref);
     for (const key of layer.keys()) layer.delete(key);
     layer.set(PDFName.of('Type'), PDFName.of('OCG'));
-    layer.set(PDFName.of('Name'), PDFString.of(`Layer ${k + 1}`));
+    layer.set(PDFName.of('Name'), PDFHexString.fromText(`שכבה ${k + 1}`));
   });
-  const shown = ctxt.register(ctxt.obj({ Type: 'OCG', Name: PDFString.of('Shown') }));
-  const hidden = ctxt.register(ctxt.obj({ Type: 'OCG', Name: PDFString.of('Hidden') }));
+  const shown = ctxt.register(ctxt.obj({ Type: 'OCG', Name: PDFHexString.fromText('מוצג') }));
+  const hidden = ctxt.register(ctxt.obj({ Type: 'OCG', Name: PDFHexString.fromText('מוסתר') }));
   // Pages can share resources, so a set already settled may be met again: the plain hidden
   // layer must then read as hidden.
   hiddenLayers.add(String(hidden));
-  const list = ctxt.obj({ OCGs: [shown, hidden], D: { Order: [shown, hidden], OFF: [hidden] } });
+  // The original layers are listed too, bare, each in its worked-out state: a reference
+  // to one that the walk below does not reach is then still judged as before.
+  const all = [shown, hidden, ...refs];
+  const list = ctxt.obj({ OCGs: all, D: { Order: all, OFF: all.filter((r) => hiddenLayers.has(String(r))) } });
   return { list, visible, shown, hidden };
 }
 
@@ -407,6 +426,14 @@ function settleIn(ctxt, resources, layers, seen = new Set()) {
       } else if (String(x.dict.get(PDFName.of('Subtype'))) === '/Form') {
         into(x);
       }
+    }
+  }
+  // A Type3 font draws its letters with resources of its own.
+  const fonts = resources.lookup(PDFName.of('Font'));
+  if (fonts instanceof PDFDict) {
+    for (const [, ref] of fonts.entries()) {
+      const font = ctxt.lookup(ref);
+      if (font instanceof PDFDict) settleIn(ctxt, font.lookup(PDFName.of('Resources')), layers, seen);
     }
   }
   const patterns = resources.lookup(PDFName.of('Pattern'));
