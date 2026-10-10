@@ -7,7 +7,7 @@
   "scripts": {
     "start": "electron .",
     "split-reference": "node test/split-reference.js",
-    "test": "npm run test:config && npm run test:verdicts && npm run test:build && npm run test:verify && npm run test:edge && npm run test:ui && npm run test:shell && npm run test:page-tools && npm run test:page-panels && npm run test:engine-tools && npm run test:recognition && npm run test:editing && npm run test:history && npm run test:history-ui && npm run test:updater-ui && npm run test:security && npm run test:selftest-failure && npm run test:selftest",
+    "test": "npm run test:config && npm run test:verdicts && npm run test:build && npm run test:verify && npm run test:edge && npm run test:ui && npm run test:shell && npm run test:page-tools && npm run test:page-panels && npm run test:engine-tools && npm run test:recognition && npm run test:editing && npm run test:office && npm run test:history && npm run test:history-ui && npm run test:updater-ui && npm run test:security && npm run test:selftest-failure && npm run test:selftest",
     "test:build": "electron test/build-headless.js",
     "test:verify": "node test/verify.js",
     "test:edge": "electron test/edge-cases.js",
@@ -26,7 +26,8 @@
     "test:page-panels": "electron test/page-panels.js",
     "test:engine-tools": "electron test/engine-tools.js",
     "test:recognition": "electron test/recognition.js",
-    "test:editing": "electron test/editing.js"
+    "test:editing": "electron test/editing.js",
+    "test:office": "electron test/office.js"
   },
   "dependencies": {
     "@pdf-lib/fontkit": "1.1.1",

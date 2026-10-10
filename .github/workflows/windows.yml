@@ -64,6 +64,10 @@ jobs:
           node test/config.js
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           node test/selftest-verdicts.js
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          # The Office and scanner scripts cannot run here (no Office, no scanner), so
+          # at least Windows' own PowerShell parses each of them.
+          node scripts/check-powershell.js
 
       # qpdf and Ghostscript ship beside the app. The script refuses a download whose
       # checksum differs from the one pinned in it.

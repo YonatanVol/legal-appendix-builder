@@ -512,6 +512,17 @@ function openSignatureMaker(onSave) {
   return dlg;
 }
 
+/** Word, PowerPoint and Excel to PDF all look alike: what happens, and with what. */
+function officePanel(program, how) {
+  return {
+    defaults: () => ({}),
+    render(container) {
+      ui.section(container, 'איך זה עובד', `${how} אם ${program} לא מותקן במחשב, ההמרה נעשית ב-LibreOffice. הקובץ לא יוצא מהמחשב.`);
+    },
+    blocked: () => null,
+  };
+}
+
 /* ---------------- the panels ---------------- */
 
 const panels = {
@@ -2116,6 +2127,18 @@ const panels = {
       return null;
     },
     onEscape: () => (mem.editor ? mem.editor.escape() : false),
+  },
+
+  'word-to-pdf': officePanel('Word', 'המסמך נפתח ב-Word שמותקן במחשב ונשמר כ-PDF, בדיוק כמו "שמירה בשם" ב-Word עצמו.'),
+  'ppt-to-pdf': officePanel('PowerPoint', 'המצגת נפתחת ב-PowerPoint שמותקן במחשב ונשמרת כ-PDF, שקופית בכל עמוד.'),
+  'excel-to-pdf': officePanel('Excel', 'הגיליון נפתח ב-Excel שמותקן במחשב ונשמר כ-PDF כפי שהוא מודפס, כל הגיליונות בקובץ.'),
+  'pdf-to-word': {
+    defaults: () => ({}),
+    render(container) {
+      ui.section(container, 'איך זה עובד',
+        'Word פותח את ה-PDF ובונה ממנו מסמך שאפשר לערוך: פסקאות, טבלאות וכיוון הכתיבה. קובץ סרוק עובר קודם זיהוי טקסט, והמסמך נבנה מהטקסט שזוהה בעיצוב פשוט.');
+    },
+    blocked: () => null,
   },
 
   repair: {

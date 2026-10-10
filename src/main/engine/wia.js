@@ -162,4 +162,4 @@ async function acquire({ dpi = 300, mode = 'gray', onPage, signal } = {}) {
   });
 }
 
-module.exports = { acquire, available, SCANS_ROOT, MESSAGES };
+module.exports = { acquire, available, SCANS_ROOT, MESSAGES, SCRIPT };
