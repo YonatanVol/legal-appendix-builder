@@ -44,6 +44,18 @@ const rotations = async (file) => (await PDFDocument.load(await fsp.readFile(fil
 app.disableHardwareAcceleration();
 app.on('window-all-closed', () => {});
 
+async function oddPdf(file) {
+  // Three pages, the middle one not saying it is a page (no /Type): pdf.js counts three,
+  // pdf-lib two.
+  const { PDFName } = require('pdf-lib');
+  const d = await PDFDocument.create();
+  const f = await d.embedFont(StandardFonts.Helvetica);
+  for (const w of ['PAGE ONE', 'PAGE TWO', 'PAGE THREE']) d.addPage([595, 842]).drawText(w, { x: 60, y: 700, size: 18, font: f });
+  d.getPage(1).node.delete(PDFName.of('Type'));
+  await fsp.writeFile(file, await d.save());
+  return file;
+}
+
 app.whenReady().then(async () => {
   const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'page-panels-'));
   runs.setStoreFile(path.join(dir, 'runs.json'));
@@ -278,6 +290,16 @@ app.whenReady().then(async () => {
   check('repair writes a repaired copy and says what it found', !res.error && /לא נמצא פגם/.test(await text$('#tool-result-title')), res.error || await text$('#tool-result-title'));
 
   console.log('\nthe page');
+  /* ---- a file whose pages programs count differently ---- */
+  console.log('\nunusual page count');
+  const odd = await oddPdf(path.join(dir, 'עמוד בלי סוג.pdf'));
+  await open('organize', [odd]);
+  await until(`/תיקון PDF/.test(document.getElementById('tool-blocked').textContent)`, 15000);
+  check('a file whose pages the thumbnails and the tools count differently is held back, pointing to Repair',
+    (await disabled('#tool-run')) && /סופרות אחרת/.test(await text$('#tool-blocked')), await text$('#tool-blocked'));
+  await open('repair', [odd]);
+  await until(`document.getElementById('tool-blocked').textContent === ''`, 15000);
+  check('  while Repair takes it', !(await disabled('#tool-run')), await text$('#tool-blocked'));
   check('no errors in the page console', win.consoleErrors.length === 0, win.consoleErrors.slice(0, 3).join(' / '));
 
   await fsp.rm(dir, { recursive: true, force: true });

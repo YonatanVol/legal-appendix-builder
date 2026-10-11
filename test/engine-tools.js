@@ -41,6 +41,18 @@ const qpdf = (...args) => {
   }
 };
 
+async function oddPdf(file) {
+  // Three pages, the middle one not saying it is a page (no /Type): pdf.js counts three,
+  // pdf-lib two.
+  const { PDFName } = require('pdf-lib');
+  const d = await PDFDocument.create();
+  const f = await d.embedFont(StandardFonts.Helvetica);
+  for (const w of ['PAGE ONE', 'PAGE TWO', 'PAGE THREE']) d.addPage([595, 842]).drawText(w, { x: 60, y: 700, size: 18, font: f });
+  d.getPage(1).node.delete(PDFName.of('Type'));
+  await fsp.writeFile(file, await d.save());
+  return file;
+}
+
 async function opens(file, password) {
   try {
     const doc = await text.open(file, { password });
@@ -215,6 +227,11 @@ app.whenReady().then(async () => {
   const recovered = r.ok ? await text.documentText(r.display[0]).catch(() => []) : [];
   check('a cut-off download is recovered as far as it goes: the result opens and holds the first page\'s text',
     r.ok && recovered.length >= 1 && recovered[0].includes('כתב תביעה 1'), r.error || `${recovered.length} pages: ${r.summary}`);
+  const odd = await oddPdf(path.join(dir, 'עמוד בלי סוג.pdf'));
+  r = await runTool('repair', [odd], {});
+  const fixedCount = r.ok ? (await PDFDocument.load(await fsp.readFile(r.display[0]))).getPageCount() : 0;
+  check('a page that does not say it is a page is marked as one, so every program counts all three',
+    r.ok && fixedCount === 3 && /פגום/.test(r.summary) && (await text.documentText(r.display[0]))[1].includes('PAGE TWO'), r.error || `${fixedCount}: ${r.summary}`);
   r = await runTool('pdfa', [truncated], { level: '2b' });
   check('PDF/A refuses to hand over a copy with pages missing', !r.ok && /(עובדו|פגום|נפתח)/.test(r.error), r.ok ? r.summary : r.error);
 

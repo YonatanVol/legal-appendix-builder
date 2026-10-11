@@ -1550,13 +1550,14 @@ const panels = {
       ui.note(after, 'כל עמוד בעותק הופך לתמונה של מה שמוצג כאן, ומה שהושחר נמחק באמת: אי אפשר להעתיק אותו, לחפש אותו או לשחזר אותו. שום דבר מהקובץ המקורי שאינו נראה במסך לא עובר לעותק: לא תוכן של הערות, לא שכבות מוסתרות, לא קבצים מצורפים ולא פרטי המסמך.', 'muted');
 
       if (!file || !file.token) return;
+      // Marks belong to one file: another file starts afresh.
       if (o.forToken && o.forToken !== file.token) o.marks = [];
       view.set('forToken', file.token);
-      // The pages as pdf.js counts them: the copy is drawn page by page as pdf.js counts
-      // them, which in an unusual file differs from the file's own list, so every page it
-      // will draw must be one that can be seen, searched and marked here. Until pdf.js has
-      // counted, the file's own count stands in and the job waits (see blocked below).
-      let total = Number.isInteger(o.pages) ? o.pages : file.pageCount;
+      // The pages as pdf.js counts them (counted when the file was described): the copy is
+      // drawn page by page as pdf.js counts them, so every page it will have can be seen,
+      // searched and marked here. The count goes with the job, which checks it.
+      const total = Number.isInteger(file.shownPages) ? file.shownPages : file.pageCount;
+      o.pages = total;
       let pageIndex = 0;
       let found = [];
 
@@ -1626,14 +1627,6 @@ const panels = {
         paintList();
       };
 
-      view.thumbs().then((t) => t.pageCount(file.token)).then((n) => {
-        if (!Number.isInteger(n) || n < 1) return;
-        view.set('pages', n);
-        if (n === total) return;
-        total = n;
-        if (stage && stage.isConnected) draw();
-      }).catch(() => {});
-
       function draw() {
         if (pageIndex > total - 1) pageIndex = Math.max(0, total - 1);
         holder.replaceChildren();
@@ -1676,7 +1669,7 @@ const panels = {
       function paintList() {
         const pages = new Set(o.marks.map((m) => m.page));
         summary.textContent = o.marks.length
-          ? `${o.marks.length === 1 ? 'סימון אחד' : `${o.marks.length} סימונים`} ב-${pages.size === 1 ? 'עמוד אחד' : `${pages.size} עמודים`}.`
+          ? `${o.marks.length === 1 ? 'סימון אחד' : `${o.marks.length} סימונים`} ${pages.size === 1 ? 'בעמוד אחד' : `ב-${pages.size} עמודים`}.`
           : 'עוד לא סומן דבר. גרור על העמוד, או חפש טקסט.';
         clearAll.disabled = !o.marks.length;
         marksBox.replaceChildren();
@@ -1755,7 +1748,7 @@ const panels = {
         found = hits;
         const pages = new Set(hits.map((h) => h.page));
         foundNote.textContent = hits.length
-          ? `${hits.length === 1 ? 'נמצאה תוצאה אחת' : `נמצאו ${hits.length} תוצאות`} ל${what} ב-${pages.size === 1 ? 'עמוד אחד' : `${pages.size} עמודים`}.`
+          ? `${hits.length === 1 ? 'נמצאה תוצאה אחת' : `נמצאו ${hits.length} תוצאות`} ל${what} ${pages.size === 1 ? 'בעמוד אחד' : `ב-${pages.size} עמודים`}.`
           : `לא נמצאו ${what}. בקובץ סרוק בלי טקסט, הפעל קודם זיהוי טקסט (OCR).`;
         markFound.textContent = hits.length === 1 ? 'סמן להשחרה' : `סמן את כל ${hits.length}`;
         markFound.disabled = !hits.length;
@@ -1787,8 +1780,7 @@ const panels = {
       paintList();
     },
     blocked(view) {
-      if (!(view.options.marks || []).length) return 'סמן מה להשחיר: גרור על העמוד, או חפש טקסט וסמן את התוצאות.';
-      return Number.isInteger(view.options.pages) ? null : 'טוען את העמודים…';
+      return (view.options.marks || []).length ? null : 'סמן מה להשחיר: גרור על העמוד, או חפש טקסט וסמן את התוצאות.';
     },
   },
 

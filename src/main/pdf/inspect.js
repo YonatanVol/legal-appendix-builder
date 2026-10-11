@@ -73,6 +73,25 @@ async function inspect(filePath) {
  * so the list can show the row with the problem next to it instead of refusing the
  * whole drop.
  */
+/**
+ * How many pages pdf.js, which draws every page on screen, counts. The tools count with
+ * pdf-lib; in an unusual file (a page that does not say it is one) the two differ, and a
+ * tool could then put out a page the screen never showed. The screen holds such a file
+ * back until Repair has marked its pages. Where pdf.js cannot open the file, its own
+ * pictures say so; the count then stands as pdf-lib's.
+ */
+async function shownPageCount(filePath, fallback) {
+  let reader;
+  try {
+    reader = await require('./text').open(filePath);
+    return reader.numPages;
+  } catch {
+    return fallback;
+  } finally {
+    if (reader) await reader.destroy().catch(() => {});
+  }
+}
+
 async function describe(filePath) {
   const name = path.basename(filePath);
   const ext = path.extname(filePath).replace('.', '').toLowerCase();
@@ -102,6 +121,7 @@ async function describe(filePath) {
       ext,
       size,
       pageCount,
+      shownPages: encrypted ? pageCount : await shownPageCount(filePath, pageCount),
       pageSize,
       encrypted,
       error: encrypted ? `הקובץ "${name}" מוגן בסיסמה. הסר את הסיסמה בכלי "הסרת סיסמה" ונסה שוב.` : undefined,

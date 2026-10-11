@@ -2,7 +2,7 @@
 
 const fs = require('fs/promises');
 const path = require('path');
-const { PDFDocument } = require('pdf-lib');
+const { PDFDocument, PDFName, PDFDict, PDFArray } = require('pdf-lib');
 
 const bin = require('../engine/binaries');
 const { stage, scratchPath } = require('../engine/stage');
@@ -18,6 +18,10 @@ const { strictPages } = require('../engine/verify');
  *  2. Ghostscript reads the pages and writes them again, for files whose objects are
  *     damaged rather than only their index.
  *  3. pdf-lib reads the file object by object and copies every page that survives.
+ *
+ * Last, a page in the page tree that does not say it is a page (no /Type) is marked as
+ * one: some programs count it and some skip it, so one program would show a page that
+ * another leaves out. No method above fixes that, as each keeps the tree as it was.
  *
  * The result says what happened: whether the file was damaged at all, how many pages
  * came back, and how many were lost.
@@ -68,6 +72,7 @@ async function run({ inputs, ctx }) {
       damaged = damaged || fixed.lost > 0;
     }
 
+    if (await typePages(fixed.file)) damaged = true;
     const kept = await strictPages(fixed.file);
     const lost = Math.max(0, (expected || kept) - kept);
     outputs.push(await ctx.writeOutput(await fs.readFile(fixed.file), { source: inputs[f], label: 'מתוקן', ext: 'pdf' }));
@@ -107,6 +112,40 @@ async function byPages(bytes, name, out) {
   if (!kept) throw new Error(`לא נמצא אף עמוד שאפשר לשחזר ב-"${name}".`);
   await fs.writeFile(out, await fresh.save({ useObjectStreams: true }));
   return { file: out, how: 'pdf-lib', lost: count - kept };
+}
+
+/**
+ * Marks every leaf of the page tree as a page (/Type /Page) and every inner node as a node
+ * of pages, where the mark is missing. Saves the file only if something was missing, and
+ * says whether it was.
+ */
+async function typePages(file) {
+  let doc;
+  try {
+    doc = await PDFDocument.load(await fs.readFile(file), { updateMetadata: false });
+  } catch {
+    return false;
+  }
+  const ctxt = doc.context;
+  let changed = false;
+  const seen = new Set();
+  const walk = (node) => {
+    if (!(node instanceof PDFDict) || seen.has(node)) return;
+    seen.add(node);
+    const kids = node.lookup(PDFName.of('Kids'));
+    const want = kids instanceof PDFArray ? 'Pages' : 'Page';
+    if (!node.get(PDFName.of('Type'))) {
+      node.set(PDFName.of('Type'), PDFName.of(want));
+      changed = true;
+    }
+    if (kids instanceof PDFArray) for (const ref of kids.asArray()) walk(ctxt.lookup(ref));
+  };
+  walk(doc.catalog.lookup(PDFName.of('Pages')));
+  if (!changed) return false;
+  // Read afresh, so the pages are read as pages, and written again.
+  const again = await PDFDocument.load(await doc.save({ useObjectStreams: true }), { updateMetadata: false });
+  await fs.writeFile(file, await again.save({ useObjectStreams: true }));
+  return true;
 }
 
 /** True if any page draws something: text, an image, a line. */
