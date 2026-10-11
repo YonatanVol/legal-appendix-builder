@@ -18,7 +18,7 @@ const docs = require('../docs');
 const URL = 'app://office/page-picture.html';
 // A page pdf.js has not drawn in this long is given up on: a file can be made so that
 // drawing it never ends.
-const PAGE_LIMIT_MS = 120000;
+let pageLimitMs = 120000;
 
 let win = null;
 let opening = null;
@@ -53,7 +53,7 @@ async function page() {
  * Runs code in the window, stopping at once when `signal` aborts or the time is up: the
  * window is then closed, which is the only way to stop pdf.js mid-page.
  */
-function call(code, { signal, limit = PAGE_LIMIT_MS } = {}) {
+function call(code, { signal, limit = pageLimitMs } = {}) {
   return page().then((w) => new Promise((resolve, reject) => {
     let done = false;
     const finish = (fn, value) => {
@@ -61,10 +61,7 @@ function call(code, { signal, limit = PAGE_LIMIT_MS } = {}) {
       done = true;
       clearTimeout(timer);
       if (signal) signal.removeEventListener('abort', onAbort);
-      if (!w.isDestroyed()) {
-        w.webContents.removeListener('render-process-gone', onGone);
-        w.webContents.removeListener('destroyed', onGone);
-      }
+      if (!w.isDestroyed()) w.webContents.removeListener('destroyed', onGone);
       fn(value);
     };
     const onAbort = () => {
@@ -76,8 +73,8 @@ function call(code, { signal, limit = PAGE_LIMIT_MS } = {}) {
       finish(reject, Object.assign(new Error('drawing the page took too long'), { timedOut: true }));
     }, limit);
     // A window that is gone never answers: say so at once rather than at the time limit.
+    // (A page that dies takes the window with it; see page().)
     const onGone = () => finish(reject, new Error('the drawing window was lost'));
-    w.webContents.once('render-process-gone', onGone);
     w.webContents.once('destroyed', onGone);
     if (signal) {
       if (signal.aborted) return onAbort();
@@ -105,10 +102,23 @@ function open(file, { signal } = {}) {
       const r = await call(`window.drawPage(${t}, ${Number(index)}, ${Number(dpi)})`, { signal });
       return { png: Buffer.from(r.png, 'base64'), width: r.width, height: r.height };
     },
+    /**
+     * How different page `index` of `other` (another view) looks from page `index` of
+     * this one, 0 to 255 (see comparePages in page-picture.mjs).
+     */
+    compare(index, other, { boxes = [], masks = [], pictured = false } = {}) {
+      return call(`window.comparePages(${t}, ${Number(index)}, ${JSON.stringify(other.token)}, ${Number(index)}, ${JSON.stringify({ boxes, masks, pictured })})`, { signal });
+    },
+    token,
     async release() {
       if (win && !win.isDestroyed()) await win.webContents.executeJavaScript(`window.release(${t})`, true).catch(() => {});
     },
   };
+}
+
+/** For tests: a shorter time limit per page. */
+function setPageLimitForTest(ms) {
+  pageLimitMs = ms;
 }
 
 /** For tests: whether the window is open, and the window itself. */
@@ -121,4 +131,4 @@ function dispose() {
   win = null;
 }
 
-module.exports = { open, dispose, windowForTest };
+module.exports = { open, dispose, windowForTest, setPageLimitForTest };
