@@ -14,7 +14,7 @@ const os = require('os');
 const path = require('path');
 const { execFileSync } = require('child_process');
 const { app, nativeImage } = require('electron');
-const { PDFDocument, StandardFonts, rgb, PDFName, PDFRef } = require('pdf-lib');
+const { PDFDocument, StandardFonts, rgb, PDFName, PDFRef, PDFString, PDFDict } = require('pdf-lib');
 const { openWindow } = require('./helpers/window');
 
 const jobs = require('../src/main/jobs');
@@ -40,6 +40,97 @@ const qpdf = (...args) => {
     return { code: err.status, out: `${err.stdout || ''}${err.stderr || ''}` };
   }
 };
+
+/** Page two listed twice, carrying a filled text field and a link; `merged` writes the
+ *  field and its box as one object, as many real forms do. */
+function listedTwiceWithForm(d, merged) {
+  const form = d.getForm();
+  const field = form.createTextField('name');
+  field.setText('FIELDVAL');
+  field.addToPage(d.getPage(1), { x: 60, y: 500, width: 200, height: 30 });
+  if (merged) {
+    const fieldRef = field.ref;
+    const fieldDict = d.context.lookup(fieldRef);
+    const boxRef = fieldDict.lookup(PDFName.of('Kids')).get(0);
+    const box = d.context.lookup(boxRef);
+    for (const [k, v] of fieldDict.entries()) if (!['Kids', 'Parent'].includes(k.asString().slice(1))) box.set(k, v);
+    box.delete(PDFName.of('Parent'));
+    const acro = d.catalog.lookup(PDFName.of('AcroForm'));
+    const fields = acro.lookup(PDFName.of('Fields'));
+    fields.set(fields.asArray().findIndex((e) => String(e) === String(fieldRef)), boxRef);
+    d.context.delete(fieldRef);
+    // Named elsewhere by its object (the order of calculations), with a field action (on a
+    // key press) and a box action (on focus).
+    acro.set(PDFName.of('CO'), d.context.obj([boxRef]));
+    const js = (code) => d.context.obj({ S: 'JavaScript', JS: d.context.obj(code) });
+    box.set(PDFName.of('AA'), d.context.obj({ K: js('1'), Fo: js('2') }));
+    box.set(PDFName.of('TU'), PDFString.of('Tooltip text'));
+    // Tagged for accessibility: a tag names the box by its object.
+    const pageRef = d.getPage(1).ref;
+    // The tag sits at the bottom of a chain ten thousand tags deep, under a list of tags
+    // that lists itself: read without recursion, each once.
+    let tag = d.context.register(d.context.obj({ Type: 'StructElem', S: 'Form', Pg: pageRef, K: { Type: 'OBJR', Obj: boxRef, Pg: pageRef } }));
+    // Beside it, one tag whose list is longer than a single call can take at once.
+    const wide = d.context.register(d.context.obj({ Type: 'StructElem', S: 'P', Pg: pageRef, K: d.context.obj(Array.from({ length: 150000 }, (_, i) => i)) }));
+    tag = d.context.register(d.context.obj({ Type: 'StructElem', S: 'Div', K: [wide, tag] }));
+    for (let i = 0; i < 10000; i++) tag = d.context.register(d.context.obj({ Type: 'StructElem', S: 'Div', K: tag }));
+    const loopRef = d.context.nextRef();
+    d.context.assign(loopRef, d.context.obj([loopRef, tag]));
+    d.catalog.set(PDFName.of('StructTreeRoot'), d.context.register(d.context.obj({ Type: 'StructTreeRoot', K: loopRef })));
+    if (merged === 'nameless') box.delete(PDFName.of('T'));
+  }
+  const link = d.context.register(d.context.obj({ Type: 'Annot', Subtype: 'Link', Rect: [0, 0, 50, 50], Border: [0, 0, 0] }));
+  d.getPage(1).node.addAnnot(link);
+  const root = d.catalog.Pages();
+  const kids = root.lookup(PDFName.of('Kids')).asArray();
+  root.set(PDFName.of('Kids'), d.context.obj([kids[0], kids[1], kids[1], kids[2]]));
+  root.set(PDFName.of('Count'), d.context.obj(4));
+}
+
+/** Page two listed twice, carrying a choice of two (radio buttons) with B chosen; without
+ *  `named`, no list of options, as Acrobat writes them. */
+function listedTwiceWithChoice(d, named, typeAbove) {
+  const radio = d.getForm().createRadioGroup('side');
+  radio.addOptionToPage('A', d.getPage(1), { x: 60, y: 500, width: 20, height: 20 });
+  radio.addOptionToPage('B', d.getPage(1), { x: 100, y: 500, width: 20, height: 20 });
+  radio.select('B');
+  if (!named) radio.acroField.dict.delete(PDFName.of('Opt'));
+  if (typeAbove) {
+    // The group under a parent field that says what type of field it is.
+    const group = radio.acroField.dict;
+    const groupRef = radio.ref;
+    const parent = d.context.register(d.context.obj({ T: PDFString.of('grp'), FT: 'Btn', Ff: group.get(PDFName.of('Ff')), Kids: [groupRef] }));
+    group.set(PDFName.of('Parent'), parent);
+    group.delete(PDFName.of('FT'));
+    group.delete(PDFName.of('Ff'));
+    const fields = d.catalog.lookup(PDFName.of('AcroForm')).lookup(PDFName.of('Fields'));
+    fields.set(fields.asArray().findIndex((e) => String(e) === String(groupRef)), parent);
+  }
+  const root = d.catalog.Pages();
+  const kids = root.lookup(PDFName.of('Kids')).asArray();
+  root.set(PDFName.of('Kids'), d.context.obj([kids[0], kids[1], kids[1], kids[2]]));
+  root.set(PDFName.of('Count'), d.context.obj(4));
+}
+
+/** What pdf.js shows of each page it can open: its words, and its turn and box. */
+async function looks(file) {
+  const reader = await text.open(file);
+  const all = [];
+  try {
+    for (let i = 1; i <= reader.numPages; i++) {
+      try {
+        const page = await reader.getPage(i);
+        const words = (await page.getTextContent()).items.map((t) => t.str).join('').trim();
+        all.push({ text: words, look: `${page.rotate}|${page.view.join(',')}` });
+      } catch {
+        // shown as an error
+      }
+    }
+  } finally {
+    await reader.destroy().catch(() => {});
+  }
+  return all;
+}
 
 async function oddPdf(file) {
   // Three pages, the middle one not saying it is a page (no /Type): pdf.js counts three,
@@ -263,6 +354,90 @@ app.whenReady().then(async () => {
       root.set(PDFName.of('Kids'), d.context.obj([kids[0], node, node]));
       root.set(PDFName.of('Count'), d.context.obj(5));
     },
+    'a node typed as a page, holding pages, under a count too small': (d) => {
+      const root = d.catalog.Pages();
+      const kids = root.lookup(PDFName.of('Kids')).asArray();
+      const node = d.context.register(d.context.obj({ Type: 'Page', Parent: d.catalog.get(PDFName.of('Pages')), Kids: [kids[1], kids[2]], Count: 2 }));
+      for (const k of [kids[1], kids[2]]) d.context.lookup(k).set(PDFName.of('Parent'), node);
+      root.set(PDFName.of('Kids'), d.context.obj([kids[0], node]));
+      root.set(PDFName.of('Count'), d.context.obj(2));
+    },
+    'a node inside whose count leaves out its second page': (d) => {
+      const root = d.catalog.Pages();
+      const kids = root.lookup(PDFName.of('Kids')).asArray();
+      const node = d.context.register(d.context.obj({ Type: 'Pages', Parent: d.catalog.get(PDFName.of('Pages')), Kids: [kids[0], kids[1]], Count: 1 }));
+      for (const k of [kids[0], kids[1]]) d.context.lookup(k).set(PDFName.of('Parent'), node);
+      root.set(PDFName.of('Kids'), d.context.obj([node, kids[2]]));
+      root.set(PDFName.of('Count'), d.context.obj(2));
+    },
+    // Read the same by both programs, but not sound: the page is kept twice, as the screen
+    // shows it, the second time as a copy of its own.
+    'a page listed twice': (d) => {
+      const root = d.catalog.Pages();
+      const kids = root.lookup(PDFName.of('Kids')).asArray();
+      root.set(PDFName.of('Kids'), d.context.obj([kids[0], kids[1], kids[1], kids[2]]));
+      root.set(PDFName.of('Count'), d.context.obj(4));
+    },
+    // A page shown twice whose form field and link must come out on both copies, and stay
+    // one field: filling or flattening the form reaches both.
+    'a page listed twice, with a filled form field and a link': (d) => listedTwiceWithForm(d, false),
+    'a page listed twice, with a form field written as one object with its box': (d) => listedTwiceWithForm(d, true),
+    'a page listed twice, carrying a box that is a field without a name': (d) => listedTwiceWithForm(d, 'nameless'),
+    // A choice of two (radio buttons, without a list of options, as Acrobat writes them) on
+    // a page listed twice: the form still offers each choice once.
+    'a page listed twice, with a choice of two': (d) => listedTwiceWithChoice(d, false),
+    'a page listed twice, with a choice of two that names its options': (d) => listedTwiceWithChoice(d, true),
+    'a page listed twice, with a named choice of two whose type is its parent field\'s': (d) => listedTwiceWithChoice(d, true, true),
+    // Resources up the tree that are not a list draw as none; the repaired file must be sound.
+    'resources up the tree that are not a list, and a count too small': (d) => {
+      const root = d.catalog.Pages();
+      const rootRef = d.catalog.get(PDFName.of('Pages'));
+      const kids = root.lookup(PDFName.of('Kids')).asArray();
+      const two = d.context.lookup(kids[1]);
+      root.set(PDFName.of('Resources'), two.get(PDFName.of('Resources')));
+      two.delete(PDFName.of('Resources'));
+      const node = d.context.register(d.context.obj({ Type: 'Pages', Parent: rootRef, Kids: [kids[1]], Count: 1, Resources: 5 }));
+      two.set(PDFName.of('Parent'), node);
+      root.set(PDFName.of('Kids'), d.context.obj([kids[0], node, kids[2]]));
+      root.set(PDFName.of('Count'), d.context.obj(2));
+    },
+    'a page with a note listed under it': (d) => {
+      const note = d.context.register(d.context.obj({ Type: 'Annot', Subtype: 'Text', Rect: [0, 0, 10, 10] }));
+      d.getPage(1).node.set(PDFName.of('Kids'), d.context.obj([note]));
+    },
+    // Read the way the screen reads it: a page looks as its /Parent says, even when it sits
+    // in the tree under a node that says otherwise.
+    'a page whose look comes from its /Parent, not the node it sits under, and a count too small': (d) => {
+      const root = d.catalog.Pages();
+      const rootRef = d.catalog.get(PDFName.of('Pages'));
+      const kids = root.lookup(PDFName.of('Kids')).asArray();
+      d.context.lookup(kids[1]).delete(PDFName.of('MediaBox'));
+      root.set(PDFName.of('MediaBox'), d.context.obj([0, 0, 595, 842]));
+      const node = d.context.register(d.context.obj({ Type: 'Pages', Parent: rootRef, Kids: [kids[1]], Count: 1, Rotate: 90, MediaBox: [0, 0, 842, 595] }));
+      root.set(PDFName.of('Kids'), d.context.obj([kids[0], node, kids[2]]));
+      root.set(PDFName.of('Count'), d.context.obj(2));
+    },
+    // pdf.js joins a page's resources with its parents', key by key; the page must keep
+    // drawing what it draws from its parent's list once the tree is flat. (A form, not a
+    // font: pdf.js stands in a font of its own for a missing one, but leaves out a missing form.)
+    'a page drawing a form its parent keeps, and a count too small': (d) => {
+      const root = d.catalog.Pages();
+      const page = d.getPage(1).node;
+      const fontRef = page.Resources().lookup(PDFName.of('Font')).entries()[0][1];
+      const form = d.context.register(d.context.stream('BT /F1 18 Tf 60 650 Td (FORMTEXT) Tj ET', {
+        Type: 'XObject', Subtype: 'Form', BBox: [0, 0, 595, 842], Resources: { Font: { F1: fontRef } },
+      }));
+      root.set(PDFName.of('Resources'), d.context.obj({ XObject: { Fm9: form } }));
+      page.addContentStream(d.context.register(d.context.stream('q /Fm9 Do Q')));
+      // pdf.js joins whole keys only: the page's own (empty) list of forms would hide its parent's.
+      page.Resources().delete(PDFName.of('XObject'));
+      root.set(PDFName.of('Count'), d.context.obj(2));
+    },
+    'an entry pdf.js can only show as an error': (d) => {
+      const junk = d.context.register(d.context.stream('junk'));
+      d.catalog.Pages().lookup(PDFName.of('Kids')).push(junk);
+      d.catalog.Pages().set(PDFName.of('Count'), d.context.obj(4));
+    },
     'a count that leaves out a page without /Type': (d) => {
       const extra = d.addPage([595, 842]);
       extra.drawText('PAGE FOUR', { x: 60, y: 700, size: 18 });
@@ -282,21 +457,133 @@ app.whenReady().then(async () => {
       check('  (the same count, other pages: told apart by the pages themselves, not their number)',
         before.pageCount === before.shownPages && before.pagesAgree === false, JSON.stringify([before.pageCount, before.shownPages, before.pagesAgree]));
     }
+    const lookBefore = await looks(file);
     r = await runTool('repair', [file], {});
     const out = r.ok ? await PDFDocument.load(await fsp.readFile(r.display[0])) : null;
+    if (r.ok) {
+      // Each page the screen showed looks after Repair as it did: same turn, same box.
+      const lookAfter = await looks(r.display[0]);
+      const changed = lookAfter.filter((a) => lookBefore.some((b) => b.text === a.text) && !lookBefore.some((b) => b.text === a.text && b.look === a.look));
+      check(`  (${label}: every page the screen showed is turned and sized as it was)`, changed.length === 0, JSON.stringify({ before: lookBefore, changed }));
+    }
     const asShown = out ? await pagesAsShown(r.display[0], out) : { agree: false };
-    const words = r.ok ? (await text.documentText(r.display[0])).map((w) => w.trim()) : [];
-    // What the screen showed, then what only the tools found; a page neither showed (past
-    // the count, without /Type) stays out, as both programs already agree on that file.
+    if (r.ok) {
+      const checked = qpdf('--check', r.display[0]);
+      check(`  (${label}: the repaired file passes qpdf's check of its structure)`, checked.code === 0, checked.out.split('\n').filter((l) => /ERROR|WARNING/.test(l)).join(' / '));
+    }
+    const words = r.ok ? (await text.documentText(r.display[0]).catch((e) => [`<unreadable: ${e.message}>`])).map((w) => w.trim()) : [];
+    // Every page the screen showed, in its order, and after each the pages it had hidden
+    // that follow it in the file. A node that says it is a page was shown as a blank page,
+    // so a blank page it stays, with the pages it held after it.
     const want = {
-      // Both programs read the node as one blank page and agree; the pages under it are seen
-      // by neither, so the file is not held back and Repair leaves it as both show it.
-      'a node typed as a page, holding the real pages': [''],
-      'a node listed under two parents': ['PAGE ONE', 'PAGE TWO', 'PAGE THREE'],
+      'a count that leaves out a page without /Type': ['PAGE ONE', 'PAGE TWO', 'PAGE THREE', 'PAGE FOUR'],
+      'a node typed as a page, holding the real pages': ['', 'PAGE ONE', 'PAGE TWO', 'PAGE THREE'],
+      'a node typed as a page, holding pages, under a count too small': ['PAGE ONE', '', 'PAGE TWO', 'PAGE THREE'],
+      'a page listed twice': ['PAGE ONE', 'PAGE TWO', 'PAGE TWO', 'PAGE THREE'],
+      'a page listed twice, with a filled form field and a link': ['PAGE ONE', 'PAGE TWO', 'PAGE TWO', 'PAGE THREE'],
+      'a page listed twice, with a choice of two': ['PAGE ONE', 'PAGE TWO', 'PAGE TWO', 'PAGE THREE'],
+      'a page listed twice, with a choice of two that names its options': ['PAGE ONE', 'PAGE TWO', 'PAGE TWO', 'PAGE THREE'],
+      'a page listed twice, with a named choice of two whose type is its parent field\'s': ['PAGE ONE', 'PAGE TWO', 'PAGE TWO', 'PAGE THREE'],
+      'a page listed twice, carrying a box that is a field without a name': ['PAGE ONE', 'PAGE TWO', 'PAGE TWO', 'PAGE THREE'],
+      'a page listed twice, with a form field written as one object with its box': ['PAGE ONE', 'PAGE TWO', 'PAGE TWO', 'PAGE THREE'],
+      'a page drawing a form its parent keeps, and a count too small': ['PAGE ONE', 'PAGE TWO\nFORMTEXT', 'PAGE THREE'],
     }[label] || ['PAGE ONE', 'PAGE TWO', 'PAGE THREE'];
-    if (/count too small/.test(label)) check('  (and the summary says a page the screen did not show was found and put at the end)', /נמצא בקובץ ונוסף בסופו/.test(r.summary || ''), r.summary);
-    check(`  ${label}: after Repair both programs read the same pages, every one of them, none added`,
-      asShown.agree && JSON.stringify(words) === JSON.stringify(want), r.error || `${words.join(' | ')} agree=${asShown.agree}`);
+    const found = {
+      'a page count too small': 'עמוד אחד שלא הוצג במסך נמצא בקובץ והוחזר למקומו',
+      'a node inside whose count leaves out its second page': 'עמוד אחד שלא הוצג במסך נמצא בקובץ והוחזר למקומו',
+      'a node typed as a page, holding the real pages': '3 עמודים שלא הוצגו במסך נמצאו בקובץ והוחזרו למקומם',
+      'a node typed as a page, holding pages, under a count too small': '2 עמודים שלא הוצגו במסך נמצאו בקובץ והוחזרו למקומם',
+      'the same count, but other pages (the first without /Type, the count one short)': 'עמוד אחד שלא הוצג במסך נמצא בקובץ והוחזר למקומו',
+      'resources up the tree that are not a list, and a count too small': 'עמוד אחד שלא הוצג במסך נמצא בקובץ והוחזר למקומו',
+      'a page whose look comes from its /Parent, not the node it sits under, and a count too small': 'עמוד אחד שלא הוצג במסך נמצא בקובץ והוחזר למקומו',
+      'a count that leaves out a page without /Type': 'עמוד אחד שלא הוצג במסך נמצא בקובץ והוחזר למקומו',
+      'a page drawing a form its parent keeps, and a count too small': 'עמוד אחד שלא הוצג במסך נמצא בקובץ והוחזר למקומו',
+    }[label];
+    if (!found) check(`  (${label}: the summary claims no page found that was not hidden)`, !/נמצא/.test((r.summary || '').replace('לא נמצא פגם', '')), r.summary);
+    if (found) check('  (and the summary says how many pages the screen had not shown were put back in their place)', (r.summary || '').includes(found), r.summary);
+    if (/choice of two/.test(label) && r.ok) {
+      const read = await require('../src/main/tools/forms').readFields(r.display[0]);
+      const inherited = /parent field/.test(label);
+      const side = read.find((f) => f.name === (inherited ? 'grp.side' : 'side')) || {};
+      const named = /names its options|named choice/.test(label);
+      let namesFit = true;
+      if (named) {
+        // One export name per box, the copies' boxes named as their originals.
+        const fixed = await PDFDocument.load(await fsp.readFile(r.display[0]));
+        const group = fixed.getForm().getRadioGroup(inherited ? 'grp.side' : 'side').acroField.dict;
+        const opt = group.lookup(PDFName.of('Opt'));
+        namesFit = opt && opt.size() === group.lookup(PDFName.of('Kids')).size() && JSON.stringify(opt.asArray().map((o) => o.decodeText())) === '["A","B","A","B"]';
+      }
+      check(`  (${label}: offered once each, chosen as before, with its boxes on both pages${named ? ', each box with its export name' : ''})`,
+        // (Without a list of options, its choices are named by their boxes' states, 0 and 1.)
+        namesFit && read.length === 1 && (named ? JSON.stringify(side.choices) === '["A","B"]' : (side.choices || []).length === 2) && side.value === side.choices[1] && JSON.stringify([...new Set((side.boxes || []).map((b) => b.page))]) === '[1,2]',
+        JSON.stringify(read));
+    }
+    if (/field without a name/.test(label) && r.ok) {
+      // Filling the nameless field and flattening the form reaches both copies.
+      const fixed = await PDFDocument.load(await fsp.readFile(r.display[0]));
+      const form = fixed.getForm();
+      const all = form.getFields();
+      if (all.length === 1) all[0].setText('NEWVAL');
+      form.flatten();
+      const flat = path.join(dir, 'flat-nameless.pdf');
+      await fsp.writeFile(flat, await fixed.save());
+      const flatWords = (await text.documentText(flat)).map((w) => w.replace(/\s+/g, ' ').trim());
+      check('  (a box that is a field without a name: still one field, and filling and flattening it reaches both copies)',
+        all.length === 1 && /NEWVAL/.test(flatWords[1]) && /NEWVAL/.test(flatWords[2]), JSON.stringify({ fields: all.length, flatWords }));
+    }
+    if (/listed twice, with (a filled|a form)/.test(label) && r.ok) {
+      // Each copy has its own link and form box, each pointing back to its own page; the
+      // field is still one field, and flattening it draws its value on both copies.
+      const fixed = await PDFDocument.load(await fsp.readFile(r.display[0]));
+      const onPages = fixed.getPages().flatMap((p) => {
+        const a = p.node.lookup(PDFName.of('Annots'));
+        return a ? a.asArray().map((e) => ({ note: String(e), page: String(p.ref), says: fixed.context.lookup(e).get(PDFName.of('P')) })) : [];
+      });
+      // No note on two pages, and a note that names its page names its own.
+      const own = new Set(onPages.map((n) => n.note)).size === onPages.length && onPages.every((n) => n.says === undefined || String(n.says) === n.page);
+      const notes = fixed.getPages().map((p) => (p.node.lookup(PDFName.of('Annots')) || { size: () => 0 }).size());
+      const form = fixed.getForm();
+      const fields = form.getFields().map((f) => f.getName());
+      if (/one object/.test(label)) {
+        // The tooltip shows on both copies, and the tag names a box.
+        const reader = await text.open(r.display[0]);
+        const tips = [];
+        for (const n of [2, 3]) tips.push(((await (await reader.getPage(n)).getAnnotations()).find((a) => a.subtype === 'Widget') || {}).alternativeText);
+        await reader.destroy();
+        let node = fixed.catalog.lookup(PDFName.of('StructTreeRoot')).lookup(PDFName.of('K')).lookup(1);
+        while (String(node.get(PDFName.of('S'))) === '/Div') {
+          const k = node.lookup(PDFName.of('K'));
+          node = k instanceof PDFDict ? k : k.lookup(1);
+        }
+        const objr = node.lookup(PDFName.of('K'));
+        const tagged = objr.get(PDFName.of('Obj'));
+        const onItsPage = objr.lookup(PDFName.of('Pg')).lookup(PDFName.of('Annots')).asArray().some((e) => String(e) === String(tagged));
+        check('  (the field\'s tooltip shows on both copies, and its accessibility tag names its box, on the tag\'s own page)',
+          JSON.stringify(tips) === '["Tooltip text","Tooltip text"]' && String(fixed.context.lookup(tagged).get(PDFName.of('Subtype'))) === '/Widget' && onItsPage,
+          JSON.stringify({ tips, tagged: String(fixed.context.lookup(tagged).get(PDFName.of('Subtype'))), onItsPage }));
+        // The field keeps its object: the order of calculations still names the field, which
+        // keeps its key-press action; each box keeps the focus action.
+        const acro = fixed.catalog.lookup(PDFName.of('AcroForm'));
+        const named = fixed.context.lookup(acro.lookup(PDFName.of('CO')).get(0));
+        const fieldActs = named.lookup(PDFName.of('AA'));
+        const boxes = fixed.getPages().flatMap((p) => (p.node.lookup(PDFName.of('Annots')) || { asArray: () => [] }).asArray())
+          .map((e) => fixed.context.lookup(e)).filter((a) => String(a.get(PDFName.of('Subtype'))) === '/Widget');
+        check('  (the field written as one object with its box keeps that object: the order of calculations and the key-press action stay with the field, the focus action with each box)',
+          (named.lookup(PDFName.of('T')) || { decodeText: () => '' }).decodeText() === 'name' && fieldActs && fieldActs.get(PDFName.of('K')) && !fieldActs.get(PDFName.of('Fo')) &&
+          boxes.length === 2 && boxes.every((b) => b.lookup(PDFName.of('AA')) && b.lookup(PDFName.of('AA')).get(PDFName.of('Fo')) && !b.lookup(PDFName.of('AA')).get(PDFName.of('K'))),
+          JSON.stringify({ T: (named.lookup(PDFName.of('T')) || { decodeText: () => '' }).decodeText(), fieldActs: String(fieldActs), boxes: boxes.map((b) => String(b.get(PDFName.of('AA')))) }));
+      }
+      form.flatten();
+      const flat = path.join(dir, `flat-${label.length}.pdf`);
+      await fsp.writeFile(flat, await fixed.save());
+      const flatWords = (await text.documentText(flat)).map((w) => w.replace(/\s+/g, ' ').trim());
+      check(`  (${label}: both copies have their own link and form box, the form still has one field, and flattening draws its value on both)`,
+        own && notes[1] === 2 && notes[2] === 2 && fields.join() === 'name' && /FIELDVAL/.test(flatWords[1]) && /FIELDVAL/.test(flatWords[2]),
+        JSON.stringify({ own, notes, fields, flatWords }));
+    }
+    check(`  ${label}: after Repair both programs read the same pages, every one of them in order, none added, and none said to be lost`,
+      asShown.agree && JSON.stringify(words) === JSON.stringify(want) && !/אבד/.test(r.summary || ''), r.error || `${words.join(' | ')} agree=${asShown.agree} ${r.summary}`);
   }
   // And a tool refuses such a file whichever way it is started, while Repair takes it.
   r = await runTool('compress', [odd], {});
@@ -309,7 +596,11 @@ app.whenReady().then(async () => {
   // own first message comes right after it, and must not be held back as too soon.
   const said = [];
   const quick = { id: 'quick-test', run: async ({ ctx }) => { ctx.progress(0.1, 'הכלי התחיל'); return { summary: 'ok' }; } };
-  await jobs.start(quick, [heavy.file], {}, { onProgress: (p) => said.push(p.text) }).promise;
+  // A file the check passes over at once, so the tool's message surely comes within the
+  // bar's pause after the check's own.
+  const note = path.join(dir, 'הערה.txt');
+  await fsp.writeFile(note, 'x');
+  await jobs.start(quick, [note], {}, { onProgress: (p) => said.push(p.text) }).promise;
   check('the tool\'s first message is shown, not swallowed after the check of the files', said.includes('הכלי התחיל'), JSON.stringify(said));
 
   /* ---- cancelling stops the program ---- */

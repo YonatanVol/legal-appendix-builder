@@ -236,7 +236,8 @@ async function readFields(file) {
     let choices = [];
     if (type === 'text') value = field.getText() || '';
     else if (type === 'checkbox') value = field.isChecked();
-    else if (type === 'radio') { value = field.getSelected() || ''; choices = field.getOptions(); }
+    // A choice shown on two pages (one page listed twice) is still one choice.
+    else if (type === 'radio') { value = field.getSelected() || ''; choices = [...new Set(field.getOptions())]; }
     else if (type === 'dropdown' || type === 'list') { value = field.getSelected()[0] || ''; choices = field.getOptions(); }
     out.push({ name: field.getName(), type, value, choices, readOnly: field.isReadOnly(), boxes });
   }
