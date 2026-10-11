@@ -575,7 +575,7 @@ function crafted() {
   }
   // Linearized with two tables of objects, page 2's content (and picture) read one way
   // by pdf.js and another by qpdf, for each kind of hiding.
-  const twoTables = (res, differing) => {
+  const twoTables = (res, differing, extra = '') => {
     const lin = (L) => obj(1, `<< /Linearized 1 /L ${pad(L)} /H [ 1 1 ] /O 4 /E 1 /N 2 /T 1 >>`);
     let s = HDR;
     const at = {};
@@ -585,7 +585,7 @@ function crafted() {
     const FIRSTLEN = table({}, 12).length + 'trailer\n<< /Size 13 /Root 3 0 R >>\n'.length;
     s += ' '.repeat(FIRSTLEN);
     for (const [n, b] of [[3, '<< /Type /Catalog /Pages 2 0 R >>'], [2, '<< /Type /Pages /Kids [4 0 R 5 0 R] /Count 2 >>'],
-      [4, page('7 0 R')], [5, `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources ${res} /Contents 8 0 R >>`],
+      [4, page('7 0 R')], [5, `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources ${res} /Contents 8 0 R ${extra}>>`],
       [7, txt('SECRETPAGEZERO')], [9, font]]) {
       at[n] = s.length;
       s += obj(n, b);
@@ -613,6 +613,15 @@ function crafted() {
     stream('BT 3 Tr /F1 24 Tf 50 650 Td (PUBLICTWOXX) Tj ET'), stream('BT 3 Tr /F1 24 Tf 50 650 Td (SECRETPAGEZERO) Tj ET')]]);
   cases['linearized, carried as a picture painted over'] = twoTables(imageRes, [[8, txt('PUBLICTWO'),
     stream('q 100 0 0 100 50 300 cm /Im Do Q 1 g 0 0 595 842 re f 0 g BT /F1 24 Tf 50 700 Td (PUBLICTWO) Tj ET')], [10, image(255), image(0)]]);
+  // A picture painted over in both readings, of the same size, only its pixels differ.
+  cases['linearized, a picture painted over whose pixels differ'] = twoTables(imageRes, [[8,
+    stream('q 100 0 0 100 50 300 cm /Im Do Q 1 g 0 0 595 842 re f 0 g BT /F1 24 Tf 50 700 Td (PUBLICTWO) Tj ET'),
+    stream('q 100 0 0 100 50 300 cm /Im Do Q 1 g 0 0 595 842 re f 0 g BT /F1 24 Tf 50 700 Td (PUBLICTWO) Tj ET')], [10, image(200), image(201)]]);
+  // A comment whose words differ between the readings (with comments kept, they would
+  // come across).
+  cases['linearized, a comment whose words differ'] = twoTables(fontRes, [[8, txt('PUBLICTWO'), txt('PUBLICTWO')],
+    [11, '<< /Type /Annot /Subtype /Text /Rect [10 10 30 30] /Contents (a public note) >>', '<< /Type /Annot /Subtype /Text /Rect [10 10 30 30] /Contents (SECRETPAGEZERO) >>']],
+  '/Annots [11 0 R] ');
   cases['linearized, a picture that differs'] = twoTables(imageRes, [[8, stream('q 100 0 0 100 50 300 cm /Im Do Q'), stream('q 100 0 0 100 50 300 cm /Im Do Q')],
     [10, image(255), image(0)]]);
   {
@@ -1183,6 +1192,60 @@ app.whenReady().then(async () => {
       r = await runTool('redact', [file], { marks: [{ page: 0, x: 0, y: 0, w: 1, h: 1 }] });
       check(`  ${label}: refused`, !r.ok && /קוראות את עמוד \d|אין ודאות איזה עמוד סומן/.test(r.error || ''), r.error || 'made');
     }
+  }
+  {
+    // Kept pages Ghostscript cannot rebuild, though pdf.js shows them: a content list
+    // holding null and something that is not content, and a filter Ghostscript does not
+    // know. The page would come out blank; the copy is refused instead.
+    const zlib = require('zlib');
+    const shown = 'BT /F1 24 Tf 50 700 Td (PUBLICTWO) Tj ET';
+    const packed = zlib.deflateSync(Buffer.from(shown)).toString('latin1');
+    const pageWith = (contents) => `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 7 0 R >> >> /Contents ${contents} >>`;
+    const files = {
+      'a content list with null and a non-stream': rawPdf([[1, '<< /Type /Catalog /Pages 2 0 R >>'], [2, '<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>'],
+        [3, rawPage(5)], [4, pageWith('[null 9 0 R 6 0 R]')], [5, rawStream('BT /F1 24 Tf 50 700 Td (SECRET-ONE) Tj ET')], [6, rawStream(shown)],
+        [7, '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>'], [9, '<< /Not /AStream >>']]),
+      'a filter Ghostscript does not know': rawPdf([[1, '<< /Type /Catalog /Pages 2 0 R >>'], [2, '<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>'],
+        [3, rawPage(5)], [4, pageWith('6 0 R')], [5, rawStream('BT /F1 24 Tf 50 700 Td (SECRET-ONE) Tj ET')],
+        [6, `<< /Length ${packed.length} /Filter [/FlateDecode /Foo] >>\nstream\n${packed}\nendstream`],
+        [7, '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>']]),
+    };
+    for (const [label, bytes] of Object.entries(files)) {
+      const file = path.join(dir, `lost-${label.length}.pdf`);
+      await fsp.writeFile(file, bytes);
+      const screen = await screenText(file, 2);
+      r = await runTool('redact', [file], { marks: [{ page: 0, x: 0, y: 0, w: 1, h: 1 }] });
+      check(`  ${label}: shown on screen, but the rebuilt page would be blank, so refused`,
+        screen.has('PUBLICTWO') && !r.ok && /לא נשמר כשהקובץ נבנה מחדש/.test(r.error || ''), r.error || 'made');
+    }
+  }
+  {
+    // One scan split into two pages, each showing its half of the same picture. Page 1 is
+    // marked; page 2 must not keep the whole scan (the marked half hidden only by its page
+    // edges), so it becomes a picture too, and the summary says so.
+    const zlib = require('zlib');
+    const W = 1500;
+    const H = 800;
+    const pixels = Buffer.alloc(W * H, 255);
+    for (let y = 300; y < 500; y++) for (let x = 100; x < 600; x++) pixels[y * W + x] = 0;
+    const packed = zlib.deflateSync(pixels).toString('latin1');
+    const half = (x0) => `<< /Type /Page /Parent 2 0 R /MediaBox [${x0} 0 ${x0 + 500} 500] /Resources << /XObject << /Im 6 0 R >> >> /Contents 5 0 R >>`;
+    const split = rawPdf([[1, '<< /Type /Catalog /Pages 2 0 R >>'], [2, '<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>'],
+      [3, half(0)], [4, half(500)], [5, rawStream('q 1000 0 0 500 0 0 cm /Im Do Q')],
+      [6, `<< /Type /XObject /Subtype /Image /Width ${W} /Height ${H} /ColorSpace /DeviceGray /BitsPerComponent 8 /Filter /FlateDecode /Length ${packed.length} >>\nstream\n${packed}\nendstream`]]);
+    const splitFile = path.join(dir, 'split-scan.pdf');
+    await fsp.writeFile(splitFile, split);
+    r = await runTool('redact', [splitFile], { marks: [{ page: 0, x: 0.1, y: 0.2, w: 0.5, h: 0.4 }] });
+    const widths = [];
+    if (r.ok) {
+      const outDoc = await PDFDocument.load(await fsp.readFile(r.display[0]));
+      for (const [, o] of outDoc.context.enumerateIndirectObjects()) {
+        const w = o && o.dict && o.dict.lookup && o.dict.lookup(PDFName.of('Width'));
+        if (w) widths.push(w.asNumber());
+      }
+    }
+    check('  a scan split across two pages, one marked: the other page becomes a picture too, so the whole scan is not kept',
+      r.ok && !widths.includes(W) && /גם עמוד 2 הפך לתמונה/.test(r.summary || ''), r.error || `${widths} ${r.summary}`);
   }
   {
     // The picture of a marked page has the size pdf.js shows the page at: turned, with a

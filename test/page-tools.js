@@ -344,6 +344,13 @@ app.whenReady().then(async () => {
 
   const leftovers = (fs.existsSync(scratchRoot) ? fs.readdirSync(scratchRoot) : []).filter((n) => !scratchBefore.has(n));
   check('no scratch folders are left behind', jobs.running() === 0 && leftovers.length === 0, leftovers.join(', '));
+  // A folder a run left behind when the program was closed by force (it may hold a copy
+  // of a document) is removed the next time the program starts.
+  const orphan = path.join(jobs.SCRATCH_ROOT, 'left-by-a-crash');
+  fs.mkdirSync(orphan, { recursive: true });
+  fs.writeFileSync(path.join(orphan, 'given.pdf'), 'a copy of a document');
+  const swept = await jobs.sweepLeftovers();
+  check('a folder left by a run that never finished is removed at start', swept >= 1 && !fs.existsSync(orphan));
 
   disposeRenderer();
   await fsp.rm(dir, { recursive: true, force: true });

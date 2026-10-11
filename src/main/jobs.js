@@ -35,10 +35,36 @@ function throwIfAborted(signal) {
   if (signal.aborted) throw new Cancelled();
 }
 
+const SCRATCH_ROOT = path.join(os.tmpdir(), 'rotem-office');
+const inUse = new Set();
+
 async function makeScratch() {
-  const dir = path.join(os.tmpdir(), 'rotem-office', crypto.randomBytes(6).toString('hex'));
+  const dir = path.join(SCRATCH_ROOT, crypto.randomBytes(6).toString('hex'));
   await fs.mkdir(dir, { recursive: true });
+  inUse.add(dir);
   return dir;
+}
+
+/**
+ * Removes the folders of runs that never got to clean up: the program was closed by force,
+ * the computer lost power. They can hold copies of the documents (Redact keeps one while
+ * it works), so they are not left lying in the temporary folder. Called when the program
+ * starts; only one copy of the program runs at a time, so nothing else is using them.
+ */
+async function sweepLeftovers() {
+  let names = [];
+  try {
+    names = await fs.readdir(SCRATCH_ROOT);
+  } catch {
+    return 0;
+  }
+  let removed = 0;
+  for (const name of names) {
+    const dir = path.join(SCRATCH_ROOT, name);
+    if (inUse.has(dir)) continue;
+    await fs.rm(dir, { recursive: true, force: true }).then(() => { removed++; }, () => {});
+  }
+  return removed;
 }
 
 /**
@@ -122,6 +148,7 @@ function start(tool, inputs, options, hooks = {}) {
     } finally {
       jobs.delete(id);
       await fs.rm(scratch, { recursive: true, force: true }).catch(() => {});
+      inUse.delete(scratch);
     }
   })();
 
@@ -165,4 +192,4 @@ function describe(err) {
   return `הפעולה נכשלה: ${message}`;
 }
 
-module.exports = { start, cancel, running, Cancelled, describe };
+module.exports = { start, cancel, running, Cancelled, describe, sweepLeftovers, SCRATCH_ROOT };

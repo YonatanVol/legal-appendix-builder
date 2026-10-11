@@ -30,10 +30,12 @@ build differs from the plan below, it is because the plan's version did not hold
   the marked pages are drawn by pdf.js, as the screen drew them, and the unmarked pages
   follow pdf.js's own layer rules, ported line for line. The file is first written afresh
   by qpdf, and pdf-lib reads that copy; then every page of the copy must read to pdf.js
-  exactly as the file itself does (the same text, seen or not, the same drawing steps,
-  the same picture). That check closes the class of files two readers read differently,
-  which review kept finding new members of: comparing the result's look with the screen
-  instead missed invisible text and needed masks that an annotation could abuse. Layers are settled once over
+  exactly as the file itself does: the same text, seen or not, the same drawing steps,
+  the same image data, the same annotations, the same picture at 36 DPI. That covers the
+  files review found pdf.js and qpdf reading differently; comparing the result's look
+  with the screen instead missed invisible text and needed masks that an annotation could
+  abuse. After Ghostscript, a kept page that lost much of its ink stops the copy, and a
+  kept page sharing a scan with a marked page becomes a picture too. Layers are settled once over
   every object in the file rather than followed from each page: five review rounds each
   found another place a hidden drawing could sit. Kept comments carry only plain values,
   and attached files never come across.

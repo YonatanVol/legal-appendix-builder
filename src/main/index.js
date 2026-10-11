@@ -39,6 +39,7 @@ if (process.env.APPENDIX_BUILDER_SELFTEST) {
 
   app.whenReady().then(() => {
     lockDownNetwork();
+    require('./jobs').sweepLeftovers();
     registerIpc();
     mainWindow = createWindow();
     updater.start({ getWindow: () => mainWindow, isBuilding, version });

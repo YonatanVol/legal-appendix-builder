@@ -77,6 +77,11 @@ async function run({ inputs, options = {}, ctx }) {
     byPage.get(m.page).push(m);
   }
   const pages = [...byPage.keys()].sort((a, b) => a - b);
+  // A page that shows part of the same scan as a marked page (one scan split into two
+  // pages, each showing its half) would keep the whole scan, the marked half included,
+  // hidden only by its page edges. Such a page becomes a picture too.
+  const shared = sharingScans(doc, pages);
+  const pictured = [...pages, ...shared].sort((a, b) => a - b);
   // Attached files never come across, in either mode: one may be the unredacted original.
   const names = doc.catalog.lookup(PDFName.of('Names'));
   const attached = (names instanceof PDFDict && !!names.get(PDFName.of('EmbeddedFiles'))) ||
@@ -119,7 +124,7 @@ async function run({ inputs, options = {}, ctx }) {
     // Two readers that took the same bytes differently (two tables of objects, an object
     // stream out of order, an object written twice) differ here, before anything is made.
     for (let i = 0; i < total; i++) {
-      ctx.progress(0.05 + (i / total) * 0.25, `בודק את עמוד ${i + 1} מתוך ${total}`);
+      ctx.progress(0.05 + (i / total) * 0.45, `בודק את עמוד ${i + 1} מתוך ${total}`);
       let differs;
       try {
         differs = await view.same(i, copyView);
@@ -128,12 +133,12 @@ async function run({ inputs, options = {}, ctx }) {
       }
       if (differs) {
         console.error(`[redact] page ${i + 1} reads differently in the copy (${differs})`);
-        throw new Error(`הקובץ בנוי כך שתוכנות שונות קוראות את עמוד ${i + 1} בו בצורה שונה, ולכן אין ודאות מה בדיוק יישאר בו. לא נוצר עותק. אפשר להריץ קודם את "תיקון PDF" ולסמן שוב בקובץ המתוקן.`);
+        throw new Error(`הקובץ בנוי כך שתוכנות שונות קוראות את עמוד ${i + 1} בקובץ בצורה שונה, ולכן אין ודאות מה בדיוק יישאר בעמוד. לא נוצר עותק. אפשר להריץ קודם את "תיקון PDF" ולסמן שוב בקובץ המתוקן.`);
       }
     }
-    for (let k = 0; k < pages.length; k++) {
-      const i = pages[k];
-      ctx.progress(0.3 + (k / pages.length) * 0.3, `משחיר את עמוד ${i + 1}`);
+    for (let k = 0; k < pictured.length; k++) {
+      const i = pictured[k];
+      ctx.progress(0.5 + (k / pictured.length) * 0.1, `משחיר את עמוד ${i + 1}`);
       let picture;
       try {
         picture = await view.draw(i, DPI);
@@ -141,7 +146,7 @@ async function run({ inputs, options = {}, ctx }) {
         failed(ctx, err);
       }
       // Beyond each mark by a little, so anti-aliased edges of letters do not peek out.
-      const boxes = byPage.get(i).map((m) => ({ x: m.x - 0.002, y: m.y - 0.002, w: m.w + 0.004, h: m.h + 0.004 }));
+      const boxes = (byPage.get(i) || []).map((m) => ({ x: m.x - 0.002, y: m.y - 0.002, w: m.w + 0.004, h: m.h + 0.004 }));
       blacked.set(i, { jpg: (await imaging.blackOut(picture.png, 'image/png', boxes)).bytes, width: picture.width, height: picture.height });
       ctx.throwIfCancelled();
     }
@@ -182,7 +187,7 @@ async function run({ inputs, options = {}, ctx }) {
   await doc.flush();
   const copier = PDFObjectCopier.for(doc.context, out.context);
   for (let i = 0; i < total; i++) {
-    ctx.progress(0.6 + (i / total) * 0.15, `בונה את עמוד ${i + 1}`);
+    ctx.progress(0.6 + (i / total) * 0.12, `בונה את עמוד ${i + 1}`);
     const source = doc.getPage(i);
     if (blacked.has(i)) {
       // The size pdf.js showed the page at, so the picture is not stretched.
@@ -208,7 +213,7 @@ async function run({ inputs, options = {}, ctx }) {
   out.setProducer('');
   out.setCreator('');
 
-  ctx.progress(0.75, 'שומר…');
+  ctx.progress(0.72, 'שומר…');
   let bytes = await out.save({ useObjectStreams: true });
 
   // Then Ghostscript draws every page of the new document and writes a PDF of only what
@@ -230,21 +235,99 @@ async function run({ inputs, options = {}, ctx }) {
   await samePages(path.join(ctx.scratch, 'pruned.pdf'), total, path.basename(source));
   bytes = await fs.readFile(path.join(ctx.scratch, 'pruned.pdf'));
   if (layers.list) bytes = await withoutLayers(bytes, options.clean === false ? doc : null);
+  await fs.writeFile(path.join(ctx.scratch, 'result.pdf'), bytes);
+  await nothingLost(ctx, path.join(ctx.scratch, 'built.pdf'), path.join(ctx.scratch, 'result.pdf'), total, blacked);
   let searchable = '';
   if (options.ocr && bin.locate('gs')) {
     const temp = path.join(ctx.scratch, 'redacted.pdf');
     await fs.writeFile(temp, bytes);
-    const read = await ocrFile(temp, { langs: 'heb+eng' }, ctx, (fraction, label) => ctx.progress(0.75 + fraction * 0.23, label));
+    const read = await ocrFile(temp, { langs: 'heb+eng' }, ctx, (fraction, label) => ctx.progress(0.8 + fraction * 0.18, label));
     if (read.bytes) bytes = read.bytes;
     searchable = ' העמודים המושחרים זוהו מחדש, ואפשר לחפש בהם בכל מה שלא הושחר.';
   }
   const outputPath = await ctx.writeOutput(bytes, { source, label: 'מושחר', ext: 'pdf' });
   const what = pages.length === 1 ? 'עמוד אחד הושחר' : `${pages.length} עמודים הושחרו`;
   const how = options.ocr ? '' : ' העמודים המושחרים הפכו לתמונה, ולכן אי אפשר לחפש בהם טקסט.';
+  const alsoPictured = shared.length
+    ? ` ${shared.length === 1
+      ? `גם עמוד ${shared[0] + 1} הפך לתמונה, כי הוא מציג חלק מאותה סריקה כמו עמוד מסומן, וכך לא נשאר בו דבר מהאזור המושחר.`
+      : `גם העמודים ${shared.map((i) => i + 1).join(', ')} הפכו לתמונה, כי הם מציגים חלק מאותה סריקה כמו עמוד מסומן, וכך לא נשאר בהם דבר מהאזור המושחר.`}`
+    : '';
   return {
-    summary: `${what}. ${marks.length === 1 ? 'האזור המסומן נמחק מהקובץ עצמו, לא רק הוסתר.' : `${marks.length} האזורים המסומנים נמחקו מהקובץ עצמו, לא רק הוסתרו.`}${how}${searchable}${options.clean !== false ? ` גם פרטי המסמך, ההערות והקבצים המצורפים הוסרו.${notedRemovals(removed)}` : attached ? ' הקבצים המצורפים לא הועתקו, כי אחד מהם יכול להיות המסמך המקורי לפני ההשחרה.' : ''}`,
+    summary: `${what}. ${marks.length === 1 ? 'האזור המסומן נמחק מהקובץ עצמו, לא רק הוסתר.' : `${marks.length} האזורים המסומנים נמחקו מהקובץ עצמו, לא רק הוסתרו.`}${alsoPictured}${how}${searchable}${options.clean !== false ? ` גם פרטי המסמך, ההערות והקבצים המצורפים הוסרו.${notedRemovals(removed)}` : attached ? ' הקבצים המצורפים לא הועתקו, כי אחד מהם יכול להיות המסמך המקורי לפני ההשחרה.' : ''}`,
     display: [outputPath],
   };
+}
+
+/**
+ * Ghostscript can drop what it cannot read (a page whose content list holds something
+ * that is not content, a filter it does not know), leaving a kept page blank. Each kept
+ * page of the result must hold about as much ink as the page built for it, drawn by
+ * pdf.js; a page that lost much of it stops the copy.
+ */
+async function nothingLost(ctx, built, result, total, blacked) {
+  const before = pagepicture.open(built, { signal: ctx.signal });
+  const after = pagepicture.open(result, { signal: ctx.signal });
+  let lost = -1;
+  try {
+    for (let i = 0; i < total && lost < 0; i++) {
+      if (blacked.has(i)) continue;
+      ctx.progress(0.75 + (i / total) * 0.05, `בודק את עמוד ${i + 1} בתוצאה`);
+      const had = await before.ink(i);
+      const has = await after.ink(i);
+      if (has < had * 0.75 - 20) lost = i;
+    }
+  } catch (err) {
+    failed(ctx, err);
+  } finally {
+    await before.release();
+    await after.release();
+  }
+  if (lost >= 0) {
+    console.error(`[redact] page ${lost + 1} lost content when rebuilt`);
+    throw new Error(`חלק ממה שמופיע בעמוד ${lost + 1} לא נשמר כשהקובץ נבנה מחדש, ולכן לא נוצר עותק. אפשר להריץ קודם את "תיקון PDF" ולסמן שוב בקובץ המתוקן.`);
+  }
+}
+
+/**
+ * The kept pages that draw a large picture (a megapixel or more: a scan, not a logo) that
+ * a marked page draws too, found through each page's resources and the drawings in them.
+ */
+function sharingScans(doc, marked) {
+  const ctxt = doc.context;
+  const scansOf = (page) => {
+    const found = new Set();
+    const seen = new Set();
+    const walk = (resources) => {
+      if (!(resources instanceof PDFDict) || seen.has(resources)) return;
+      seen.add(resources);
+      const xobjects = resources.lookup(PDFName.of('XObject'));
+      if (!(xobjects instanceof PDFDict)) return;
+      for (const [, ref] of xobjects.entries()) {
+        const x = ctxt.lookup(ref);
+        if (!(x instanceof PDFStream)) continue;
+        const subtype = String(x.dict.lookup(PDFName.of('Subtype')));
+        if (subtype === '/Image') {
+          const w = x.dict.lookup(PDFName.of('Width'));
+          const h = x.dict.lookup(PDFName.of('Height'));
+          if (w instanceof PDFNumber && h instanceof PDFNumber && w.asNumber() * h.asNumber() >= 1000000) found.add(String(ref));
+        } else if (subtype === '/Form') {
+          walk(x.dict.lookup(PDFName.of('Resources')));
+        }
+      }
+    };
+    walk(ctxt.lookup(page.node.getInheritableAttribute(PDFName.of('Resources'))));
+    return found;
+  };
+  const markedScans = new Set();
+  for (const i of marked) for (const ref of scansOf(doc.getPage(i))) markedScans.add(ref);
+  if (!markedScans.size) return [];
+  const out = [];
+  for (let i = 0; i < doc.getPageCount(); i++) {
+    if (marked.includes(i)) continue;
+    if ([...scansOf(doc.getPage(i))].some((ref) => markedScans.has(ref))) out.push(i);
+  }
+  return out;
 }
 
 /** What a person would not think of as a comment, among the comments removed. */

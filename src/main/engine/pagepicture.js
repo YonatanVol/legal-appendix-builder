@@ -130,6 +130,10 @@ function open(file, { signal } = {}) {
     same(index, other) {
       return call(`window.samePage(${t}, ${JSON.stringify(other.token)}, ${Number(index)})`, { signal });
     },
+    /** How many dark pixels page `index` has at 36 DPI. */
+    ink(index) {
+      return call(`window.inkOf(${t}, ${Number(index)})`, { signal });
+    },
     token,
     async release() {
       if (win && !win.isDestroyed()) {
