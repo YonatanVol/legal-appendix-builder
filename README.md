@@ -55,7 +55,7 @@ folder on this PC.
 | pdf.js | Thumbnails, text with positions | Apache 2.0 | Inside the app |
 | Chromium (Electron) | Hebrew text typeset onto pages, image work | BSD | The app itself |
 | qpdf 12.4.2 | Encryption, decryption, repair | Apache 2.0 | Beside the app, checksum-pinned |
-| Ghostscript 10.08.0 | Compression, PDF/A, page images, redaction rebuild | AGPL 3.0 | Beside the app, checksum-pinned |
+| Ghostscript 10.08.0 | Compression, PDF/A, page images, OCR input | AGPL 3.0 | Beside the app, checksum-pinned |
 | Tesseract (tesseract.js 7) | OCR, Hebrew and English | Apache 2.0 | Inside the app, language data included |
 | Microsoft Office | Word, Excel, PowerPoint conversions | | Already on the PC |
 | LibreOffice | The same, when Office is missing | MPL 2.0 | Not shipped; used if installed |
@@ -184,7 +184,7 @@ The suites, all run by `npm test`:
 | `test:page-tools` | Split, Organize, Rotate, Crop, Page numbers, Watermark, Markdown and Repair, each output read back: order, rotation, crop boxes, where stamped Hebrew lands on pages turned every way |
 | `test:page-panels` | The same tools' screens: Explorer-style selection, drag to reorder, Delete and Ctrl+Z, the crop frame and margin detection, live previews |
 | `test:engine-tools` | Protect, Unlock, Compress, PDF/A, PDF to JPG and PowerPoint, Repair with qpdf and Ghostscript; passwords never on a command line; a Hebrew temp folder |
-| `test:recognition` | OCR on pages turned every way, Scan to PDF, Redact (a secret hidden in every place a PDF can hold one, searched for in every object of the result), PDF to Excel |
+| `test:recognition` | OCR on pages turned every way, Scan to PDF, Redact (files hiding a secret every way review found, each checked to come out as one picture per page with no trace of it), PDF to Excel |
 | `test:editing` | Edit PDF checked by pixels on turned pages, signatures verified with OpenSSL, forms filled, created and flattened |
 | `test:office` | Word, PowerPoint and Excel to PDF and PDF to Word, through LibreOffice |
 | `test:ai` | Summarize and Translate against a local stand-in for the API, the key store, and the network fence |
@@ -346,7 +346,7 @@ window title, in the app header, and in the installer's file name.
 
 - **pdf-lib keeps every object it read.** Removing a page and saving leaves the page,
   its fonts and its text in the file, unreferenced and invisible. Redaction therefore
-  builds a new document and has Ghostscript write only what is drawn.
+  builds a new document holding only pictures of the pages.
 - **qpdf's `--remove-unreferenced-resources` does nothing** unless pages are being selected
   with `--pages`. A test that hides content in inherited resources is what showed it.
 - **A top-level `const api` in a page script collides with `window.api`** from the preload

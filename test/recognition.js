@@ -36,6 +36,8 @@ function check(label, condition, detail = '') {
 }
 
 const runTool = (id, inputs, options = {}, hooks) => jobs.start(tools.runnable(id), inputs, options, hooks).promise;
+// Redact reads every page again by default; the tests ask for that only where it is the point.
+const redactTool = (inputs, options = {}) => runTool('redact', inputs, { ocr: false, ...options });
 
 // The second ID is written with eight digits, as people do when it starts with a zero.
 const LETTER = `<h2>בית הדין האזורי לעבודה</h2>
@@ -448,91 +450,9 @@ async function fidelityPdf(file) {
   return file;
 }
 
-/**
- * The words pdf.js shows on a page (1-based), as the screen draws it: the text of every
- * text operation that is not inside hidden optional content, annotations included.
- */
-async function screenText(file, pageNo) {
-  const lib = await text.pdfjs();
-  const doc = await lib.getDocument({ data: new Uint8Array(await fsp.readFile(file)), isEvalSupported: false }).promise;
-  try {
-    const config = await doc.getOptionalContentConfig();
-    const page = await doc.getPage(pageNo);
-    const ops = await page.getOperatorList({ annotationMode: lib.AnnotationMode.ENABLE });
-    const O = lib.OPS;
-    const stack = [];
-    const words = new Set();
-    for (let i = 0; i < ops.fnArray.length; i++) {
-      const fn = ops.fnArray[i];
-      const args = ops.argsArray[i];
-      if (fn === O.beginMarkedContentProps) stack.push(args[0] === 'OC' ? config.isVisible(args[1]) : true);
-      else if (fn === O.beginMarkedContent) stack.push(true);
-      else if (fn === O.endMarkedContent) stack.pop();
-      else if (fn === O.showText && stack.every(Boolean)) {
-        words.add(args[0].map((g) => (g && typeof g === 'object' ? g.unicode : '')).join(''));
-      }
-    }
-    return words;
-  } finally {
-    await doc.destroy();
-  }
-}
 
-/** Whether a page's text holds `value`, read independently with pdf.js. */
-async function valueDrawn(file, page, value) {
-  return (await linesOf(file, page)).join(' ').includes(value);
-}
 
-/**
- * How dark three areas of a page are, from 0 to 1, rendered at 72 DPI: the stamp's box
- * (300..400 by 400..450), the checkbox (50..80 by 600..630), and the area where the
- * stamp's drawing would land if it were not moved into its box (100..200 by 100..150).
- */
-function darkIn(file, page, dir) {
-  const out = path.join(dir, `dark-${Math.random().toString(36).slice(2)}.pgm`);
-  execFileSync(bin.locate('gs'), ['-q', '-dNOPAUSE', '-dBATCH', '-dSAFER', '-sDEVICE=pgmraw', '-r72', `-dFirstPage=${page}`, `-dLastPage=${page}`, `-sOutputFile=${out}`, file]);
-  const buf = fs.readFileSync(out);
-  fs.rmSync(out, { force: true });
-  // Ghostscript writes a comment line into the header.
-  const header = buf.toString('latin1', 0, 200).match(/^P5\s+(?:#[^\n]*\n\s*)*(\d+)\s+(\d+)\s+(\d+)\s/);
-  const [width, height] = [Number(header[1]), Number(header[2])];
-  const pixels = buf.subarray(header[0].length);
-  const dark = (x0, x1, y0, y1) => {
-    let n = 0;
-    let black = 0;
-    // Inset by two points so edges do not count.
-    for (let y = height - y1 + 2; y < height - y0 - 2; y++) {
-      for (let x = x0 + 2; x < x1 - 2; x++) {
-        n++;
-        if (pixels[y * width + x] < 128) black++;
-      }
-    }
-    return Math.round((black / n) * 1000) / 1000;
-  };
-  return { stamp: dark(300, 400, 400, 450), check: dark(50, 80, 600, 630), origin: dark(100, 200, 100, 150) };
-}
 
-/**
- * A PDF written by hand, objects in the order given (the same number may appear twice),
- * with a table of objects pointing at the last copy of each, or the first for `firstOf`.
- */
-function rawPdf(objs, { firstOf = [] } = {}) {
-  let out = '%PDF-1.7\n%\xe2\xe3\xcf\xd3\n';
-  const at = {};
-  for (const [num, body] of objs) {
-    const offset = out.length;
-    if (!(num in at) || !firstOf.includes(num)) at[num] = offset;
-    out += `${num} 0 obj\n${body}\nendobj\n`;
-  }
-  const max = Math.max(...objs.map((o) => o[0]));
-  const xref = out.length;
-  out += `xref\n0 ${max + 1}\n0000000000 65535 f \n`;
-  for (let n = 1; n <= max; n++) out += at[n] !== undefined ? `${String(at[n]).padStart(10, '0')} 00000 n \n` : '0000000000 65535 f \n';
-  out += `trailer\n<< /Size ${max + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
-  return Buffer.from(out, 'latin1');
-}
-const rawStream = (t) => `<< /Length ${t.length} >>\nstream\n${t}\nendstream`;
-const rawPage = (contents) => `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 7 0 R >> >> /Contents ${contents} 0 R >>`;
 
 /** Three files pdf.js and qpdf read differently (built by review; see the test above). */
 function crafted() {
@@ -673,6 +593,42 @@ function crafted() {
     cases['object stream listed out of order'] = s;
   }
   return Object.fromEntries(Object.entries(cases).map(([k, v]) => [k, Buffer.from(v, 'latin1')]));
+}
+
+/**
+ * '' when the file holds nothing but one picture per page: each page's content only
+ * places its one image, no fonts, annotations, form, layers, attachments, outline, tags
+ * or XMP, and document details only when kept. Else what else it holds.
+ */
+async function onlyPictures(file, { details = false } = {}) {
+  const { PDFDict, PDFStream, decodePDFRawStream, PDFRawStream } = require('pdf-lib');
+  const d = await PDFDocument.load(await fsp.readFile(file), { updateMetadata: false });
+  for (const key of ['AcroForm', 'OCProperties', 'Names', 'Outlines', 'StructTreeRoot', 'Metadata', 'AF']) {
+    if (d.catalog.get(PDFName.of(key))) return `the document has /${key}`;
+  }
+  const info = d.getInfoDict();
+  for (const key of info.keys()) {
+    if (!details || !['/Title', '/Author', '/Subject'].includes(String(key))) return `the details hold ${key}`;
+  }
+  for (const [k, page] of d.getPages().entries()) {
+    const annots = page.node.lookup(PDFName.of('Annots'));
+    if (annots && annots.size && annots.size() > 0) return `page ${k + 1} has annotations`;
+    const res = page.node.Resources();
+    // (pdf-lib gives a new page empty font and graphics-state lists.)
+    const keys = res ? res.keys().filter((key) => {
+      const v = res.lookup(key);
+      return String(key) === '/XObject' || !(v instanceof PDFDict) || v.keys().length > 0;
+    }).map(String) : [];
+    if (keys.some((x) => x !== '/XObject')) return `page ${k + 1} has resources ${keys}`;
+    const xo = res.lookup(PDFName.of('XObject'));
+    const imgs = xo.keys().map((n) => d.context.lookup(xo.get(n)));
+    if (imgs.length !== 1 || !(imgs[0] instanceof PDFStream) || String(imgs[0].dict.get(PDFName.of('Subtype'))) !== '/Image') return `page ${k + 1} draws more than one picture`;
+    const contents = page.node.Contents();
+    const streams = contents instanceof PDFStream ? [contents] : contents.asArray().map((x) => d.context.lookup(x));
+    const ops = streams.map((x) => Buffer.from(x instanceof PDFRawStream ? decodePDFRawStream(x).decode() : x.getContents()).toString('latin1')).join(' ');
+    if (/\bTj\b|\bTJ\b|\bBT\b|\bBDC\b|\bsh\b/.test(ops)) return `page ${k + 1} draws more than its picture`;
+  }
+  return '';
 }
 
 /** How dark each box [x0, x1, y0, y1] (points) of a page is, from 0 to 1, at 72 DPI. */
@@ -838,159 +794,65 @@ app.whenReady().then(async () => {
   await reader.destroy();
   const idLine = lines.find((l) => l.text.includes('024624470'));
   const mark = { page: 0, x: idLine.x / width - 0.01, y: (idLine.y - idLine.height) / height - 0.005, w: (idLine.right - idLine.x) / width + 0.02, h: (idLine.height * 1.4) / height };
-  r = await runTool('redact', [secret], { marks: [mark], clean: true });
+  r = await redactTool([secret], { marks: [mark], clean: true });
   const redacted = r.ok && r.display[0];
-  const page1 = redacted ? (await text.documentText(redacted))[0] : '';
-  check('the marked ID number is gone from the file itself', r.ok && !page1.includes('024624470') && !page1.includes('3074511') && page1 === '', r.error || page1);
-  const p2 = redacted ? await linesOf(redacted, 2) : [];
-  check('  the page without marks keeps its text', p2.some((l) => l.includes('024624470')));
+  const words = redacted ? (await text.documentText(redacted)).join('') : 'not made';
+  check('every page of the copy is a picture: without OCR it holds no text at all, the marked ID number included', r.ok && words.trim() === '', r.error || words.slice(0, 80));
+  const shape = redacted ? await onlyPictures(redacted) : 'not made';
+  check('  and nothing but the pictures: no fonts, comments, form, layers, attachments, outline or tags', shape === '', shape);
+  check('    (that check does fail on the original)', (await onlyPictures(secret)) !== '');
+  const ink = redacted ? darkAt(redacted, 1, dir, [[mark.x * 595 + 10, (mark.x + mark.w) * 595 - 10, (1 - mark.y - mark.h) * 842 + 3, (1 - mark.y) * 842 - 3].map(Math.round)]) : [0];
+  check('  the marked line is black in the picture', ink[0] > 0.95, JSON.stringify(ink));
   const rd = redacted ? await PDFDocument.load(await fsp.readFile(redacted), { updateMetadata: false }) : null;
   check('  the document\'s title and author are cleared', rd && !rd.getTitle() && !rd.getAuthor());
-  check('  and the summary says the areas were deleted, not hidden', /נמחק/.test(r.summary || ''), r.summary);
-  r = await runTool('redact', [secret], { marks: [mark], ocr: true });
+  check('  and the summary says the areas were deleted, not hidden, and that the pages are pictures', /נמחק/.test(r.summary || '') && /תמונה של מה שהוצג במסך/.test(r.summary || ''), r.summary);
+  // By default every page is read again, so the copy is searchable; the marked ID is not.
+  r = await runTool('redact', [secret], { marks: [mark], clean: false });
   const reread = r.ok ? await linesOf(r.display[0], 1) : [];
-  check('with OCR after, the rest of the redacted page is searchable and the ID still is not',
-    reread.some((l) => l.includes('בית הדין האזורי')) && !reread.join(' ').includes('024624470'), r.error || reread.join(' / '));
-  r = await runTool('redact', [secret], { marks: [] });
+  const reread2 = r.ok ? await linesOf(r.display[0], 2) : [];
+  check('by default the pages are read again: the copy is searchable, the marked ID number is not',
+    reread.some((l) => l.includes('בית הדין האזורי')) && !reread.join(' ').includes('024624470') && reread2.join(' ').includes('024624470'), r.error || reread.join(' / '));
+  const kept = r.ok ? await PDFDocument.load(await fsp.readFile(r.display[0]), { updateMetadata: false }) : null;
+  check('  and asked to keep them, the title and author stay', kept && kept.getTitle() === 'תיק של איתי ליבן' && kept.getAuthor() === 'רון קלנר', kept && kept.getTitle());
+  r = await redactTool([secret], { marks: [] });
   check('nothing marked is refused, saying how to mark', !r.ok && /סמן/.test(r.error), r.error);
 
   /* ---- Redact leaves nothing behind, anywhere in the file ---- */
   console.log('\nRedact, byte by byte');
-  const hiding = await secretsPdf(path.join(dir, 'מסתור.pdf'));
-  r = await runTool('redact', [hiding], { marks: [{ page: 0, x: 0.05, y: 0.05, w: 0.9, h: 0.2 }], clean: true });
-  const raw = r.ok ? expanded(r.display[0], dir) : '';
-  const left = ['SECRET-ID-4711', 'SECRET-TITLE', 'SECRET-INFO', 'SECRET-XMP', 'SECRET-ATTACH', 'SECRET-OUTLINE', 'SECRET-ALT', 'SECRET-NOTE', 'SECRET-XOBJ']
-    .filter((secret) => raw.includes(secret));
-  check('no secret survives anywhere in the file: page text, details, XMP, attachment, outline, tags, notes, shared pictures',
-    r.ok && raw.length > 0 && left.length === 0, r.error || `still inside: ${left.join(', ')}`);
-  check('  while the unmarked page keeps its own text', raw.includes('PUBLIC-PAGE-TWO'));
-  r = await runTool('redact', [hiding], { marks: [{ page: 0, x: 0.05, y: 0.05, w: 0.9, h: 0.2 }], clean: true, ocr: true });
-  const rawOcr = r.ok ? expanded(r.display[0], dir) : '';
-  check('  and the same holds after OCR of the redacted pages', r.ok && !['SECRET-ID-4711', 'SECRET-XOBJ', 'SECRET-NOTE'].some((x) => rawOcr.includes(x)), r.error);
-
-  // The ways a copied page can carry a redacted page's content, each found by review:
-  // resources inherited from the page tree, an unused form nested in a used one, a
-  // pattern's own resources, damaged content on another page, and (when keeping
-  // annotations) a form field or a reply note that points back at the redacted page.
-  const cases = await leakCases(dir);
-  for (const c of cases) {
-    r = await runTool('redact', [c.file], { marks: [{ page: 0, x: 0.05, y: 0.05, w: 0.9, h: 0.9 }], clean: c.clean });
-    const rawCase = r.ok ? expanded(r.display[0], dir) : '';
-    const leaks = c.secrets.filter((x) => rawCase.includes(x));
-    const lost = [].concat(c.keep).filter((x) => !rawCase.includes(x));
-    check(`  ${c.label}: nothing of the redacted page survives`, r.ok && leaks.length === 0 && lost.length === 0,
-      r.error || `still inside: ${leaks.join(', ')}; lost: ${lost.join(', ')}`);
+  // Every file review built to carry the marked page's content somewhere (in the page,
+  // the document's details, attachments, layers, comments, forms, or read differently by
+  // two programs), with page 1 marked whole, in both modes: the copy holds nothing of it
+  // and nothing but pictures, one per page pdf.js shows.
+  const corpus = {
+    'secrets everywhere a PDF can hide them': await secretsPdf(path.join(dir, 'מסתור.pdf')),
+    'a filled form, stamps, a password field and comments': await shownPdf(path.join(dir, 'טופס מלא.pdf')),
+    'layers and rules of every kind': await fidelityPdf(path.join(dir, 'נאמנות.pdf')),
+  };
+  for (const c of await leakCases(dir)) corpus[c.label] = c.file;
+  for (const [label, bytes] of Object.entries(crafted())) {
+    corpus[label] = path.join(dir, `crafted-${Object.keys(corpus).length}.pdf`);
+    await fsp.writeFile(corpus[label], bytes);
   }
-
-  r = await runTool('redact', [hiding], { marks: [{ page: 0, x: 0.05, y: 0.05, w: 0.9, h: 0.2 }], clean: false });
-  check('keeping comments, an attached file is still left out, and the summary says why',
-    r.ok && !expanded(r.display[0], dir).includes('SECRET-ATTACH') && /המצורפים לא הועתקו/.test(r.summary), r.error || r.summary);
-
-  // What an unmarked page shows stays on it: filled fields (with a drawing, and one whose
-  // drawing the form left to viewers), a checked box and a stamp, in both modes, each
-  // where it was; a hidden stamp is not drawn.
-  const shown = await shownPdf(path.join(dir, 'טופס מלא.pdf'));
-  const shownScreen = await screenText(shown, 2);
-  for (const clean of [true, false]) {
-    r = await runTool('redact', [shown], { marks: [{ page: 0, x: 0.05, y: 0.05, w: 0.9, h: 0.9 }], clean });
-    const words = r.ok ? (await linesOf(r.display[0], 2)).join(' ') : '';
-    const missing = ['FILLED-VALUE-P1', 'STAMP-P1', 'PUBLIC-SHOWN'].filter((x) => !words.includes(x));
-    check(`  ${clean ? 'removing' : 'keeping'} comments, the kept page still shows its field values and stamp`, r.ok && missing.length === 0, r.error || `missing: ${missing.join(', ')} in ${words}`);
-    const late = r.ok ? await valueDrawn(r.display[0], 2, 'LATE-VALUE') : false;
-    check('    a value the form left for viewers to draw is drawn too', late);
-    check('    and a hidden stamp stays hidden', r.ok && !words.includes('HIDDEN-STAMP'), words);
-    // Read as text, not searched for in the bytes: Chromium writes drawn text as glyph
-    // numbers, so a byte search would pass whether or not the password is on the page.
-    check('    a password is not drawn in the clear', r.ok && !words.includes('PASSWORDPLAIN') && words.includes('FILLED-VALUE-P1'), words);
-    // pdf.js ignores the /OC of an annotation's own drawing, so that stamp shows on screen.
-    check('    a drawing on a hidden layer stays hidden; a stamp whose own drawing carries a hidden layer shows, as on screen',
-      r.ok && !words.includes('OFFLAYERFORM') && words.includes('OFFLAYERSTAMP') && shownScreen.has('OFFLAYERSTAMP') && !shownScreen.has('OFFLAYERFORM'), words);
-    const third = r.ok ? (await linesOf(r.display[0], 3)).join(' ') : '';
-    check('    a page sharing its resources with another keeps its own stamp', third.includes('STAMPTWO'), third);
-    const freeText = r.ok ? (await linesOf(r.display[0], 2)).join(' ').includes('COMMENT-TEXT') : true;
-    check(`    a comment ${clean ? 'is removed, not burned into the page' : 'stays a comment, not burned into the page'}`, r.ok && !freeText);
-    const ink = r.ok ? darkIn(r.display[0], 2, dir) : null;
-    check('    each drawn where it was: the stamp\'s box and the checked box are dark, the drawing\'s own corner is not',
-      ink && ink.stamp > 0.8 && ink.check > 0.05 && ink.origin < 0.01, JSON.stringify(ink));
-    const annots = r.ok ? (await PDFDocument.load(await fsp.readFile(r.display[0]))).getPage(1).node.lookup(PDFName.of('Annots')) : null;
-    check(`    ${clean ? 'no annotation is left' : 'the two comments stay comments, and nothing else stays an annotation'}`,
-      clean ? !annots : annots && annots.size() === 2, annots ? `${annots.size()} annotations` : 'none');
-  }
-
-  // Harder cases on an unmarked page, found by review: what a viewer hides stays hidden,
-  // typed text stays, and a page sharing another's contents gets only its own stamp.
-  const fidelity = await fidelityPdf(path.join(dir, 'נאמנות.pdf'));
-  const onScreen = await screenText(fidelity, 2);
-  // The reading of the screen itself is checked: some markers show and some do not.
-  check('  (pdf.js shows some of the markers on the original and hides others)', onScreen.has('OC-VE-AND') && !onScreen.has('OC-VE-MARKED') && !onScreen.has('OC-SINGLEREF-OFF'), [...onScreen].join(' '));
-  for (const clean of [true, false]) {
-    r = await runTool('redact', [fidelity], { marks: [{ page: 0, x: 0.05, y: 0.05, w: 0.9, h: 0.9 }], clean });
-    const raw = r.ok ? expanded(r.display[0], dir) : '';
-    const two = r.ok ? (await linesOf(r.display[0], 2)).join(' ') : '';
-    const three = r.ok ? (await linesOf(r.display[0], 3)).join(' ') : '';
-    const mode = clean ? 'removing' : 'keeping';
-    // Judged against pdf.js, which drew the page the user saw: each marker shows in the
-    // result exactly when pdf.js shows it on the original. Markers inside a pattern, a
-    // Type3 letter or a soft mask, which this reading does not reach, are on a plain hidden
-    // layer and must simply be gone.
-    const judged = ['PUBLIC-FIDELITY', 'OC-VE-MARKED', 'OC-VE-FORM', 'OC-VE-AND', 'OC-UNLISTED', 'OC-CYCLIC', 'OC-MALFORMED', 'OC-SHORTVE',
-      'OC-NOTSELF', 'OC-ORSELF', 'OC-DEEPCHAIN', 'OC-MEMO', 'OC-NOTTWO', 'OC-SINGLEREF-OFF', 'OC-SINGLEREF-ON', 'OC-USAGE-VIEWOFF', 'OC-ONOFF', 'OC-PASTTEN', 'OC-UNKNOWNIN',
-      'OC-TYPE-REF', 'OC-VIEW-REF', 'OC-NULLMEMBER-MARKED', 'OC-ODD-NUMBER', 'OC-ODD-ARRAY', 'OC-ODD-STREAM', 'OC-ODD-NAME',
-      'OC-ODD-NULLMEMBER', 'OC-SUBTYPE-REF', 'OC-ANNOT-NULLMEMBER', 'OC-AP-OWN-OC', 'OC-ANNOT-NUMBER', 'OC-NAMED-SHOWN', 'OC-NAMED-ELSEWHERE'];
-    const differs = judged.filter((x) => raw.includes(x) !== onScreen.has(x));
-    const nested = ['PATTERNHIDDEN', 'GSTHREEFORMHIDDEN', 'GSTHREEMCHIDDEN', 'TYPETHREEMCHIDDEN', 'TYPETHREEFORMHIDDEN', 'SMASKHIDDEN', 'HIDDENCOMMENT', 'NULLMEMBERCOMMENT', 'SECRET-FIDELITY-P0']
-      .filter((x) => raw.includes(x));
-    check(`  ${mode} comments: what shows matches what pdf.js showed on screen, marker by marker; what is hidden inside patterns, Type3 letters, soft masks or a comment stays out; the page's own content stays`,
-      r.ok && differs.length === 0 && nested.length === 0 && two.includes('PUBLIC-FIDELITY'), r.error || `differs from the screen: ${differs.join(', ')}; hidden but inside: ${nested.join(', ')}`);
-    check('    text typed onto the page stays on it', two.includes('TYPED-ON-PAGE'), two);
-    check('    a stamp on a page sharing its contents with another is not drawn on that other page', two.includes('STAMPONLYONE') && !three.includes('STAMPONLYONE'), three);
-    if (clean) {
-      check('    handwriting, and typed text with no drawing, go with the comments, and the summary names both and how to keep them',
-        !two.includes('INK-MARK') && !raw.includes('TYPEDNOAP') && !raw.includes('TYPEDDANGLING') && /כתב יד וגם טקסט שהוקלד על העמוד\. כדי לשמור אותם/.test(r.summary || ''), r.summary);
-    } else {
-      check('    a handwritten mark, and typed text with no drawing or a missing one, stay comments',
-        !two.includes('INK-MARK') && /Ink/.test(raw) && raw.includes('TYPEDNOAP') && raw.includes('TYPEDDANGLING'), two);
+  const lib = await text.pdfjs();
+  for (const [label, file] of Object.entries(corpus)) {
+    const shownDoc = await lib.getDocument({ data: new Uint8Array(await fsp.readFile(file)), isEvalSupported: false }).promise;
+    const pagesShown = shownDoc.numPages;
+    await shownDoc.destroy();
+    const outcomes = [];
+    for (const clean of [true, false]) {
+      r = await redactTool([file], { marks: [{ page: 0, x: 0, y: 0, w: 1, h: 1 }], clean });
+      if (!r.ok) {
+        outcomes.push(r.error);
+        continue;
+      }
+      const raw = expanded(r.display[0], dir);
+      const count = (await PDFDocument.load(await fsp.readFile(r.display[0]))).getPageCount();
+      const shapeOf = await onlyPictures(r.display[0], { details: !clean });
+      if (/SECRET/.test(raw)) outcomes.push('a secret is inside');
+      if (shapeOf) outcomes.push(shapeOf);
+      if (count !== pagesShown) outcomes.push(`${count} pages, the screen showed ${pagesShown}`);
     }
-    const title = r.ok ? (await PDFDocument.load(await fsp.readFile(r.display[0]), { updateMetadata: false })).getTitle() : null;
-    check(`    the title is ${clean ? 'removed' : 'kept'}`, clean ? !title : title === 'KEPT-TITLE', title);
-    check('    the result has no list of layers, so no empty or "hidden" layers show in a viewer',
-      r.ok && !/\/OCProperties/.test(raw) && !/\/OCG\b/.test(raw), r.error);
-  }
-
-  {
-    // Every layer starts hidden but the ones listed as shown.
-    const { StandardFonts, PDFString } = require('pdf-lib');
-    const d = await PDFDocument.create();
-    const f = await d.embedFont(StandardFonts.Helvetica);
-    const ctx = d.context;
-    const p0 = d.addPage([595, 842]);
-    const p1 = d.addPage([595, 842]);
-    p0.drawText('SECRET-BASE-P0', { x: 50, y: 700, size: 14, font: f });
-    const listedOn = ctx.register(ctx.obj({ Type: 'OCG', Name: PDFString.of('on') }));
-    const other = ctx.register(ctx.obj({ Type: 'OCG', Name: PDFString.of('other') }));
-    // (The default given through a reference, which pdf.js resolves.)
-    d.catalog.set(PDFName.of('OCProperties'), ctx.obj({ OCGs: [listedOn, other], D: { BaseState: ctx.register(PDFName.of('OFF')), ON: [listedOn] } }));
-    // A layer written in place, in no list: hidden by default here, as in the original.
-    p1.node.set(PDFName.of('Resources'), ctx.obj({ Font: { F1: f.ref }, Properties: { On: listedOn, Ot: other, Dr: { Type: 'OCG', Name: PDFString.of('direct') } } }));
-    p1.node.set(PDFName.of('Contents'), ctx.register(ctx.stream('/OC /On BDC BT /F1 12 Tf 50 700 Td (OC-BASE-ON) Tj ET EMC /OC /Ot BDC BT /F1 12 Tf 50 650 Td (OC-BASE-OTHER) Tj ET EMC /OC /Dr BDC BT /F1 12 Tf 50 600 Td (OC-BASE-DIRECT) Tj ET EMC')));
-    // A stamp whose drawing holds hidden content: marked, and a drawing placed whole under
-    // a visibility expression. On a page with resources of its own, so only the walk
-    // through the stamp's drawing keeps these out.
-    const both = ctx.register(ctx.obj({ Type: 'OCMD', VE: [PDFName.of('And'), listedOn, other] }));
-    const inner = ctx.register(ctx.stream('BT /F1 10 Tf 105 110 Td (APHIDDENFORM) Tj ET', { Type: 'XObject', Subtype: 'Form', BBox: [0, 0, 595, 842], OC: both, Resources: { Font: { F1: f.ref } } }));
-    const stampLook = ctx.register(ctx.stream('/OC /Ha BDC BT /F1 10 Tf 105 120 Td (APHIDDENMC) Tj ET EMC /Hx Do BT /F1 10 Tf 105 140 Td (APSHOWN) Tj ET', {
-      Type: 'XObject', Subtype: 'Form', BBox: [100, 100, 200, 150], Resources: { Font: { F1: f.ref }, Properties: { Ha: other }, XObject: { Hx: inner } },
-    }));
-    p1.node.set(PDFName.of('Annots'), ctx.obj([ctx.register(ctx.obj({ Type: 'Annot', Subtype: 'Stamp', Rect: [300, 100, 400, 150], AP: { N: stampLook } }))]));
-    const base = path.join(dir, 'base-off.pdf');
-    await fsp.writeFile(base, await d.save());
-    r = await runTool('redact', [base], { marks: [{ page: 0, x: 0.05, y: 0.05, w: 0.9, h: 0.9 }] });
-    const raw = r.ok ? expanded(r.display[0], dir) : '';
-    const baseScreen = await screenText(base, 2);
-    const baseDiffers = ['OC-BASE-ON', 'OC-BASE-OTHER', 'OC-BASE-DIRECT'].filter((x) => raw.includes(x) !== baseScreen.has(x));
-    check('  where layers start hidden, each marker shows exactly as pdf.js shows it (a listed layer, another, one written in place)',
-      r.ok && baseDiffers.length === 0 && baseScreen.has('OC-BASE-ON') && !baseScreen.has('OC-BASE-OTHER'), r.error || baseDiffers.join(', '));
-    check('  a stamp is drawn into the page without what its drawing hides', r.ok && raw.includes('APSHOWN') && !raw.includes('APHIDDENMC') && !raw.includes('APHIDDENFORM'), r.error);
+    check(`  ${label}: nothing of it comes across, only a picture of each page`, outcomes.length === 0, outcomes.join('; '));
   }
 
   {
@@ -1025,7 +887,7 @@ app.whenReady().then(async () => {
     p1.node.set(PDFName.of('Contents'), ctx.register(ctx.stream('BT /F1 14 Tf 50 760 Td (PUBLIC-BURN) Tj ET q /Z gs 0 g 300 400 100 50 re f Q')));
     const burn = path.join(dir, 'burn.pdf');
     await fsp.writeFile(burn, await d.save());
-    r = await runTool('redact', [burn], { marks: [{ page: 0, x: 0.05, y: 0.05, w: 0.9, h: 0.1 }] });
+    r = await redactTool([burn], { marks: [{ page: 0, x: 0.05, y: 0.05, w: 0.9, h: 0.1 }] });
     const out0 = r.ok ? darkAt(r.display[0], 1, dir, [[300, 400, 100, 150], [300, 400, 400, 450]]) : null;
     check('  on the redacted page, what a viewer hides is not burned into its picture', out0 && out0.every((x) => x < 0.01), r.error || JSON.stringify(out0));
     const notes = r.ok ? darkAt(r.display[0], 1, dir, [[100, 200, 100, 150], [100, 200, 200, 250], [100, 200, 300, 350]]) : null;
@@ -1035,217 +897,25 @@ app.whenReady().then(async () => {
     check('  a rule that is also a graphics state keeps what it paints invisible', out1 && out1[0] < 0.01, r.error || JSON.stringify(out1));
   }
   {
-    // A file made so that working out its rules is slow: 20,000 layers, 3,000 rules sharing
-    // one expression over all of them that ends in a malformed part, and 3,000 sharing one
-    // list of all of them. Redaction must still finish in moments.
-    const { StandardFonts } = require('pdf-lib');
-    const d = await PDFDocument.create();
-    const f = await d.embedFont(StandardFonts.Helvetica);
-    const ctx = d.context;
-    const p0 = d.addPage([595, 842]);
-    const p1 = d.addPage([595, 842]);
-    p0.drawText('SECRET-SLOW', { x: 50, y: 700, size: 14, font: f });
-    const many = Array.from({ length: 20000 }, () => ctx.register(ctx.obj({ Type: 'OCG' })));
-    d.catalog.set(PDFName.of('OCProperties'), ctx.obj({ OCGs: many, D: { OFF: many } }));
-    const longVe = ctx.register(ctx.obj([PDFName.of('Or'), ...many, ctx.obj([PDFName.of('Xor')])]));
-    const longList = ctx.register(ctx.obj(many));
-    const props = { };
-    for (let i = 0; i < 3000; i++) {
-      props[`V${i}`] = ctx.register(ctx.obj({ Type: 'OCMD', VE: longVe }));
-      props[`L${i}`] = ctx.register(ctx.obj({ Type: 'OCMD', OCGs: longList, P: 'AllOff' }));
-    }
-    // A rule no page uses, twenty wide and ten deep over one shared part: 20^10 steps
-    // unless shared parts are remembered. (Unused, as pdf.js itself would not finish it.)
-    let wide = many[0];
-    for (let i = 0; i < 10; i++) wide = ctx.register(ctx.obj([PDFName.of('Or'), ...Array(20).fill(wide)]));
-    props.Wide = ctx.register(ctx.obj({ Type: 'OCMD', VE: wide }));
-    // An ordinary rule after all of those, which must still be worked out, not given up on.
-    const lateOn = ctx.register(ctx.obj({ Type: 'OCG' }));
-    props.Late = ctx.register(ctx.obj({ Type: 'OCMD', OCGs: lateOn }));
-    p1.node.set(PDFName.of('Resources'), ctx.obj({ Font: { F1: f.ref }, Properties: props }));
-    p1.node.set(PDFName.of('Contents'), ctx.register(ctx.stream('/OC /V0 BDC BT /F1 12 Tf 50 700 Td (OC-SLOW-VE) Tj ET EMC /OC /L0 BDC BT /F1 12 Tf 50 650 Td (OC-SLOW-ALLOFF) Tj ET EMC /OC /Late BDC BT /F1 12 Tf 50 600 Td (OC-SLOW-LATE) Tj ET EMC')));
-    const slow = path.join(dir, 'slow.pdf');
-    await fsp.writeFile(slow, await d.save());
-    const slowScreen = await screenText(slow, 2);
-    const started = Date.now();
-    r = await runTool('redact', [slow], { marks: [{ page: 0, x: 0.05, y: 0.05, w: 0.9, h: 0.9 }] });
-    const took = Date.now() - started;
-    const raw = r.ok ? expanded(r.display[0], dir) : '';
-    check('  a file made to be slow to work out is still redacted in moments, and judged right',
-      r.ok && took < 15000 && ['OC-SLOW-VE', 'OC-SLOW-ALLOFF', 'OC-SLOW-LATE'].every((x) => raw.includes(x) === slowScreen.has(x)) && slowScreen.has('OC-SLOW-LATE'),
-      r.error || `${took} ms; screen: ${[...slowScreen].join(' ')}`);
-  }
-
-  {
-    // A page in the page tree with no /Type: pdf.js counts it, pdf-lib does not, so the
-    // page the user marked on screen is not the page a picture would replace.
-    const { StandardFonts } = require('pdf-lib');
-    const d = await PDFDocument.create();
-    const f = await d.embedFont(StandardFonts.Helvetica);
-    const secret = d.addPage([595, 842]);
-    const open = d.addPage([595, 842]);
-    secret.drawText('SECRET-MISCOUNT', { x: 50, y: 700, size: 14, font: f });
-    open.drawText('PUBLIC-MISCOUNT', { x: 50, y: 700, size: 14, font: f });
-    const kids = d.catalog.Pages().lookup(PDFName.of('Kids'));
-    const stray = d.context.register(d.context.obj({ Parent: d.catalog.get(PDFName.of('Pages')), MediaBox: [0, 0, 595, 842], Resources: {}, Contents: d.context.register(d.context.stream('')) }));
-    kids.insert(0, stray);
-    d.catalog.Pages().set(PDFName.of('Count'), d.context.obj(3));
-    const miscount = path.join(dir, 'miscount.pdf');
-    await fsp.writeFile(miscount, await d.save());
-    const before = fs.readdirSync(dir).length;
-    r = await runTool('redact', [miscount], { marks: [{ page: 1, x: 0, y: 0, w: 1, h: 1 }] });
-    check('  a file whose pages pdf.js and pdf-lib count differently is refused, and nothing is written',
-      !r.ok && /אין ודאות איזה עמוד סומן/.test(r.error || '') && fs.readdirSync(dir).length === before, r.error || r.display);
-  }
-  {
-    // A page object written twice, the table of objects pointing at the first copy (as
-    // pdf.js reads it) while a reader going through the file in order takes the second,
-    // which holds the marked page's content.
-    const objs = [[1, '<< /Type /Catalog /Pages 2 0 R >>'], [2, '<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>'], [3, rawPage(5)], [4, rawPage(6)],
-      [5, rawStream('BT /F1 24 Tf 50 700 Td (SECRET-TWICE) Tj ET')], [6, rawStream('BT /F1 24 Tf 50 700 Td (PUBLIC-TWICE) Tj ET')],
-      [7, '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>'], [4, rawPage(5)]];
-    const twice = path.join(dir, 'twice.pdf');
-    await fsp.writeFile(twice, rawPdf(objs, { firstOf: [4] }));
-    r = await runTool('redact', [twice], { marks: [{ page: 0, x: 0, y: 0, w: 1, h: 1 }] });
-    const raw = r.ok ? expanded(r.display[0], dir) : '';
-    check('  a page object written twice: the kept page is the one the screen showed, and the marked text is nowhere',
-      r.ok && raw.includes('PUBLIC-TWICE') && !raw.includes('SECRET-TWICE'), r.error || 'secret inside');
-    // The same file with its table of objects pointing nowhere useful: refused.
-    const broken = rawPdf(objs, { firstOf: [4] });
-    const at = broken.lastIndexOf('startxref');
-    const damaged = path.join(dir, 'damaged-table.pdf');
-    await fsp.writeFile(damaged, Buffer.concat([broken.subarray(0, at), Buffer.from('startxref\n17\n%%EOF\n')]));
-    // The same file with its table of objects pointing nowhere useful: qpdf and pdf.js
-    // each rebuild it, and since they rebuild it alike, it is redacted.
-    const damagedScreen = await screenText(damaged, 2);
-    r = await runTool('redact', [damaged], { marks: [{ page: 0, x: 0, y: 0, w: 1, h: 1 }] });
-    const damagedOut = r.ok ? await screenText(r.display[0], 2) : new Set();
-    check('  a file whose table of objects has to be rebuilt is redacted as the screen showed it (both rebuild it alike)',
-      r.ok && [...damagedScreen].join('|') === [...damagedOut].join('|') && damagedScreen.size > 0 && (await screenText(r.display[0], 1)).size === 0,
-      r.error || [...damagedOut].join('|'));
-    // A page at the end that pdf.js counts and pdf-lib does not: the counts differ.
-    const tail = rawPdf([[1, '<< /Type /Catalog /Pages 2 0 R >>'], [2, '<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>'], [3, rawPage(5)],
-      [4, rawPage(5).replace('/Type /Page ', '')], [5, rawStream('BT /F1 24 Tf 50 700 Td (TAIL) Tj ET')], [7, '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>']]);
-    const tailFile = path.join(dir, 'tail.pdf');
-    await fsp.writeFile(tailFile, tail);
-    r = await runTool('redact', [tailFile], { marks: [{ page: 0, x: 0, y: 0, w: 1, h: 1 }] });
-    check('  a file whose last page only pdf.js counts is refused', !r.ok && /אין ודאות איזה עמוד סומן/.test(r.error || ''), r.error || 'redacted');
-    // Marks made on another version of the file, and on this one.
-    r = await runTool('redact', [twice], { marks: [{ page: 0, x: 0, y: 0, w: 1, h: 1 }], forToken: 'not-this-version' });
+    // Marks made on another version of the file are refused; on this one, accepted.
+    const file = corpus['secrets everywhere a PDF can hide them'];
+    r = await redactTool([file], { marks: [{ page: 0, x: 0, y: 0, w: 1, h: 1 }], forToken: 'not-this-version' });
     check('  marks made on another version of the file are refused', !r.ok && /השתנה מאז שסומן/.test(r.error || ''), r.error);
-    r = await runTool('redact', [twice], { marks: [{ page: 0, x: 0, y: 0, w: 1, h: 1 }], forToken: require('../src/main/docs').register(twice) });
+    r = await redactTool([file], { marks: [{ page: 0, x: 0, y: 0, w: 1, h: 1 }], forToken: require('../src/main/docs').register(file) });
     check('  and marks made on this version are accepted', r.ok, r.error);
   }
   {
     // Ordinary documents, a part of one page marked: a grey scan and a black-and-white
-    // scan, made by Scan to PDF from a picture of a Hebrew letter, two pages each. They
-    // are made, the marked words gone and the rest kept.
+    // scan, made by Scan to PDF from a picture of a Hebrew letter, two pages each.
     const letterPdf = await vectorPdf(path.join(dir, 'מכתב לסריקה.pdf'), LETTER, { pages: 2 });
     const shot = picture(letterPdf, path.join(dir, 'letter-shot.png'));
     for (const mode of ['gray', 'bw']) {
       const made = await runTool('scan', [shot, shot], { mode, ocr: false });
       const scanFile = path.join(dir, `scan-${mode}.pdf`);
       if (made.ok) await fsp.rename(made.display[0], scanFile);
-      r = made.ok ? await runTool('redact', [scanFile], { marks: [{ page: 0, x: 0.1, y: 0.1, w: 0.4, h: 0.1 }] }) : made;
+      r = made.ok ? await redactTool([scanFile], { marks: [{ page: 0, x: 0.1, y: 0.1, w: 0.4, h: 0.1 }] }) : made;
       check(`  a ${mode === 'gray' ? 'grey' : 'black-and-white'} scan with part of a page marked is redacted`, r.ok, r.error);
     }
-  }
-  {
-    // Two things pdf.js reads differently from the fresh copy qpdf writes: a drawing with
-    // /OC null (pdf.js leaves it out; the copy writes it as no /OC, as the specification
-    // reads it), and a rule written in place in page content naming a layer by object
-    // number (not valid PDF; the copy numbers objects anew). On a kept page each would
-    // show what the screen hid, so the file is refused.
-    const { StandardFonts, PDFNull } = require('pdf-lib');
-    for (const kind of ['null', 'inline']) {
-      const d = await PDFDocument.create();
-      const f = await d.embedFont(StandardFonts.Helvetica);
-      const ctx = d.context;
-      d.addPage([595, 842]).drawText('SECRET-DIFFERS', { x: 50, y: 700, size: 14, font: f });
-      const p1 = d.addPage([595, 842]);
-      const off = ctx.register(ctx.obj({ Type: 'OCG', Name: require('pdf-lib').PDFString.of('off') }));
-      d.catalog.set(PDFName.of('OCProperties'), ctx.obj({ OCGs: [off], D: { OFF: [off] } }));
-      const hiddenForm = ctx.register(ctx.stream('BT /F1 24 Tf 50 500 Td (WAS-HIDDEN) Tj ET', { Type: 'XObject', Subtype: 'Form', BBox: [0, 0, 595, 842], Resources: { Font: { F1: f.ref } }, OC: PDFNull }));
-      p1.node.set(PDFName.of('Resources'), ctx.obj({ Font: { F1: f.ref }, XObject: { H: hiddenForm } }));
-      p1.node.set(PDFName.of('Contents'), ctx.register(ctx.stream(kind === 'null'
-        ? 'BT /F1 14 Tf 50 700 Td (PUBLIC-DIFFERS) Tj ET /H Do'
-        : `BT /F1 14 Tf 50 700 Td (PUBLIC-DIFFERS) Tj ET /OC << /Type /OCMD /OCGs ${off.objectNumber} 0 R >> BDC BT /F1 24 Tf 50 500 Td (WAS-HIDDEN) Tj ET EMC`)));
-      const file = path.join(dir, `differs-${kind}.pdf`);
-      await fsp.writeFile(file, await d.save());
-      r = await runTool('redact', [file], { marks: [{ page: 0, x: 0, y: 0, w: 1, h: 1 }] });
-      check(`  ${kind === 'null' ? 'a drawing with /OC null' : 'a rule naming a layer by number inside content'}: the copy would read differently from the screen, so it is refused`,
-        !r.ok && /קוראות את עמוד 2/.test(r.error || ''), r.error || 'made');
-    }
-  }
-  {
-    // Files that pdf.js and qpdf read differently in ways no check of the file itself
-    // catches (found by review): a linearized file with two tables of objects, one whose
-    // first page is named outside the page tree, and an object stream whose objects are
-    // listed out of order; and the first again with the marked page's content carried
-    // where it cannot be seen (invisible text, a picture painted over) or as a picture
-    // that looks different. In each, the copied page 2 would carry the marked page's
-    // content while the screen showed other content. Each is refused before anything is
-    // made, since the copy does not read as the screen did.
-    for (const [label, bytes] of Object.entries(crafted())) {
-      const file = path.join(dir, `crafted-${label.replace(/[^a-z]+/g, '-')}.pdf`);
-      await fsp.writeFile(file, bytes);
-      r = await runTool('redact', [file], { marks: [{ page: 0, x: 0, y: 0, w: 1, h: 1 }] });
-      check(`  ${label}: refused`, !r.ok && /קוראות את עמוד \d|אין ודאות איזה עמוד סומן/.test(r.error || ''), r.error || 'made');
-    }
-  }
-  {
-    // Kept pages Ghostscript cannot rebuild, though pdf.js shows them: a content list
-    // holding null and something that is not content, and a filter Ghostscript does not
-    // know. The page would come out blank; the copy is refused instead.
-    const zlib = require('zlib');
-    const shown = 'BT /F1 24 Tf 50 700 Td (PUBLICTWO) Tj ET';
-    const packed = zlib.deflateSync(Buffer.from(shown)).toString('latin1');
-    const pageWith = (contents) => `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 7 0 R >> >> /Contents ${contents} >>`;
-    const files = {
-      'a content list with null and a non-stream': rawPdf([[1, '<< /Type /Catalog /Pages 2 0 R >>'], [2, '<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>'],
-        [3, rawPage(5)], [4, pageWith('[null 9 0 R 6 0 R]')], [5, rawStream('BT /F1 24 Tf 50 700 Td (SECRET-ONE) Tj ET')], [6, rawStream(shown)],
-        [7, '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>'], [9, '<< /Not /AStream >>']]),
-      'a filter Ghostscript does not know': rawPdf([[1, '<< /Type /Catalog /Pages 2 0 R >>'], [2, '<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>'],
-        [3, rawPage(5)], [4, pageWith('6 0 R')], [5, rawStream('BT /F1 24 Tf 50 700 Td (SECRET-ONE) Tj ET')],
-        [6, `<< /Length ${packed.length} /Filter [/FlateDecode /Foo] >>\nstream\n${packed}\nendstream`],
-        [7, '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>']]),
-    };
-    for (const [label, bytes] of Object.entries(files)) {
-      const file = path.join(dir, `lost-${label.length}.pdf`);
-      await fsp.writeFile(file, bytes);
-      const screen = await screenText(file, 2);
-      r = await runTool('redact', [file], { marks: [{ page: 0, x: 0, y: 0, w: 1, h: 1 }] });
-      check(`  ${label}: shown on screen, but the rebuilt page would be blank, so refused`,
-        screen.has('PUBLICTWO') && !r.ok && /לא נשמר כשהקובץ נבנה מחדש/.test(r.error || ''), r.error || 'made');
-    }
-  }
-  {
-    // One scan split into two pages, each showing its half of the same picture. Page 1 is
-    // marked; page 2 must not keep the whole scan (the marked half hidden only by its page
-    // edges), so it becomes a picture too, and the summary says so.
-    const zlib = require('zlib');
-    const W = 1500;
-    const H = 800;
-    const pixels = Buffer.alloc(W * H, 255);
-    for (let y = 300; y < 500; y++) for (let x = 100; x < 600; x++) pixels[y * W + x] = 0;
-    const packed = zlib.deflateSync(pixels).toString('latin1');
-    const half = (x0) => `<< /Type /Page /Parent 2 0 R /MediaBox [${x0} 0 ${x0 + 500} 500] /Resources << /XObject << /Im 6 0 R >> >> /Contents 5 0 R >>`;
-    const split = rawPdf([[1, '<< /Type /Catalog /Pages 2 0 R >>'], [2, '<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>'],
-      [3, half(0)], [4, half(500)], [5, rawStream('q 1000 0 0 500 0 0 cm /Im Do Q')],
-      [6, `<< /Type /XObject /Subtype /Image /Width ${W} /Height ${H} /ColorSpace /DeviceGray /BitsPerComponent 8 /Filter /FlateDecode /Length ${packed.length} >>\nstream\n${packed}\nendstream`]]);
-    const splitFile = path.join(dir, 'split-scan.pdf');
-    await fsp.writeFile(splitFile, split);
-    r = await runTool('redact', [splitFile], { marks: [{ page: 0, x: 0.1, y: 0.2, w: 0.5, h: 0.4 }] });
-    const widths = [];
-    if (r.ok) {
-      const outDoc = await PDFDocument.load(await fsp.readFile(r.display[0]));
-      for (const [, o] of outDoc.context.enumerateIndirectObjects()) {
-        const w = o && o.dict && o.dict.lookup && o.dict.lookup(PDFName.of('Width'));
-        if (w) widths.push(w.asNumber());
-      }
-    }
-    check('  a scan split across two pages, one marked: the other page becomes a picture too, so the whole scan is not kept',
-      r.ok && !widths.includes(W) && /גם עמוד 2 הפך לתמונה/.test(r.summary || ''), r.error || `${widths} ${r.summary}`);
   }
   {
     // The picture of a marked page has the size pdf.js shows the page at: turned, with a
@@ -1259,7 +929,7 @@ app.whenReady().then(async () => {
     p2.node.set(PDFName.of('UserUnit'), d.context.obj(2));
     const sized = path.join(dir, 'sizes.pdf');
     await fsp.writeFile(sized, await d.save());
-    r = await runTool('redact', [sized], { marks: [0, 1, 2].map((page) => ({ page, x: 0.1, y: 0.1, w: 0.1, h: 0.1 })) });
+    r = await redactTool([sized], { marks: [0, 1, 2].map((page) => ({ page, x: 0.1, y: 0.1, w: 0.1, h: 0.1 })) });
     const lib = await text.pdfjs();
     const orig = await lib.getDocument({ data: new Uint8Array(await fsp.readFile(sized)), isEvalSupported: false }).promise;
     const want = [];
@@ -1285,7 +955,7 @@ app.whenReady().then(async () => {
     let jobId = null;
     let askedAt = 0;
     let started = false;
-    const job = jobs.start(tools.runnable('redact'), [slowPage], { marks: [{ page: 0, x: 0.1, y: 0.1, w: 0.2, h: 0.2 }] }, {
+    const job = jobs.start(tools.runnable('redact'), [slowPage], { ocr: false, marks: [{ page: 0, x: 0.1, y: 0.1, w: 0.2, h: 0.2 }] }, {
       onProgress: (p) => {
         // Progress is sent at most every 33 ms, so the job is caught by its first message;
         // Esc comes three seconds later, well inside the page's drawing (over 20 s here).
@@ -1306,7 +976,7 @@ app.whenReady().then(async () => {
     // The drawing window's page dies mid-drawing: the job ends at once, not at the time limit.
     let crashedAt = 0;
     let crashStarted = false;
-    const crash = jobs.start(tools.runnable('redact'), [slowPage], { marks: [{ page: 0, x: 0.1, y: 0.1, w: 0.2, h: 0.2 }] }, {
+    const crash = jobs.start(tools.runnable('redact'), [slowPage], { ocr: false, marks: [{ page: 0, x: 0.1, y: 0.1, w: 0.2, h: 0.2 }] }, {
       onProgress: () => {
         if (crashStarted) return;
         crashStarted = true;
@@ -1320,14 +990,14 @@ app.whenReady().then(async () => {
     const cr = await crash.promise;
     const ended = crashedAt ? Date.now() - crashedAt : -1;
     check('  when the drawing window dies mid-page, the job ends at once with a message', !cr.ok && !cr.cancelled && ended >= 0 && ended < 4000 && /לצייר/.test(cr.error || ''), `${cr.error} after ${ended} ms`);
-    r = await runTool('redact', [fidelity], { marks: [{ page: 0, x: 0, y: 0, w: 1, h: 1 }] });
+    r = await redactTool([corpus['layers and rules of every kind']], { marks: [{ page: 0, x: 0, y: 0, w: 1, h: 1 }] });
     check('    and the next redaction works', r.ok, r.error);
     // A page that takes longer than the time limit (shortened here) gets its own message.
     pagepicture.setPageLimitForTest(1500);
-    const timed = await runTool('redact', [slowPage], { marks: [{ page: 0, x: 0.1, y: 0.1, w: 0.2, h: 0.2 }] });
+    const timed = await redactTool([slowPage], { marks: [{ page: 0, x: 0.1, y: 0.1, w: 0.2, h: 0.2 }] });
     pagepicture.setPageLimitForTest(120000);
     check('  a page that takes too long to draw is given up on, saying so', !timed.ok && /לא הסתיים/.test(timed.error || ''), timed.error);
-    for (let i = 0; i < 3; i++) await runTool('redact', [fidelity], { marks: [{ page: 0, x: 0, y: 0, w: 1, h: 1 }] });
+    for (let i = 0; i < 3; i++) await redactTool([corpus['layers and rules of every kind']], { marks: [{ page: 0, x: 0, y: 0, w: 1, h: 1 }] });
     const w = pagepicture.windowForTest();
     check('  the drawing window keeps no listeners from finished drawings', w && w.webContents.listenerCount('destroyed') <= 1, w ? w.webContents.listenerCount('destroyed') : 'no window');
   }

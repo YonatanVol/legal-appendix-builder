@@ -126,14 +126,6 @@ function open(file, { signal } = {}) {
       const r = await call(`window.drawPage(${t}, ${Number(index)}, ${Number(dpi)})`, { signal });
       return { png: Buffer.from(r.png, 'base64'), width: r.width, height: r.height };
     },
-    /** '' when page `index` reads the same to pdf.js in `other` (another view), else what differs. */
-    same(index, other) {
-      return call(`window.samePage(${t}, ${JSON.stringify(other.token)}, ${Number(index)})`, { signal });
-    },
-    /** How many dark pixels page `index` has at 36 DPI. */
-    ink(index) {
-      return call(`window.inkOf(${t}, ${Number(index)})`, { signal });
-    },
     token,
     async release() {
       if (win && !win.isDestroyed()) {

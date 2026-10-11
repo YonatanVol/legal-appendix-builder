@@ -1533,7 +1533,7 @@ const panels = {
   },
 
   redact: {
-    defaults: () => ({ marks: [], clean: true, ocr: false }),
+    defaults: () => ({ marks: [], clean: true, ocr: true }),
     render(container, view) {
       const o = view.options;
       const file = firstFile(view);
@@ -1546,9 +1546,9 @@ const panels = {
       const clearAll = ui.button(clearRow, { label: 'ניקוי כל הסימונים', kind: 'ghost', onClick: () => setMarks([]) });
 
       const after = ui.section(container, 'עוד');
-      ui.check(after, { label: 'הסרת פרטי המסמך, הערות וקבצים מצורפים', value: o.clean, onChange: (v) => view.set('clean', v) });
-      ui.check(after, { label: 'זיהוי טקסט מחדש בעמודים המושחרים', value: o.ocr, onChange: (v) => view.set('ocr', v) });
-      ui.note(after, 'עמוד שיש בו סימון הופך לתמונה, ומה שהושחר נמחק ממנו באמת: אי אפשר להעתיק אותו, לחפש אותו או לשחזר אותו. שאר העמודים נשארים כמו שהם.', 'muted');
+      ui.check(after, { label: 'זיהוי הטקסט מחדש, כדי שאפשר יהיה לחפש בעותק', value: o.ocr, onChange: (v) => view.set('ocr', v) });
+      ui.check(after, { label: 'הסרת כותרת המסמך ושם המחבר', value: o.clean, onChange: (v) => view.set('clean', v) });
+      ui.note(after, 'כל עמוד בעותק הופך לתמונה של מה שמוצג כאן, ומה שהושחר נמחק באמת: אי אפשר להעתיק אותו, לחפש אותו או לשחזר אותו. שום דבר מהקובץ המקורי שאינו נראה במסך לא עובר לעותק, גם לא הערות, שכבות מוסתרות או קבצים מצורפים.', 'muted');
 
       if (!file || !file.token) return;
       if (o.forToken && o.forToken !== file.token) o.marks = [];

@@ -23,22 +23,13 @@ build differs from the plan below, it is because the plan's version did not hold
 - **Scan to PDF** applies the phone's orientation, straightens up to six degrees, and sets
   contrast and black and white. Cropping a photo to the page's corners stays in the
   document scanner app, as the plan said.
-- **Redact** rebuilds the whole document through Ghostscript after the marked pages become
-  pictures. The plan's per-page approach left recoverable content in the file; three rounds
-  of review found the ways. Unmarked pages keep what they show: field values and stamps are
-  drawn into the page, and hidden layers stay hidden. "Hidden" means what the screen hid:
-  the marked pages are drawn by pdf.js, as the screen drew them, and the unmarked pages
-  follow pdf.js's own layer rules, ported line for line. The file is first written afresh
-  by qpdf, and pdf-lib reads that copy; then every page of the copy must read to pdf.js
-  exactly as the file itself does: the same text, seen or not, the same drawing steps,
-  the same image data, the same annotations, the same picture at 36 DPI. That covers the
-  files review found pdf.js and qpdf reading differently; comparing the result's look
-  with the screen instead missed invisible text and needed masks that an annotation could
-  abuse. After Ghostscript, a kept page that lost much of its ink stops the copy, and a
-  kept page sharing a scan with a marked page becomes a picture too. Layers are settled once over
-  every object in the file rather than followed from each page: five review rounds each
-  found another place a hidden drawing could sit. Kept comments carry only plain values,
-  and attached files never come across.
+- **Redact** turns every page into a picture of what the screen showed (drawn by pdf.js,
+  as the screen drew it), the marked areas painted black, and builds a new PDF from the
+  pictures, with OCR on by default so the copy stays searchable. Nothing else of the
+  original comes across. The plan kept unmarked pages as they were; twelve review rounds
+  each found another rare way content could hide in them (layers, reader disagreements,
+  shared scans, painted-over pictures), and every fix misfired somewhere else, so
+  Yonatan chose pictures throughout.
 - **Sign** refuses a file that is already signed digitally, because rewriting it would break
   that signature; Acrobat Reader appends instead, and the message says so.
 - **Workflows**: Merge and Unlock only first; Protect, Split and conversions only last.
@@ -98,7 +89,7 @@ office PC (Microsoft Office, a scanner).
 | Page numbers | Chromium overlay + pdf-lib | Position, format ("3", "3 מתוך 10", "עמוד 3"), first number, size, range, margin | Rotation-aware, reused from the appendix builder. |
 | Watermark | Chromium overlay + pdf-lib | Text or image, position (grid or tiled), angle, opacity, size, range | |
 | Sign | pdf-lib (+ @signpdf for a certificate file) | Draw, type or upload a signature, place and size it, add date and name; initials | Signatures are kept locally per person. A .pfx certificate adds a real digital signature; without one the signature is visual only, and the screen says which. |
-| Redact | pdf.js (find) + Ghostscript (rasterize) + pdf-lib | Search text, patterns (ID number, phone, credit card), draw boxes, whole pages; preview; apply | Redacted pages are rasterized so the text is truly gone; metadata and annotations are stripped. Optional OCR of the rest afterwards. |
+| Redact | pdf.js (find, draw) + pdf-lib + Tesseract | Search text, patterns (ID number, phone, credit card), draw boxes, whole pages; preview; apply | Every page becomes a picture of what the screen showed, marked areas black; nothing else of the file comes across. OCR afterwards, on by default. |
 | PDF Forms | pdf-lib | Detect and fill fields; create text, checkbox, radio, dropdown, signature fields by drawing; flatten | |
 | Protect | qpdf | Open password, owner password, AES-256, allow print/copy/edit | |
 | Unlock | qpdf | Password if the file needs one | Owner-only restrictions are removed without a password; an open password is asked for. |
@@ -187,9 +178,8 @@ is available to that office. It is recorded in the README's licence section.
 - Office automation runs Word on the PC itself; nothing travels.
 - Temporary files live in the app's own temp folder and are deleted when a run ends,
   succeeds or not.
-- Redaction rasterizes, so redacted text is gone, not hidden. Metadata, annotations and
-  attached files are removed with it; what an annotation shows on an unmarked page is
-  drawn into that page.
+- Redaction turns every page into a picture of what the screen showed, so redacted text
+  is gone, not hidden, and nothing that was not on screen comes across.
 - What it does not protect against: a compromised PC, a compromised GitHub publishing
   token (see the README), and the AI provider's own handling of the text that is sent.
 
