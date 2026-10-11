@@ -14,7 +14,7 @@ const os = require('os');
 const path = require('path');
 const { execFileSync } = require('child_process');
 const { app, nativeImage } = require('electron');
-const { PDFDocument, StandardFonts, rgb } = require('pdf-lib');
+const { PDFDocument, StandardFonts, rgb, PDFName, PDFRef } = require('pdf-lib');
 const { openWindow } = require('./helpers/window');
 
 const jobs = require('../src/main/jobs');
@@ -232,6 +232,39 @@ app.whenReady().then(async () => {
   const fixedCount = r.ok ? (await PDFDocument.load(await fsp.readFile(r.display[0]))).getPageCount() : 0;
   check('a page that does not say it is a page is marked as one, so every program counts all three',
     r.ok && fixedCount === 3 && /פגום/.test(r.summary) && (await text.documentText(r.display[0]))[1].includes('PAGE TWO'), r.error || `${fixedCount}: ${r.summary}`);
+  // The other ways a page tree is read differently, each put right by Repair so that both
+  // programs read the same pages: every page without /Type (Repair must not add a blank
+  // page), a /Count too small, an entry leading nowhere, and a /Count that leaves out a
+  // page without /Type at the end.
+  const { pagesAsShown } = require('../src/main/pdf/inspect');
+  const treeCases = {
+    'every page without /Type': (d) => { for (const p of d.getPages()) p.node.delete(PDFName.of('Type')); },
+    'a page count too small': (d) => d.catalog.Pages().set(PDFName.of('Count'), d.context.obj(2)),
+    'an entry leading nowhere': (d) => d.catalog.Pages().lookup(PDFName.of('Kids')).push(PDFRef.of(9999)),
+    'a count that leaves out a page without /Type': (d) => {
+      const extra = d.addPage([595, 842]);
+      extra.drawText('PAGE FOUR', { x: 60, y: 700, size: 18 });
+      extra.node.delete(PDFName.of('Type'));
+      d.catalog.Pages().set(PDFName.of('Count'), d.context.obj(3));
+    },
+  };
+  for (const [label, spoil] of Object.entries(treeCases)) {
+    const d = await PDFDocument.create();
+    const f = await d.embedFont(StandardFonts.Helvetica);
+    for (const w of ['PAGE ONE', 'PAGE TWO', 'PAGE THREE']) d.addPage([595, 842]).drawText(w, { x: 60, y: 700, size: 18, font: f });
+    spoil(d);
+    const file = path.join(dir, `tree-${label.length}.pdf`);
+    await fsp.writeFile(file, await d.save({ addDefaultPage: false }));
+    r = await runTool('repair', [file], {});
+    const out = r.ok ? await PDFDocument.load(await fsp.readFile(r.display[0])) : null;
+    const asShown = out ? await pagesAsShown(r.display[0], out) : { agree: false };
+    const words = r.ok ? (await text.documentText(r.display[0])).map((w) => w.trim()) : [];
+    check(`  ${label}: after Repair both programs read the same pages, with no blank one added`,
+      asShown.agree && words.filter(Boolean).length === words.length && words.length >= 3, r.error || `${words.join(' | ')} agree=${asShown.agree}`);
+  }
+  // And a tool refuses such a file whichever way it is started, while Repair takes it.
+  r = await runTool('compress', [odd], {});
+  check('a tool started without the screen refuses such a file too, pointing to Repair', !r.ok && /תיקון PDF/.test(r.error || ''), r.error || 'made');
   r = await runTool('pdfa', [truncated], { level: '2b' });
   check('PDF/A refuses to hand over a copy with pages missing', !r.ok && /(עובדו|פגום|נפתח)/.test(r.error), r.ok ? r.summary : r.error);
 

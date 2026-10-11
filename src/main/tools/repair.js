@@ -19,9 +19,10 @@ const { strictPages } = require('../engine/verify');
  *     damaged rather than only their index.
  *  3. pdf-lib reads the file object by object and copies every page that survives.
  *
- * Last, a page in the page tree that does not say it is a page (no /Type) is marked as
- * one: some programs count it and some skip it, so one program would show a page that
- * another leaves out. No method above fixes that, as each keeps the tree as it was.
+ * Last, the page tree is put in order (typePages): a page that does not say it is one, a
+ * count that is wrong, an entry that leads nowhere. Programs read such a tree differently,
+ * so one would show a page that another leaves out; no method above fixes that, as each
+ * keeps the tree as it was.
  *
  * The result says what happened: whether the file was damaged at all, how many pages
  * came back, and how many were lost.
@@ -115,9 +116,12 @@ async function byPages(bytes, name, out) {
 }
 
 /**
- * Marks every leaf of the page tree as a page (/Type /Page) and every inner node as a node
- * of pages, where the mark is missing. Saves the file only if something was missing, and
- * says whether it was.
+ * Puts the page tree in order where programs could read it differently: every leaf is
+ * marked as a page (/Type /Page) and every inner node as a node of pages; each node's
+ * /Count is set to the pages actually under it; entries that lead to nothing are dropped.
+ * pdf.js counts a file's pages by /Count and pdf-lib by the pages it finds, so after this
+ * both count, and show, the same pages. Saves the file only if something was out of
+ * order, and says whether it was.
  */
 async function typePages(file) {
   let doc;
@@ -128,23 +132,52 @@ async function typePages(file) {
   }
   const ctxt = doc.context;
   let changed = false;
-  const seen = new Set();
+  const inner = new Set();
+  // Returns how many pages are under `node`.
   const walk = (node) => {
-    if (!(node instanceof PDFDict) || seen.has(node)) return;
-    seen.add(node);
     const kids = node.lookup(PDFName.of('Kids'));
-    const want = kids instanceof PDFArray ? 'Pages' : 'Page';
-    if (!node.get(PDFName.of('Type'))) {
-      node.set(PDFName.of('Type'), PDFName.of(want));
+    if (!(kids instanceof PDFArray)) {
+      if (String(node.get(PDFName.of('Type'))) !== '/Page') {
+        node.set(PDFName.of('Type'), PDFName.of('Page'));
+        changed = true;
+      }
+      return 1;
+    }
+    // A node met again on the way down is a loop: it counts for nothing there.
+    if (inner.has(node)) return 0;
+    inner.add(node);
+    if (String(node.get(PDFName.of('Type'))) !== '/Pages') {
+      node.set(PDFName.of('Type'), PDFName.of('Pages'));
       changed = true;
     }
-    if (kids instanceof PDFArray) for (const ref of kids.asArray()) walk(ctxt.lookup(ref));
+    const kept = [];
+    let count = 0;
+    for (const ref of kids.asArray()) {
+      const kid = ctxt.lookup(ref);
+      if (!(kid instanceof PDFDict)) {
+        changed = true;
+        continue;
+      }
+      kept.push(ref);
+      count += walk(kid);
+    }
+    if (kept.length !== kids.size()) node.set(PDFName.of('Kids'), ctxt.obj(kept));
+    const said = node.lookup(PDFName.of('Count'));
+    if (!said || typeof said.asNumber !== 'function' || said.asNumber() !== count) {
+      node.set(PDFName.of('Count'), ctxt.obj(count));
+      changed = true;
+    }
+    inner.delete(node);
+    return count;
   };
-  walk(doc.catalog.lookup(PDFName.of('Pages')));
+  const root = doc.catalog.lookup(PDFName.of('Pages'));
+  if (!(root instanceof PDFDict)) return false;
+  walk(root);
   if (!changed) return false;
-  // Read afresh, so the pages are read as pages, and written again.
-  const again = await PDFDocument.load(await doc.save({ useObjectStreams: true }), { updateMetadata: false });
-  await fs.writeFile(file, await again.save({ useObjectStreams: true }));
+  // Read afresh, so the pages are read as pages, and written again; never with a page of
+  // pdf-lib's own added to an empty-looking file.
+  const again = await PDFDocument.load(await doc.save({ useObjectStreams: true, addDefaultPage: false }), { updateMetadata: false });
+  await fs.writeFile(file, await again.save({ useObjectStreams: true, addDefaultPage: false }));
   return true;
 }
 
