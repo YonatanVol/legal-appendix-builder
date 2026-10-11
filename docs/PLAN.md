@@ -29,10 +29,11 @@ build differs from the plan below, it is because the plan's version did not hold
   drawn into the page, and hidden layers stay hidden. "Hidden" means what the screen hid:
   the marked pages are drawn by pdf.js, as the screen drew them, and the unmarked pages
   follow pdf.js's own layer rules, ported line for line. The file is first written afresh
-  by qpdf so that pdf-lib reads each object as pdf.js does. Last, every page of the result
-  is drawn by pdf.js and compared with the screen; a page that looks different stops the
-  copy. That check is what closes the class of files two readers read differently, which
-  review kept finding new members of. Layers are settled once over
+  by qpdf, and pdf-lib reads that copy; then every page of the copy must read to pdf.js
+  exactly as the file itself does (the same text, seen or not, the same drawing steps,
+  the same picture). That check closes the class of files two readers read differently,
+  which review kept finding new members of: comparing the result's look with the screen
+  instead missed invisible text and needed masks that an annotation could abuse. Layers are settled once over
   every object in the file rather than followed from each page: five review rounds each
   found another place a hidden drawing could sit. Kept comments carry only plain values,
   and attached files never come across.

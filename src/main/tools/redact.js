@@ -15,7 +15,6 @@ const { loadPdf } = require('../pdf/inspect');
 const { samePages } = require('../engine/verify');
 const docs = require('../docs');
 const { staleFields, drawAppearances } = require('./forms');
-const { PDFTextField } = require('pdf-lib');
 
 const DPI = 200;
 
@@ -58,12 +57,13 @@ async function run({ inputs, options = {}, ctx }) {
 
   // pdf.js (which drew the screen and draws the marked pages) and pdf-lib (which copies
   // the other pages) read a file differently where it is ambiguous: an object written
-  // twice, a damaged table of objects. qpdf writes the file afresh, each object once, and
-  // pdf-lib reads that. Where qpdf and pdf.js could still read it differently, the check
-  // at the end (every page of the result against the screen) refuses the result.
-  const q = await bin.run('qpdf', ['--', 'given.pdf', 'single.pdf'], { cwd: ctx.scratch, signal: ctx.signal });
+  // twice, two tables of objects, a damaged one. qpdf writes the file afresh, each object
+  // once, and pdf-lib reads that copy. Then every page of the copy is confirmed, below,
+  // to read to pdf.js exactly as the file itself does.
+  // Without object streams, so pdf-lib reads plain objects only.
+  const q = await bin.run('qpdf', ['--object-streams=disable', '--', 'given.pdf', 'single.pdf'], { cwd: ctx.scratch, signal: ctx.signal });
   ctx.throwIfCancelled();
-  // 3: qpdf repaired something and says so; the result is still checked against the screen.
+  // 3: qpdf repaired something and says so; the copy is still confirmed page by page.
   if (q.code !== 0 && q.code !== 3) {
     throw new Error('הקובץ פגום או בנוי באופן שאינו חד משמעי, ולכן אין ודאות מה בדיוק הוצג במסך. לא נוצר עותק. אפשר להריץ קודם את "תיקון PDF" ולסמן שוב בקובץ המתוקן.');
   }
@@ -114,9 +114,26 @@ async function run({ inputs, options = {}, ctx }) {
     if (!same) {
       throw new Error('העמודים בקובץ הזה בנויים כך שאין ודאות איזה עמוד סומן, ולכן לא נוצר עותק. אפשר להריץ קודם "תיקון PDF" ולסמן שוב בקובץ המתוקן.');
     }
+    // Every page of the copy pdf-lib reads must read to pdf.js exactly as the file itself
+    // does (the screen): the same text, seen or not, the same drawing, the same picture.
+    // Two readers that took the same bytes differently (two tables of objects, an object
+    // stream out of order, an object written twice) differ here, before anything is made.
+    for (let i = 0; i < total; i++) {
+      ctx.progress(0.05 + (i / total) * 0.25, `בודק את עמוד ${i + 1} מתוך ${total}`);
+      let differs;
+      try {
+        differs = await view.same(i, copyView);
+      } catch (err) {
+        failed(ctx, err);
+      }
+      if (differs) {
+        console.error(`[redact] page ${i + 1} reads differently in the copy (${differs})`);
+        throw new Error(`הקובץ בנוי כך שתוכנות שונות קוראות את עמוד ${i + 1} בו בצורה שונה, ולכן אין ודאות מה בדיוק יישאר בו. לא נוצר עותק. אפשר להריץ קודם את "תיקון PDF" ולסמן שוב בקובץ המתוקן.`);
+      }
+    }
     for (let k = 0; k < pages.length; k++) {
       const i = pages[k];
-      ctx.progress(0.1 + (k / pages.length) * 0.5, `משחיר את עמוד ${i + 1}`);
+      ctx.progress(0.3 + (k / pages.length) * 0.3, `משחיר את עמוד ${i + 1}`);
       let picture;
       try {
         picture = await view.draw(i, DPI);
@@ -141,15 +158,8 @@ async function run({ inputs, options = {}, ctx }) {
   const out = await PDFDocument.create();
   // Filled fields whose drawing is missing or out of date are drawn now, so that their
   // values can become part of the page below instead of disappearing with the form.
-  // Their places are left out of the final check, as is any password field: pdf.js
-  // draws such a field's look by its own means on screen, which this does not copy.
-  const redrawn = new Set();
   try {
-    const form = doc.getForm();
-    const stale = staleFields(form);
-    for (const field of [...stale, ...form.getFields().filter((f) => f instanceof PDFTextField && f.isPassword())]) {
-      for (const widget of field.acroField.getWidgets()) redrawn.add(widget.dict);
-    }
+    const stale = staleFields(doc.getForm());
     if (stale.length) await drawAppearances(doc, stale);
   } catch {
     // A form pdf-lib cannot read keeps whatever drawings it already has.
@@ -162,16 +172,12 @@ async function run({ inputs, options = {}, ctx }) {
   // carry hidden text are left behind: a link's destination would pull a redacted page
   // across with it.
   const removed = { handwriting: 0, typed: 0 };
-  // Per kept page, where an annotation was shown on screen but is not drawn into the page
-  // (a link, a comment, kept or removed): the final check does not compare those places.
-  const masks = new Map();
   for (let i = 0; i < total; i++) {
     if (blacked.has(i)) continue;
     const page = doc.getPage(i);
-    const r = strip(page, options.clean !== false, layers, redrawn);
+    const r = strip(page, options.clean !== false, layers);
     removed.handwriting += r.handwriting;
     removed.typed += r.typed;
-    masks.set(i, r.masks);
   }
   await doc.flush();
   const copier = PDFObjectCopier.for(doc.context, out.context);
@@ -232,15 +238,6 @@ async function run({ inputs, options = {}, ctx }) {
     if (read.bytes) bytes = read.bytes;
     searchable = ' העמודים המושחרים זוהו מחדש, ואפשר לחפש בהם בכל מה שלא הושחר.';
   }
-  // Last, the result is checked against the screen, page by page: pdf.js draws each page
-  // of the result and of the file as the user saw it, the marked areas painted black on
-  // the latter, and they must look the same. Whatever any reader made of the file on the
-  // way, a page that does not look as it did on screen (a picture on the wrong page, a
-  // kept page that now shows something else) means no copy is made.
-  ctx.progress(0.98, 'בודק שהתוצאה נראית כמו המסך…');
-  const result = path.join(ctx.scratch, 'result.pdf');
-  await fs.writeFile(result, bytes);
-  await compareWithScreen(ctx, given, result, total, byPage, masks);
   const outputPath = await ctx.writeOutput(bytes, { source, label: 'מושחר', ext: 'pdf' });
   const what = pages.length === 1 ? 'עמוד אחד הושחר' : `${pages.length} עמודים הושחרו`;
   const how = options.ocr ? '' : ' העמודים המושחרים הפכו לתמונה, ולכן אי אפשר לחפש בהם טקסט.';
@@ -250,37 +247,6 @@ async function run({ inputs, options = {}, ctx }) {
   };
 }
 
-// How different, 0 to 255, any 8 by 8 square of a page may look at 50 DPI before the
-// result is refused. Drawing the same page from the original and from the result differs
-// by a few levels (anti-aliasing, the JPEG of a marked page); a word, a line or a picture
-// that is not where it was differs by far more.
-const LOOKS_SAME = 40;
-
-/** Each page of `result` against `original` as the screen showed it; refuses on a difference. */
-async function compareWithScreen(ctx, original, result, total, byPage, masks) {
-  const before = pagepicture.open(original, { signal: ctx.signal });
-  const after = pagepicture.open(result, { signal: ctx.signal });
-  const differs = [];
-  try {
-    if ((await after.pageList()).length !== total) differs.push(0);
-    for (let i = 0; i < total && !differs.length; i++) {
-      const boxes = (byPage.get(i) || []).map((m) => ({ x: m.x - 0.002, y: m.y - 0.002, w: m.w + 0.004, h: m.h + 0.004 }));
-      const worst = await before.compare(i, after, { boxes, masks: masks.get(i) || [], pictured: byPage.has(i) });
-      if (process.env.REDACT_COMPARE_LOG) console.log(`[compare] ${path.basename(original)} page ${i + 1}: ${worst}`);
-      if (worst > LOOKS_SAME) differs.push(i);
-    }
-  } catch (err) {
-    failed(ctx, err);
-  } finally {
-    await before.release();
-    await after.release();
-  }
-  if (differs.length) {
-    console.error(`[redact] the result does not look like the screen on page ${differs[0] + 1}`);
-    throw new Error(`עמוד ${differs[0] + 1} בתוצאה אינו נראה כמו שהוצג במסך, ולכן לא נוצר עותק. הקובץ בנוי באופן שהכלי לא יכול להשחיר בבטחה. אפשר להריץ קודם את "תיקון PDF" ולסמן שוב בקובץ המתוקן.`);
-  }
-}
-
 /** What a person would not think of as a comment, among the comments removed. */
 function notedRemovals({ handwriting, typed }) {
   const kinds = [handwriting && 'כתב יד', typed && 'טקסט שהוקלד על העמוד'].filter(Boolean);
@@ -288,14 +254,14 @@ function notedRemovals({ handwriting, typed }) {
   return ` בין ההערות שהוסרו יש גם ${kinds.join(' וגם ')}. כדי לשמור ${kinds.length === 1 ? 'אותו' : 'אותם'}, אפשר להשחיר שוב בלי "הסרת פרטי המסמך, הערות וקבצים מצורפים".`;
 }
 
-/** A page pdf.js could not draw: Esc is passed on, anything else said in Hebrew. */
+/** A page pdf.js could not draw or read: Esc is passed on, anything else said in Hebrew. */
 function failed(ctx, err) {
   ctx.throwIfCancelled();
-  console.error('[redact] drawing the marked pages failed:', err);
+  console.error('[redact] drawing a page failed:', err);
   if (err && err.timedOut) {
-    throw new Error('ציור אחד העמודים המסומנים לא הסתיים גם אחרי שתי דקות, ולכן לא נוצר עותק. העמוד כבד מאוד לציור; אפשר לנסות לכווץ את הקובץ קודם.');
+    throw new Error('ציור אחד העמודים לא הסתיים גם אחרי שתי דקות, ולכן לא נוצר עותק. העמוד כבד מאוד לציור; אפשר לנסות לכווץ את הקובץ קודם.');
   }
-  throw new Error('לא ניתן היה לצייר את העמודים המסומנים, ולכן לא נוצר עותק. אפשר לנסות קודם את "תיקון PDF".');
+  throw new Error('לא ניתן היה לצייר את אחד העמודים, ולכן לא נוצר עותק. אפשר לנסות קודם את "תיקון PDF".');
 }
 
 function valid(m) {
@@ -325,7 +291,7 @@ const KEPT_KEYS = ['Type', 'Subtype', 'Rect', 'Contents', 'NM', 'M', 'F', 'C', '
  * and without it the comments a viewer can draw again stay, holding only plain values.
  * Page-level metadata, thumbnails and article beads go too.
  */
-function strip(page, clean, layers = null, redrawn = new Set()) {
+function strip(page, clean, layers = null) {
   const node = page.node;
   const ctxt = page.doc.context;
   // A page whose list of contents is shared with another gets its own list, so what is
@@ -335,18 +301,13 @@ function strip(page, clean, layers = null, redrawn = new Set()) {
   if (contents instanceof PDFRef && list instanceof PDFArray) node.set(PDFName.of('Contents'), ctxt.obj(list.asArray()));
   const annots = node.lookup(PDFName.of('Annots'));
   const keep = [];
-  const removed = { handwriting: 0, typed: 0, masks: [] };
+  const removed = { handwriting: 0, typed: 0 };
   if (annots instanceof PDFArray) {
     for (const ref of annots.asArray()) {
       const a = ctxt.lookup(ref);
       if (!(a instanceof PDFDict)) continue;
       const sub = String(a.get(PDFName.of('Subtype')) || '');
-      const rect = numbers(a.lookup(PDFName.of('Rect')));
-      const unmatched = () => { if (rect.length === 4 && rect.every(Number.isFinite)) removed.masks.push(rect); };
-      if (NEVER.has(sub)) {
-        unmatched();
-        continue;
-      }
+      if (NEVER.has(sub)) continue;
       // Text typed onto the page, with a drawing of it to put there; without one it is
       // treated as any comment.
       const typed = sub === '/FreeText' && String(a.get(PDFName.of('IT'))) === '/FreeTextTypeWriter' && !!appearanceOf(a);
@@ -359,13 +320,11 @@ function strip(page, clean, layers = null, redrawn = new Set()) {
           if (value !== undefined && plain(value)) copy.set(PDFName.of(key), value);
         }
         keep.push(ctxt.register(copy));
-        unmatched();
       } else if (!REDRAWN.has(sub) || typed) {
         // What is not a comment (a filled field, a stamp, a signature picture, text typed
         // onto the page) is drawn into the page.
-        if (!flatten(page, a, layers) || redrawn.has(a)) unmatched();
+        flatten(page, a, layers);
       } else {
-        unmatched();
         // A comment goes with the others when they are removed.
         if (sub === '/Ink') removed.handwriting++;
         if (sub === '/FreeText' && String(a.get(PDFName.of('IT'))) === '/FreeTextTypeWriter') removed.typed++;
@@ -409,8 +368,7 @@ function appearanceOf(annot) {
 
 /**
  * Draws an annotation's appearance into the page's content, where the annotation is,
- * as a viewer would show it (PDF 32000, 12.5.5), and says whether it did. A hidden
- * annotation is not drawn, nor
+ * as a viewer would show it (PDF 32000, 12.5.5). A hidden annotation is not drawn, nor
  * one whose layer, or whose drawing's layer, is hidden.
  */
 function flatten(page, annot, layers) {
@@ -443,7 +401,6 @@ function flatten(page, annot, layers) {
 
   const name = page.node.newXObject('Flat', ref);
   page.pushOperators(pushGraphicsState(), concatTransformationMatrix(sx, 0, 0, sy, r0 - x0 * sx, s0 - y0 * sy), drawObject(name), popGraphicsState());
-  return true;
 }
 
 /**

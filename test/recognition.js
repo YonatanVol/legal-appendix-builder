@@ -305,10 +305,12 @@ async function fidelityPdf(file) {
   const veForm = form('BT /F1 12 Tf 50 560 Td (OC-VE-FORM) Tj ET', { OC: notShown });
   const inPattern = form('BT /F1 12 Tf 2 2 Td (PATTERNHIDDEN) Tj ET', { OC: offLayer });
   const pattern = ctx.register(ctx.stream('/Hf Do', { Type: 'Pattern', PatternType: 1, PaintType: 1, TilingType: 1, BBox: [0, 0, 200, 40], XStep: 200, YStep: 40, Resources: { XObject: { Hf: inPattern } } }));
-  // A rule whose expression contains itself, four times over.
+  // A rule whose expression contains itself, twice over. (pdf.js itself expands such a
+  // rule ten levels deep each time it reads the page; four times over, that is a million
+  // steps and half a minute per reading.)
   const loop = ctx.register(ctx.obj([]));
   const loopArray = ctx.lookup(loop);
-  for (const x of [PDFName.of('Or'), loop, loop, loop, loop]) loopArray.push(x);
+  for (const x of [PDFName.of('Or'), loop, loop]) loopArray.push(x);
   const cyclic = ctx.register(ctx.obj({ Type: 'OCMD', VE: loop }));
   const malformed = ctx.register(ctx.obj({ Type: 'OCMD', VE: [PDFName.of('Xor'), shownLayer] }));
   const tooShort = ctx.register(ctx.obj({ Type: 'OCMD', VE: [PDFName.of('And')] }));
@@ -571,6 +573,48 @@ function crafted() {
     s += table({ ...at, 8: secAt }, 10) + `trailer\n<< /Size 11 /Root 3 0 R >>\nstartxref\n${mainPos}\n%%EOF\n`;
     cases['linearized, two tables'] = s.replace(lin(0), lin(s.length));
   }
+  // Linearized with two tables of objects, page 2's content (and picture) read one way
+  // by pdf.js and another by qpdf, for each kind of hiding.
+  const twoTables = (res, differing) => {
+    const lin = (L) => obj(1, `<< /Linearized 1 /L ${pad(L)} /H [ 1 1 ] /O 4 /E 1 /N 2 /T 1 >>`);
+    let s = HDR;
+    const at = {};
+    at[1] = s.length;
+    s += lin(0);
+    const firstXrefPos = s.length;
+    const FIRSTLEN = table({}, 12).length + 'trailer\n<< /Size 13 /Root 3 0 R >>\n'.length;
+    s += ' '.repeat(FIRSTLEN);
+    for (const [n, b] of [[3, '<< /Type /Catalog /Pages 2 0 R >>'], [2, '<< /Type /Pages /Kids [4 0 R 5 0 R] /Count 2 >>'],
+      [4, page('7 0 R')], [5, `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources ${res} /Contents 8 0 R >>`],
+      [7, txt('SECRETPAGEZERO')], [9, font]]) {
+      at[n] = s.length;
+      s += obj(n, b);
+    }
+    const first = { ...at };
+    const last = { ...at };
+    for (const [n, shown, carried] of differing) {
+      first[n] = s.length;
+      s += obj(n, shown);
+      last[n] = s.length;
+      s += obj(n, carried);
+    }
+    s = s.slice(0, firstXrefPos) + (table(first, 12) + 'trailer\n<< /Size 13 /Root 3 0 R >>\n') + s.slice(firstXrefPos + FIRSTLEN);
+    const mainPos = s.length;
+    s += table(last, 12) + `trailer\n<< /Size 13 /Root 3 0 R >>\nstartxref\n${mainPos}\n%%EOF\n`;
+    return s.replace(lin(0), lin(s.length));
+  };
+  const image = (byte) => `<< /Type /XObject /Subtype /Image /Width 2 /Height 2 /ColorSpace /DeviceGray /BitsPerComponent 8 /Length 4 >>\nstream\n${String.fromCharCode(byte).repeat(4)}\nendstream`;
+  const fontRes = '<< /Font << /F1 9 0 R >> >>';
+  const imageRes = '<< /Font << /F1 9 0 R >> /XObject << /Im 10 0 R >> >>';
+  cases['linearized, carried as invisible text'] = twoTables(fontRes, [[8, txt('PUBLICTWO'),
+    stream('BT /F1 24 Tf 50 700 Td (PUBLICTWO) Tj ET BT 3 Tr /F1 24 Tf 50 650 Td (SECRETPAGEZERO) Tj ET')]]);
+  // Invisible in both readings, the same steps, only the words differ: only the text tells.
+  cases['linearized, invisible text that differs'] = twoTables(fontRes, [[8,
+    stream('BT 3 Tr /F1 24 Tf 50 650 Td (PUBLICTWOXX) Tj ET'), stream('BT 3 Tr /F1 24 Tf 50 650 Td (SECRETPAGEZERO) Tj ET')]]);
+  cases['linearized, carried as a picture painted over'] = twoTables(imageRes, [[8, txt('PUBLICTWO'),
+    stream('q 100 0 0 100 50 300 cm /Im Do Q 1 g 0 0 595 842 re f 0 g BT /F1 24 Tf 50 700 Td (PUBLICTWO) Tj ET')], [10, image(255), image(0)]]);
+  cases['linearized, a picture that differs'] = twoTables(imageRes, [[8, stream('q 100 0 0 100 50 300 cm /Im Do Q'), stream('q 100 0 0 100 50 300 cm /Im Do Q')],
+    [10, image(255), image(0)]]);
   {
     const lin = (L) => obj(1, `<< /Linearized 1 /L ${pad(L)} /H [ 1 1 ] /O 6 /E 1 /N 2 /T 1 /P 1 >>`);
     let s = HDR;
@@ -1063,12 +1107,13 @@ app.whenReady().then(async () => {
     const damaged = path.join(dir, 'damaged-table.pdf');
     await fsp.writeFile(damaged, Buffer.concat([broken.subarray(0, at), Buffer.from('startxref\n17\n%%EOF\n')]));
     // The same file with its table of objects pointing nowhere useful: qpdf and pdf.js
-    // each rebuild it, and the result is made only if it looks as the screen showed it.
+    // each rebuild it, and since they rebuild it alike, it is redacted.
     const damagedScreen = await screenText(damaged, 2);
     r = await runTool('redact', [damaged], { marks: [{ page: 0, x: 0, y: 0, w: 1, h: 1 }] });
     const damagedOut = r.ok ? await screenText(r.display[0], 2) : new Set();
-    check('  a file whose table of objects has to be rebuilt is redacted as the screen showed it, or refused',
-      r.ok ? [...damagedScreen].join('|') === [...damagedOut].join('|') && !(r.ok && (await screenText(r.display[0], 1)).size) : /תיקון PDF/.test(r.error || ''), r.error || [...damagedOut].join('|'));
+    check('  a file whose table of objects has to be rebuilt is redacted as the screen showed it (both rebuild it alike)',
+      r.ok && [...damagedScreen].join('|') === [...damagedOut].join('|') && damagedScreen.size > 0 && (await screenText(r.display[0], 1)).size === 0,
+      r.error || [...damagedOut].join('|'));
     // A page at the end that pdf.js counts and pdf-lib does not: the counts differ.
     const tail = rawPdf([[1, '<< /Type /Catalog /Pages 2 0 R >>'], [2, '<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>'], [3, rawPage(5)],
       [4, rawPage(5).replace('/Type /Page ', '')], [5, rawStream('BT /F1 24 Tf 50 700 Td (TAIL) Tj ET')], [7, '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>']]);
@@ -1083,11 +1128,25 @@ app.whenReady().then(async () => {
     check('  and marks made on this version are accepted', r.ok, r.error);
   }
   {
+    // Ordinary documents, a part of one page marked: a grey scan and a black-and-white
+    // scan, made by Scan to PDF from a picture of a Hebrew letter, two pages each. They
+    // are made, the marked words gone and the rest kept.
+    const letterPdf = await vectorPdf(path.join(dir, 'מכתב לסריקה.pdf'), LETTER, { pages: 2 });
+    const shot = picture(letterPdf, path.join(dir, 'letter-shot.png'));
+    for (const mode of ['gray', 'bw']) {
+      const made = await runTool('scan', [shot, shot], { mode, ocr: false });
+      const scanFile = path.join(dir, `scan-${mode}.pdf`);
+      if (made.ok) await fsp.rename(made.display[0], scanFile);
+      r = made.ok ? await runTool('redact', [scanFile], { marks: [{ page: 0, x: 0.1, y: 0.1, w: 0.4, h: 0.1 }] }) : made;
+      check(`  a ${mode === 'gray' ? 'grey' : 'black-and-white'} scan with part of a page marked is redacted`, r.ok, r.error);
+    }
+  }
+  {
     // Two things pdf.js reads differently from the fresh copy qpdf writes: a drawing with
     // /OC null (pdf.js leaves it out; the copy writes it as no /OC, as the specification
     // reads it), and a rule written in place in page content naming a layer by object
     // number (not valid PDF; the copy numbers objects anew). On a kept page each would
-    // show what the screen hid, so the result is refused.
+    // show what the screen hid, so the file is refused.
     const { StandardFonts, PDFNull } = require('pdf-lib');
     for (const kind of ['null', 'inline']) {
       const d = await PDFDocument.create();
@@ -1105,23 +1164,24 @@ app.whenReady().then(async () => {
       const file = path.join(dir, `differs-${kind}.pdf`);
       await fsp.writeFile(file, await d.save());
       r = await runTool('redact', [file], { marks: [{ page: 0, x: 0, y: 0, w: 1, h: 1 }] });
-      check(`  ${kind === 'null' ? 'a drawing with /OC null' : 'a rule naming a layer by number inside content'}: the result would not look as the screen did, so it is refused`,
-        !r.ok && /עמוד 2 בתוצאה אינו נראה כמו שהוצג במסך/.test(r.error || ''), r.error || 'made');
+      check(`  ${kind === 'null' ? 'a drawing with /OC null' : 'a rule naming a layer by number inside content'}: the copy would read differently from the screen, so it is refused`,
+        !r.ok && /קוראות את עמוד 2/.test(r.error || ''), r.error || 'made');
     }
   }
   {
     // Files that pdf.js and qpdf read differently in ways no check of the file itself
     // catches (found by review): a linearized file with two tables of objects, one whose
     // first page is named outside the page tree, and an object stream whose objects are
-    // listed out of order. In each, the copied page 2 would show the marked page's text
-    // while the screen showed other text. The final check against the screen refuses them.
+    // listed out of order; and the first again with the marked page's content carried
+    // where it cannot be seen (invisible text, a picture painted over) or as a picture
+    // that looks different. In each, the copied page 2 would carry the marked page's
+    // content while the screen showed other content. Each is refused before anything is
+    // made, since the copy does not read as the screen did.
     for (const [label, bytes] of Object.entries(crafted())) {
-      const file = path.join(dir, `crafted-${label}.pdf`);
+      const file = path.join(dir, `crafted-${label.replace(/[^a-z]+/g, '-')}.pdf`);
       await fsp.writeFile(file, bytes);
       r = await runTool('redact', [file], { marks: [{ page: 0, x: 0, y: 0, w: 1, h: 1 }] });
-      const raw = r.ok ? expanded(r.display[0], dir) : '';
-      check(`  ${label}: refused, or made with no marked text in it`, (!r.ok && /אינו נראה כמו שהוצג במסך|תיקון PDF/.test(r.error || '')) || (r.ok && !raw.includes('SECRETPAGEZERO')),
-        r.error || 'secret inside');
+      check(`  ${label}: refused`, !r.ok && /קוראות את עמוד \d|אין ודאות איזה עמוד סומן/.test(r.error || ''), r.error || 'made');
     }
   }
   {

@@ -23,25 +23,49 @@ let pageLimitMs = 120000;
 let win = null;
 let opening = null;
 
+/** `promise`, or a rejection once `ms` have passed, whichever is first. */
+function within(promise, ms, what) {
+  let timer;
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`${what} did not answer`)), ms); }),
+  ]).finally(() => clearTimeout(timer));
+}
+
+/**
+ * Opens the window and waits until its page is ready. Every step has a time limit, so a
+ * window that does not answer is closed and opened once more rather than waited for
+ * forever.
+ */
+async function openWindow() {
+  require('../window').serveRenderer();
+  const w = new BrowserWindow({ show: false, webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true } });
+  try {
+    await within(w.loadURL(URL), 15000, 'the drawing window');
+    const deadline = Date.now() + 15000;
+    while (!(await within(w.webContents.executeJavaScript('window.pagePictureReady === true', true), 5000, 'the drawing window'))) {
+      if (Date.now() > deadline) throw new Error('page pictures did not load');
+      await new Promise((r) => setTimeout(r, 30));
+    }
+  } catch (err) {
+    close(w);
+    throw err;
+  }
+  // A page that ran out of memory takes the window with it; the next call opens anew.
+  w.webContents.on('render-process-gone', () => { if (win === w) dispose(); });
+  return w;
+}
+
 async function page() {
   if (win && !win.isDestroyed()) return win;
   if (!opening) {
     opening = (async () => {
-      require('../window').serveRenderer();
-      const w = new BrowserWindow({ show: false, webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true } });
+      let w;
       try {
-        await w.loadURL(URL);
-        const deadline = Date.now() + 15000;
-        while (!(await w.webContents.executeJavaScript('window.pagePictureReady === true', true))) {
-          if (Date.now() > deadline) throw new Error('page pictures did not load');
-          await new Promise((r) => setTimeout(r, 30));
-        }
-      } catch (err) {
-        if (!w.isDestroyed()) w.destroy();
-        throw err;
+        w = await openWindow();
+      } catch {
+        w = await openWindow();
       }
-      // A page that ran out of memory takes the window with it; the next call opens anew.
-      w.webContents.on('render-process-gone', () => { if (win === w) dispose(); });
       win = w;
       return w;
     })().finally(() => { opening = null; });
@@ -102,16 +126,15 @@ function open(file, { signal } = {}) {
       const r = await call(`window.drawPage(${t}, ${Number(index)}, ${Number(dpi)})`, { signal });
       return { png: Buffer.from(r.png, 'base64'), width: r.width, height: r.height };
     },
-    /**
-     * How different page `index` of `other` (another view) looks from page `index` of
-     * this one, 0 to 255 (see comparePages in page-picture.mjs).
-     */
-    compare(index, other, { boxes = [], masks = [], pictured = false } = {}) {
-      return call(`window.comparePages(${t}, ${Number(index)}, ${JSON.stringify(other.token)}, ${Number(index)}, ${JSON.stringify({ boxes, masks, pictured })})`, { signal });
+    /** '' when page `index` reads the same to pdf.js in `other` (another view), else what differs. */
+    same(index, other) {
+      return call(`window.samePage(${t}, ${JSON.stringify(other.token)}, ${Number(index)})`, { signal });
     },
     token,
     async release() {
-      if (win && !win.isDestroyed()) await win.webContents.executeJavaScript(`window.release(${t})`, true).catch(() => {});
+      if (win && !win.isDestroyed()) {
+        await within(win.webContents.executeJavaScript(`window.release(${t})`, true), 5000, 'the drawing window').catch(() => dispose());
+      }
     },
   };
 }
@@ -126,9 +149,14 @@ function windowForTest() {
   return win && !win.isDestroyed() ? win : null;
 }
 
+function close(w) {
+  if (w && !w.isDestroyed()) w.destroy();
+}
+
 function dispose() {
-  if (win && !win.isDestroyed()) win.destroy();
+  const w = win;
   win = null;
+  close(w);
 }
 
 module.exports = { open, dispose, windowForTest, setPageLimitForTest };
