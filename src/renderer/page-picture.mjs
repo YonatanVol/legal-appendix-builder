@@ -1,9 +1,10 @@
 // Pictures of pages for Redact, drawn by pdf.js as the screen drew them when the user
-// marked them: the same library, display intent, with annotations, as thumbs.mjs; only
-// with the plain canvas (see getDocument below), so a page comes out the same each time.
-// This page runs in a hidden window and is driven by src/main/engine/pagepicture.js.
+// marked them: the same library, the same way of opening the document (pdf-document.mjs),
+// display intent, with annotations, as thumbs.mjs. This page runs in a hidden window and
+// is driven by src/main/engine/pagepicture.js.
 
 import * as pdfjs from '/pdfjs/pdf.mjs';
+import { documentParams } from './pdf-document.mjs';
 
 pdfjs.GlobalWorkerOptions.workerSrc = '/pdfjs/pdf.worker.mjs';
 
@@ -11,19 +12,7 @@ const open = new Map(); // token -> Promise<PDFDocumentProxy>
 
 function load(token) {
   if (!open.has(token)) {
-    open.set(token, pdfjs.getDocument({
-      url: `/doc/${encodeURIComponent(token)}`,
-      cMapUrl: '/pdfjs-cmaps/',
-      cMapPacked: true,
-      standardFontDataUrl: '/pdfjs-fonts/',
-      isEvalSupported: false,
-      // Drawn with the plain canvas: with the offscreen one, pdf.js draws some pages a
-      // little differently from one load to the next, and the check that a copy reads like
-      // the file must compare like with like.
-      isOffscreenCanvasSupported: false,
-      disableRange: true,
-      disableStream: true,
-    }).promise);
+    open.set(token, pdfjs.getDocument(documentParams(token)).promise);
   }
   return open.get(token);
 }
@@ -33,11 +22,19 @@ function load(token) {
 const MAX_SIDE = 12000;
 
 /**
- * The pages as pdf.js counts them, each by its object number and generation, so the
- * caller can confirm they are the pages it means to replace.
+ * The pages as pdf.js counts them, each by its object number and generation. A document
+ * locked with a password fails here with pdf.js's PasswordException.
  */
 window.pageList = async (token) => {
-  const doc = await load(token);
+  let doc;
+  try {
+    doc = await load(token);
+  } catch (err) {
+    open.delete(token);
+    // Said plainly, as its name does not survive the trip back to the main process.
+    if (err && err.name === 'PasswordException') throw new Error('PDF_LOCKED');
+    throw err;
+  }
   const refs = [];
   for (let i = 1; i <= doc.numPages; i++) {
     const { num, gen } = (await doc.getPage(i)).ref || {};

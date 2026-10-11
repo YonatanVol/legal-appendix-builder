@@ -126,7 +126,6 @@ function open(file, { signal } = {}) {
       const r = await call(`window.drawPage(${t}, ${Number(index)}, ${Number(dpi)})`, { signal });
       return { png: Buffer.from(r.png, 'base64'), width: r.width, height: r.height };
     },
-    token,
     async release() {
       if (win && !win.isDestroyed()) {
         await within(win.webContents.executeJavaScript(`window.release(${t})`, true), 5000, 'the drawing window').catch(() => dispose());

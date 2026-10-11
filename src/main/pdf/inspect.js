@@ -12,7 +12,7 @@ const A4 = { width: 595.28, height: 841.89 };
  * decrypt content streams, so copying such pages would silently produce garbage.
  * We refuse instead, and say what to do about it.
  */
-async function loadPdf(filePath) {
+async function loadPdf(filePath, { updateMetadata = true } = {}) {
   const name = path.basename(filePath);
   let bytes;
 
@@ -31,7 +31,7 @@ async function loadPdf(filePath) {
 
   let doc;
   try {
-    doc = await PDFDocument.load(bytes, { ignoreEncryption: true });
+    doc = await PDFDocument.load(bytes, { ignoreEncryption: true, updateMetadata });
   } catch (err) {
     throw new Error(`הקובץ "${name}" פגום או לא נתמך: ${err.message}`);
   }

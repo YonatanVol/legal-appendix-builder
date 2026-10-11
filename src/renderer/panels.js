@@ -1533,7 +1533,7 @@ const panels = {
   },
 
   redact: {
-    defaults: () => ({ marks: [], clean: true, ocr: true }),
+    defaults: () => ({ marks: [], ocr: true }),
     render(container, view) {
       const o = view.options;
       const file = firstFile(view);
@@ -1547,8 +1547,7 @@ const panels = {
 
       const after = ui.section(container, 'עוד');
       ui.check(after, { label: 'זיהוי הטקסט מחדש, כדי שאפשר יהיה לחפש בעותק', value: o.ocr, onChange: (v) => view.set('ocr', v) });
-      ui.check(after, { label: 'הסרת כותרת המסמך ושם המחבר', value: o.clean, onChange: (v) => view.set('clean', v) });
-      ui.note(after, 'כל עמוד בעותק הופך לתמונה של מה שמוצג כאן, ומה שהושחר נמחק באמת: אי אפשר להעתיק אותו, לחפש אותו או לשחזר אותו. שום דבר מהקובץ המקורי שאינו נראה במסך לא עובר לעותק, גם לא הערות, שכבות מוסתרות או קבצים מצורפים.', 'muted');
+      ui.note(after, 'כל עמוד בעותק הופך לתמונה של מה שמוצג כאן, ומה שהושחר נמחק באמת: אי אפשר להעתיק אותו, לחפש אותו או לשחזר אותו. שום דבר מהקובץ המקורי שאינו נראה במסך לא עובר לעותק: לא תוכן של הערות, לא שכבות מוסתרות, לא קבצים מצורפים ולא פרטי המסמך.', 'muted');
 
       if (!file || !file.token) return;
       if (o.forToken && o.forToken !== file.token) o.marks = [];

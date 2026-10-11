@@ -5,6 +5,7 @@
 // path and can only read files the main process has been handed.
 
 import * as pdfjs from '/pdfjs/pdf.mjs';
+import { documentParams } from './pdf-document.mjs';
 
 pdfjs.GlobalWorkerOptions.workerSrc = '/pdfjs/pdf.worker.mjs';
 
@@ -12,17 +13,7 @@ const open = new Map(); // token -> Promise<PDFDocumentProxy>
 
 function load(token) {
   if (!open.has(token)) {
-    const task = pdfjs.getDocument({
-      url: `/doc/${encodeURIComponent(token)}`,
-      cMapUrl: '/pdfjs-cmaps/',
-      cMapPacked: true,
-      standardFontDataUrl: '/pdfjs-fonts/',
-      // No network, no eval: the document is ours and the fonts are bundled.
-      isEvalSupported: false,
-      // The handler serves whole files; asking for ranges would only add round trips.
-      disableRange: true,
-      disableStream: true,
-    });
+    const task = pdfjs.getDocument(documentParams(token));
     const promise = task.promise.catch((err) => {
       open.delete(token);
       throw err;

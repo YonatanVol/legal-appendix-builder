@@ -600,16 +600,14 @@ function crafted() {
  * places its one image, no fonts, annotations, form, layers, attachments, outline, tags
  * or XMP, and document details only when kept. Else what else it holds.
  */
-async function onlyPictures(file, { details = false } = {}) {
+async function onlyPictures(file) {
   const { PDFDict, PDFStream, decodePDFRawStream, PDFRawStream } = require('pdf-lib');
   const d = await PDFDocument.load(await fsp.readFile(file), { updateMetadata: false });
   for (const key of ['AcroForm', 'OCProperties', 'Names', 'Outlines', 'StructTreeRoot', 'Metadata', 'AF']) {
     if (d.catalog.get(PDFName.of(key))) return `the document has /${key}`;
   }
   const info = d.getInfoDict();
-  for (const key of info.keys()) {
-    if (!details || !['/Title', '/Author', '/Subject'].includes(String(key))) return `the details hold ${key}`;
-  }
+  for (const key of info.keys()) return `the details hold ${key}`;
   for (const [k, page] of d.getPages().entries()) {
     const annots = page.node.lookup(PDFName.of('Annots'));
     if (annots && annots.size && annots.size() > 0) return `page ${k + 1} has annotations`;
@@ -663,8 +661,13 @@ function expanded(file, dir) {
   }
   const text = fs.readFileSync(out).toString('latin1');
   fs.rmSync(out, { force: true });
-  // pdf-lib may write a string as hex; read those too.
-  return text + text.replace(/<([0-9A-Fa-f\s]+)>/g, (m, hex) => Buffer.from(hex.replace(/\s/g, ''), 'hex').toString('latin1'));
+  // pdf-lib may write a string as hex, in UTF-16 when it is not Latin; read those too.
+  const fromHex = (hex) => {
+    const b = Buffer.from(hex.replace(/\s/g, ''), 'hex');
+    if (b[0] === 0xfe && b[1] === 0xff) return Buffer.from(b.subarray(2)).swap16().toString('utf16le');
+    return b.toString('latin1');
+  };
+  return text + text.replace(/<([0-9A-Fa-f\s]+)>/g, (m, hex) => fromHex(hex));
 }
 
 /** A page image of `source` at 200 DPI, as a scanner would make. */
@@ -794,7 +797,7 @@ app.whenReady().then(async () => {
   await reader.destroy();
   const idLine = lines.find((l) => l.text.includes('024624470'));
   const mark = { page: 0, x: idLine.x / width - 0.01, y: (idLine.y - idLine.height) / height - 0.005, w: (idLine.right - idLine.x) / width + 0.02, h: (idLine.height * 1.4) / height };
-  r = await redactTool([secret], { marks: [mark], clean: true });
+  r = await redactTool([secret], { marks: [mark] });
   const redacted = r.ok && r.display[0];
   const words = redacted ? (await text.documentText(redacted)).join('') : 'not made';
   check('every page of the copy is a picture: without OCR it holds no text at all, the marked ID number included', r.ok && words.trim() === '', r.error || words.slice(0, 80));
@@ -807,13 +810,14 @@ app.whenReady().then(async () => {
   check('  the document\'s title and author are cleared', rd && !rd.getTitle() && !rd.getAuthor());
   check('  and the summary says the areas were deleted, not hidden, and that the pages are pictures', /נמחק/.test(r.summary || '') && /תמונה של מה שהוצג במסך/.test(r.summary || ''), r.summary);
   // By default every page is read again, so the copy is searchable; the marked ID is not.
-  r = await runTool('redact', [secret], { marks: [mark], clean: false });
+  r = await runTool('redact', [secret], { marks: [mark] });
   const reread = r.ok ? await linesOf(r.display[0], 1) : [];
   const reread2 = r.ok ? await linesOf(r.display[0], 2) : [];
   check('by default the pages are read again: the copy is searchable, the marked ID number is not',
     reread.some((l) => l.includes('בית הדין האזורי')) && !reread.join(' ').includes('024624470') && reread2.join(' ').includes('024624470'), r.error || reread.join(' / '));
   const kept = r.ok ? await PDFDocument.load(await fsp.readFile(r.display[0]), { updateMetadata: false }) : null;
-  check('  and asked to keep them, the title and author stay', kept && kept.getTitle() === 'תיק של איתי ליבן' && kept.getAuthor() === 'רון קלנר', kept && kept.getTitle());
+  const keptInfo = kept ? kept.getInfoDict().keys().map(String) : ['not made'];
+  check('  and reading again adds nothing to the details: no title, author, producer or dates', keptInfo.length === 0, keptInfo.join(','));
   r = await redactTool([secret], { marks: [] });
   check('nothing marked is refused, saying how to mark', !r.ok && /סמן/.test(r.error), r.error);
 
@@ -839,17 +843,21 @@ app.whenReady().then(async () => {
     const pagesShown = shownDoc.numPages;
     await shownDoc.destroy();
     const outcomes = [];
-    for (const clean of [true, false]) {
-      r = await redactTool([file], { marks: [{ page: 0, x: 0, y: 0, w: 1, h: 1 }], clean });
+    // Read again too, for the first three: what OCR adds comes from the pictures only.
+    for (const ocr of Object.keys(corpus).indexOf(label) < 3 ? [false, true] : [false]) {
+      r = await redactTool([file], { marks: [{ page: 0, x: 0, y: 0, w: 1, h: 1 }], ocr });
       if (!r.ok) {
         outcomes.push(r.error);
         continue;
       }
       const raw = expanded(r.display[0], dir);
       const count = (await PDFDocument.load(await fsp.readFile(r.display[0]))).getPageCount();
-      const shapeOf = await onlyPictures(r.display[0], { details: !clean });
-      if (/SECRET/.test(raw)) outcomes.push('a secret is inside');
-      if (shapeOf) outcomes.push(shapeOf);
+      const leaked = (raw.match(/SECRET[A-Z0-9-]*|PASSWORDPLAIN|HIDDEN-[A-Z0-9-]+|HIDDENCOMMENT|NULLMEMBERCOMMENT/g) || []);
+      if (leaked.length) outcomes.push(`inside: ${[...new Set(leaked)].join(', ')}`);
+      if (!ocr) {
+        const shapeOf = await onlyPictures(r.display[0]);
+        if (shapeOf) outcomes.push(shapeOf);
+      }
       if (count !== pagesShown) outcomes.push(`${count} pages, the screen showed ${pagesShown}`);
     }
     check(`  ${label}: nothing of it comes across, only a picture of each page`, outcomes.length === 0, outcomes.join('; '));
@@ -916,6 +924,39 @@ app.whenReady().then(async () => {
       r = made.ok ? await redactTool([scanFile], { marks: [{ page: 0, x: 0.1, y: 0.1, w: 0.4, h: 0.1 }] }) : made;
       check(`  a ${mode === 'gray' ? 'grey' : 'black-and-white'} scan with part of a page marked is redacted`, r.ok, r.error);
     }
+  }
+  {
+    // A mark reaching past the page's edge (a search hit's box on a heading at the top
+    // does) is cut at the edge, not dropped: the words under it are gone.
+    const top = await vectorPdf(path.join(dir, 'כותרת.pdf'), '<h1 style="margin:0;font-size:40pt">ID 024624470</h1><p>שאר המכתב</p>', { pages: 1 });
+    r = await redactTool([top], { marks: [{ page: 0, x: -0.05, y: -0.05, w: 1.1, h: 0.2 }], ocr: true });
+    const words = r.ok ? (await text.documentText(r.display[0])).join(' ') : '';
+    check('  a mark reaching past the edge of the page is cut at the edge, not dropped', r.ok && !words.includes('024624470') && words.includes('שאר המכתב'), r.error || words);
+    r = await redactTool([top], { marks: [{ page: 0, x: 0.2, y: 0.2, w: 0, h: 0.1 }] });
+    check('  an empty mark is refused, not passed over', !r.ok && /אינו תקין/.test(r.error || ''), r.error || 'made');
+  }
+  {
+    // A page small enough that its picture is a small JPEG (a Buffer from the shared pool).
+    const d = await PDFDocument.create();
+    d.addPage([252, 144]);
+    d.addPage([595, 842]);
+    const small = path.join(dir, 'small-page.pdf');
+    await fsp.writeFile(small, await d.save());
+    r = await redactTool([small], { marks: [{ page: 1, x: 0.1, y: 0.1, w: 0.2, h: 0.2 }] });
+    check('  a document with a very small page is redacted', r.ok, r.error);
+  }
+  {
+    // Typed notes the screen draws on a page are in its picture.
+    const file = corpus['layers and rules of every kind'];
+    r = await redactTool([file], { marks: [{ page: 0, x: 0, y: 0, w: 1, h: 1 }] });
+    const typed = r.ok ? darkAt(r.display[0], 2, dir, [[50, 250, 100, 130]]) : [0];
+    check('  typed notes the screen shows are drawn into the picture', typed[0] > 0.01, JSON.stringify(typed));
+  }
+  {
+    // A locked file is refused, saying how to unlock it.
+    const locked = await runTool('protect', [secret], { password: 'סיסמה-לבדיקה', passwordConfirm: 'סיסמה-לבדיקה' });
+    r = locked.ok ? await redactTool([locked.display[0]], { marks: [{ page: 0, x: 0, y: 0, w: 1, h: 1 }] }) : locked;
+    check('  a file locked with a password is refused, pointing to removing the password', !r.ok && /נעול בסיסמה/.test(r.error || ''), r.error);
   }
   {
     // The picture of a marked page has the size pdf.js shows the page at: turned, with a
@@ -1099,7 +1140,10 @@ app.whenReady().then(async () => {
   await until(`!window.shell.busy() && !document.getElementById('tool-result').classList.contains('hidden')`, 60000);
   const out = await page(`document.querySelector('#tool-result-outputs .out-name').title`);
   const after = (await text.documentText(out)).join(' ');
-  check('running it from the screen removes every ID number', !after.includes('024624470') && !after.includes('24624471'), after.slice(0, 120));
+  check('running it from the screen removes every ID number: read again, the rest is there and no ID is',
+    after.includes('בית הדין') && !after.includes('024624470') && !after.includes('24624471'), after.slice(0, 120));
+  const blackness = marks.map((m) => darkAt(out, m.page + 1, dir, [[m.x * 595 + 2, (m.x + m.w) * 595 - 2, (1 - m.y - m.h) * 842 + 2, (1 - m.y) * 842 - 2].map(Math.round)])[0]);
+  check('  and every marked area is black in the picture', blackness.every((b) => b > 0.9), JSON.stringify(blackness));
   check('no errors in the page console', win.consoleErrors.length === 0, win.consoleErrors.slice(0, 3).join(' / '));
 
   require('../src/main/engine/ocr').shutdown();

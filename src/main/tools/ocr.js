@@ -64,7 +64,9 @@ async function run({ inputs, options = {}, ctx }) {
  * @returns {Promise<{bytes: Uint8Array, pages: string[], words: Array[], images: object[], read: number, skipped: number, empty: number}>}
  */
 async function ocrFile(input, { langs = 'heb' } = {}, ctx, progress = () => {}) {
-  const doc = await loadPdf(input);
+  // Saved without pdf-lib's own name and dates in the details: a copy carries no more
+  // about its making than it must (Redact's copy carries nothing at all).
+  const doc = await loadPdf(input, { updateMetadata: false });
   const total = doc.getPageCount();
 
   // Which pages already carry text: those are left alone unless asked.

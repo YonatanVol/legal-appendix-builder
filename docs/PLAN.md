@@ -89,7 +89,7 @@ office PC (Microsoft Office, a scanner).
 | Page numbers | Chromium overlay + pdf-lib | Position, format ("3", "3 מתוך 10", "עמוד 3"), first number, size, range, margin | Rotation-aware, reused from the appendix builder. |
 | Watermark | Chromium overlay + pdf-lib | Text or image, position (grid or tiled), angle, opacity, size, range | |
 | Sign | pdf-lib (+ @signpdf for a certificate file) | Draw, type or upload a signature, place and size it, add date and name; initials | Signatures are kept locally per person. A .pfx certificate adds a real digital signature; without one the signature is visual only, and the screen says which. |
-| Redact | pdf.js (find, draw) + pdf-lib + Tesseract | Search text, patterns (ID number, phone, credit card), draw boxes, whole pages; preview; apply | Every page becomes a picture of what the screen showed, marked areas black; nothing else of the file comes across. OCR afterwards, on by default. |
+| Redact | pdf.js (find, draw) + pdf-lib + Ghostscript and Tesseract (OCR) | Search text, patterns (ID number, phone, credit card), draw boxes, whole pages; preview; apply | Every page becomes a picture of what the screen showed, marked areas black; nothing else of the file comes across. OCR afterwards, on by default. |
 | PDF Forms | pdf-lib | Detect and fill fields; create text, checkbox, radio, dropdown, signature fields by drawing; flatten | |
 | Protect | qpdf | Open password, owner password, AES-256, allow print/copy/edit | |
 | Unlock | qpdf | Password if the file needs one | Owner-only restrictions are removed without a password; an open password is asked for. |

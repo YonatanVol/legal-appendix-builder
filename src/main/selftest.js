@@ -268,8 +268,9 @@ function run() {
 
     // Redact from inside the package: the marked page is drawn by pdf.js in a hidden
     // window served from the installed program, and no text of it may be left.
-    // Two pages of text; the other page must keep its own, so a picture on the wrong page
-    // would show.
+    // Two pages of text, every page made a picture and read again (OCR): the marked page's
+    // words must be gone and the other page's read back, so a picture of the wrong page, or
+    // a missing one, would show.
     const worded = path.join(scratch, 'tool-words.pdf');
     {
       const { StandardFonts } = require('pdf-lib');
@@ -281,7 +282,7 @@ function run() {
     }
     const redacted = await page(`window.api.startJob(${JSON.stringify({ toolId: 'redact', inputs: [worded], options: { marks: [{ page: 0, x: 0, y: 0, w: 1, h: 1 }] } })})`);
     const redactedText = redacted.ok ? (await require('./pdf/text').documentText(redacted.display[0])) : [];
-    check('a page is redacted, drawn by pdf.js inside the package: none of its text is left, and the other page keeps its own',
+    check('a page is redacted inside the package: read again, its words are gone and the other page\'s are there',
       redacted.ok && redactedText.length === 2 && !/MARKED/.test(redactedText[0]) && /KEPT PAGE TWO/.test(redactedText[1]),
       redacted.ok ? JSON.stringify(redactedText).slice(0, 120) : redacted.error);
 

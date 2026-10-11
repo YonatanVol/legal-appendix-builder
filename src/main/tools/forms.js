@@ -259,4 +259,4 @@ function toShown(frame, page, ux, uy) {
   return [vx / frame.width, 1 - vy / frame.height];
 }
 
-module.exports = { run, readFields, userRect, toShown, staleFields, drawAppearances };
+module.exports = { run, readFields };

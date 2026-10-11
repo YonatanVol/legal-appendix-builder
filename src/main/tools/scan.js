@@ -41,7 +41,9 @@ async function run({ inputs, options = {}, ctx }) {
     const out = await imaging.processScan(bytes, mime, { mode: o.mode, enhance: !!o.enhance, straighten: !!o.straighten });
     ctx.throwIfCancelled();
     if (Math.abs(out.angle) >= 0.25) turned++;
-    const image = out.mime === 'image/png' ? await doc.embedPng(out.bytes) : await doc.embedJpg(out.bytes);
+    // A copy: a small Buffer shares memory with others at an offset that pdf-lib ignores.
+    const picture = new Uint8Array(out.bytes);
+    const image = out.mime === 'image/png' ? await doc.embedPng(picture) : await doc.embedJpg(picture);
     const landscape = out.width > out.height;
     if (o.pageSize === 'image') {
       // 200 DPI is what phones and scanners deliver for a page; the page takes that size.
