@@ -2,7 +2,7 @@
 
 const fs = require('fs/promises');
 const path = require('path');
-const { PDFDocument, PDFName, PDFDict, PDFArray } = require('pdf-lib');
+const { PDFDocument, PDFName, PDFDict, PDFRef } = require('pdf-lib');
 
 const bin = require('../engine/binaries');
 const { stage, scratchPath } = require('../engine/stage');
@@ -19,10 +19,10 @@ const { strictPages } = require('../engine/verify');
  *     damaged rather than only their index.
  *  3. pdf-lib reads the file object by object and copies every page that survives.
  *
- * Last, the page tree is put in order (typePages): a page that does not say it is one, a
- * count that is wrong, an entry that leads nowhere. Programs read such a tree differently,
- * so one would show a page that another leaves out; no method above fixes that, as each
- * keeps the tree as it was.
+ * Last, the pages are put in one plain list (alignPages) where programs read the file's
+ * page tree differently (a page that does not say it is one, a wrong count, an entry that
+ * leads nowhere or back up the tree): one would show a page that another leaves out, and
+ * no method above fixes that, as each keeps the tree as it was.
  *
  * The result says what happened: whether the file was damaged at all, how many pages
  * came back, and how many were lost.
@@ -75,13 +75,15 @@ async function run({ inputs, ctx }) {
       damaged = damaged || fixed.lost > 0;
     }
 
-    if (await typePages(fixed.file)) damaged = true;
+    const aligned = await alignPages(fixed.file);
+    if (aligned.changed) damaged = true;
     const kept = await strictPages(fixed.file);
-    const lost = Math.max(0, (expected || kept) - kept);
+    const lost = Math.max(0, (expected || kept) - kept - aligned.added);
     outputs.push(await ctx.writeOutput(await fs.readFile(fixed.file), { source: inputs[f], label: 'מתוקן', ext: 'pdf' }));
     notes.push(
       `${inputs.length > 1 ? `"${name}": ` : ''}${damaged ? 'הקובץ היה פגום ונבנה מחדש' : 'לא נמצא פגם במבנה, הקובץ נכתב מחדש'}` +
-      `, ${kept === 1 ? 'עמוד אחד שוחזר' : `${kept} עמודים שוחזרו`}${lost ? `, ${lost === 1 ? 'עמוד אחד אבד' : `${lost} עמודים אבדו`}` : ''}.`
+      `, ${kept === 1 ? 'עמוד אחד שוחזר' : `${kept} עמודים שוחזרו`}${lost ? `, ${lost === 1 ? 'עמוד אחד אבד' : `${lost} עמודים אבדו`}` : ''}.` +
+      (aligned.added ? ` ${aligned.added === 1 ? 'עמוד אחד שלא הוצג במסך נמצא בקובץ ונוסף בסופו' : `${aligned.added} עמודים שלא הוצגו במסך נמצאו בקובץ ונוספו בסופו`}.` : '')
     );
   }
   return { summary: notes.join(' '), display: outputs };
@@ -118,69 +120,94 @@ async function byPages(bytes, name, out) {
 }
 
 /**
- * Puts the page tree in order where programs could read it differently: every leaf is
- * marked as a page (/Type /Page) and every inner node as a node of pages; each node's
- * /Count is set to the pages actually under it; entries that lead to nothing are dropped.
- * pdf.js counts a file's pages by /Count and pdf-lib by the pages it finds, so after this
- * both count, and show, the same pages. Saves the file only if something was out of
- * order, and says whether it was.
+ * Where pdf.js (which draws the pages on screen) and pdf-lib (which the tools use) read
+ * the file's pages differently, the page tree is replaced by one plain list: the pages
+ * pdf.js shows, in its order, then any page only pdf-lib finds (one a wrong count hid, say),
+ * at the end. Each page gets what it inherited from the old tree (resources, page boxes,
+ * turn), so it looks as it did. Built from what the screen showed rather than by mending
+ * the old tree's rules, both programs then read the same pages, whatever its shape was.
+ * Returns { changed, added }: whether the file was rewritten, and how many pages only
+ * pdf-lib had found were added at the end.
  */
-async function typePages(file) {
+async function alignPages(file) {
+  const none = { changed: false, added: 0 };
+  let shown;
+  let reader;
+  try {
+    reader = await require('../pdf/text').open(file);
+    shown = [];
+    for (let i = 1; i <= reader.numPages; i++) {
+      try {
+        const { num, gen } = (await reader.getPage(i)).ref || {};
+        if (Number.isInteger(num)) shown.push(`${num} ${gen || 0}`);
+      } catch {
+        // a page pdf.js cannot read (it shows an error in its place): nothing to keep
+      }
+    }
+  } catch {
+    return none;
+  } finally {
+    if (reader) await reader.destroy().catch(() => {});
+  }
   let doc;
   try {
     doc = await PDFDocument.load(await fs.readFile(file), { updateMetadata: false });
   } catch {
-    return false;
+    return none;
   }
+  let own = null;
+  try {
+    own = doc.getPages().map((p) => `${p.ref.objectNumber} ${p.ref.generationNumber}`);
+  } catch {
+    // pdf-lib cannot walk the tree at all: it is rebuilt below
+  }
+  if (own && own.length === shown.length && own.every((r, k) => r === shown[k])) return none;
+
   const ctxt = doc.context;
-  let changed = false;
-  const inner = new Set();
-  // Returns how many pages are under `node`.
-  const walk = (node) => {
-    const kids = node.lookup(PDFName.of('Kids'));
-    // A page is what says it is one, as pdf.js reads it, or what has no pages under it.
-    if (String(node.lookup(PDFName.of('Type'))) === '/Page' || !(kids instanceof PDFArray)) {
-      if (String(node.get(PDFName.of('Type'))) !== '/Page') {
-        node.set(PDFName.of('Type'), PDFName.of('Page'));
-        changed = true;
-      }
-      return 1;
-    }
-    inner.add(node);
-    if (String(node.get(PDFName.of('Type'))) !== '/Pages') {
-      node.set(PDFName.of('Type'), PDFName.of('Pages'));
-      changed = true;
-    }
-    const kept = [];
-    let count = 0;
-    for (const ref of kids.asArray()) {
-      const kid = ctxt.lookup(ref);
-      // An entry that leads nowhere, or back up to a node above it (a loop), is dropped.
-      if (!(kid instanceof PDFDict) || inner.has(kid)) {
-        changed = true;
-        continue;
-      }
-      kept.push(ref);
-      count += walk(kid);
-    }
-    if (kept.length !== kids.size()) node.set(PDFName.of('Kids'), ctxt.obj(kept));
-    const said = node.lookup(PDFName.of('Count'));
-    if (!said || typeof said.asNumber !== 'function' || said.asNumber() !== count) {
-      node.set(PDFName.of('Count'), ctxt.obj(count));
-      changed = true;
-    }
-    inner.delete(node);
-    return count;
+  const seen = new Set(shown);
+  const extra = (own || []).filter((r) => !seen.has(r));
+  const order = [...shown, ...extra];
+  const refOf = (key) => {
+    const [num, gen] = key.split(' ').map(Number);
+    return PDFRef.of(num, gen);
   };
-  const root = doc.catalog.lookup(PDFName.of('Pages'));
-  if (!(root instanceof PDFDict)) return false;
-  walk(root);
-  if (!changed) return false;
+  const isPage = (key) => ctxt.lookup(refOf(key)) instanceof PDFDict;
+  const pages = order.filter(isPage).map(refOf);
+  if (!pages.length) return none;
+
+  const root = ctxt.obj({ Type: 'Pages', Kids: pages, Count: pages.length });
+  const rootRef = ctxt.register(root);
+  const INHERITED = ['Resources', 'MediaBox', 'CropBox', 'Rotate'];
+  for (const ref of pages) {
+    const page = ctxt.lookup(ref);
+    for (const key of INHERITED) {
+      if (page.get(PDFName.of(key)) !== undefined) continue;
+      // Up the old tree, as a reader would have found it.
+      let node = page.lookup(PDFName.of('Parent'));
+      const up = new Set();
+      while (node instanceof PDFDict && !up.has(node)) {
+        up.add(node);
+        const value = node.get(PDFName.of(key));
+        if (value !== undefined) {
+          page.set(PDFName.of(key), value);
+          break;
+        }
+        node = node.lookup(PDFName.of('Parent'));
+      }
+    }
+    if (!page.get(PDFName.of('MediaBox'))) page.set(PDFName.of('MediaBox'), ctxt.obj([0, 0, 612, 792]));
+    if (!page.get(PDFName.of('Resources'))) page.set(PDFName.of('Resources'), ctxt.obj({}));
+    page.set(PDFName.of('Type'), PDFName.of('Page'));
+    page.delete(PDFName.of('Kids'));
+    page.delete(PDFName.of('Count'));
+    page.set(PDFName.of('Parent'), rootRef);
+  }
+  doc.catalog.set(PDFName.of('Pages'), rootRef);
   // Read afresh, so the pages are read as pages, and written again; never with a page of
   // pdf-lib's own added to an empty-looking file.
   const again = await PDFDocument.load(await doc.save({ useObjectStreams: true, addDefaultPage: false }), { updateMetadata: false });
   await fs.writeFile(file, await again.save({ useObjectStreams: true, addDefaultPage: false }));
-  return true;
+  return { changed: true, added: extra.filter(isPage).length };
 }
 
 /** True if any page draws something: text, an image, a line. */

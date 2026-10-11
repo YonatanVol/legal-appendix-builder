@@ -140,7 +140,20 @@ app.whenReady().then(async () => {
     execFileSync(bin.locate('qpdf'), ['--encrypt', 'secret123', 'owner123', '256', '--', oddFile, lockedFile]);
     r = await jobs.start(tools.runnable('workflow'), [lockedFile], { name: 'פתיחה וסיבוב', steps: [{ toolId: 'unlock' }, { toolId: 'rotate', options: { angle: 90 } }], secrets: { 0: { password: 'secret123' } } }).promise;
     check('a workflow that starts by unlocking checks the unlocked file before going on',
-      !r.ok && /קוראות אחרת/.test(r.error || '') && /מוזר/.test(r.error || ''), r.error || r.summary);
+      !r.ok && /קוראות אחרת/.test(r.error || '') && /מוזר/.test(r.error || '') && /כשלב מיד אחרי "הסרת סיסמה"/.test(r.error || ''), r.error || r.summary);
+    // And doing what the message says works: Repair right after Unlock, then the rest.
+    r = await jobs.start(tools.runnable('workflow'), [lockedFile], { name: 'פתיחה תיקון וסיבוב', steps: [{ toolId: 'unlock' }, { toolId: 'repair' }, { toolId: 'rotate', options: { angle: 90 } }], secrets: { 0: { password: 'secret123' } } }).promise;
+    let words = [];
+    if (r.ok && r.display && r.display[0]) {
+      const reader = await require('../src/main/pdf/text').open(r.display[0]);
+      for (let i = 1; i <= reader.numPages; i++) {
+        const items = (await (await reader.getPage(i)).getTextContent()).items;
+        words.push(items.map((t) => t.str).join('').trim());
+      }
+      await reader.destroy();
+    }
+    check('  with Repair added right after Unlock, as the message says, the workflow goes through with all three pages',
+      r.ok && words.join('|') === 'ONE|TWO|THREE', r.error || words.join('|'));
   }
 
   let jobId = null;

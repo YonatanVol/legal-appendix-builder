@@ -102,7 +102,12 @@ async function run({ inputs, options = {}, ctx }) {
       // A file is checked before a job, but a locked one only once it is unlocked: that is
       // here, after Unlock, unless Repair comes next to put its pages right.
       if (step.toolId === 'unlock' && steps[k + 1] && steps[k + 1].toolId !== 'repair') {
-        await require('../pdf/inspect').samePagesEverywhere(current);
+        try {
+          await require('../pdf/inspect').samePagesEverywhere(current);
+        } catch (err) {
+          if (!/קוראות אחרת/.test(String(err && err.message))) throw err;
+          throw new Error(`בקובץ "${path.basename(original)}" יש עמודים שתוכנות שונות קוראות אחרת, ולכן אי אפשר להמשיך בו בבטחה. הוסף לתהליך את "תיקון PDF" כשלב מיד אחרי "הסרת סיסמה".`);
+        }
       }
     }
   }

@@ -247,6 +247,22 @@ app.whenReady().then(async () => {
       d.getPage(0).node.delete(PDFName.of('Type'));
       d.catalog.Pages().set(PDFName.of('Count'), d.context.obj(2));
     },
+    'the top of the tree typed as a page': (d) => d.catalog.Pages().set(PDFName.of('Type'), PDFName.of('Page')),
+    'a node typed as a page, holding the real pages': (d) => {
+      const root = d.catalog.Pages();
+      const kids = root.lookup(PDFName.of('Kids'));
+      const node = d.context.obj({ Type: 'Page', Parent: d.catalog.get(PDFName.of('Pages')), Kids: kids.asArray(), Count: 3 });
+      const nodeRef = d.context.register(node);
+      for (const p of d.getPages()) p.node.set(PDFName.of('Parent'), nodeRef);
+      root.set(PDFName.of('Kids'), d.context.obj([nodeRef]));
+    },
+    'a node listed under two parents': (d) => {
+      const root = d.catalog.Pages();
+      const kids = root.lookup(PDFName.of('Kids')).asArray();
+      const node = d.context.register(d.context.obj({ Type: 'Pages', Parent: d.catalog.get(PDFName.of('Pages')), Kids: [kids[1], kids[2]], Count: 2 }));
+      root.set(PDFName.of('Kids'), d.context.obj([kids[0], node, node]));
+      root.set(PDFName.of('Count'), d.context.obj(5));
+    },
     'a count that leaves out a page without /Type': (d) => {
       const extra = d.addPage([595, 842]);
       extra.drawText('PAGE FOUR', { x: 60, y: 700, size: 18 });
@@ -270,7 +286,15 @@ app.whenReady().then(async () => {
     const out = r.ok ? await PDFDocument.load(await fsp.readFile(r.display[0])) : null;
     const asShown = out ? await pagesAsShown(r.display[0], out) : { agree: false };
     const words = r.ok ? (await text.documentText(r.display[0])).map((w) => w.trim()) : [];
-    const want = /leaves out/.test(label) ? ['PAGE ONE', 'PAGE TWO', 'PAGE THREE', 'PAGE FOUR'] : ['PAGE ONE', 'PAGE TWO', 'PAGE THREE'];
+    // What the screen showed, then what only the tools found; a page neither showed (past
+    // the count, without /Type) stays out, as both programs already agree on that file.
+    const want = {
+      // Both programs read the node as one blank page and agree; the pages under it are seen
+      // by neither, so the file is not held back and Repair leaves it as both show it.
+      'a node typed as a page, holding the real pages': [''],
+      'a node listed under two parents': ['PAGE ONE', 'PAGE TWO', 'PAGE THREE'],
+    }[label] || ['PAGE ONE', 'PAGE TWO', 'PAGE THREE'];
+    if (/count too small/.test(label)) check('  (and the summary says a page the screen did not show was found and put at the end)', /נמצא בקובץ ונוסף בסופו/.test(r.summary || ''), r.summary);
     check(`  ${label}: after Repair both programs read the same pages, every one of them, none added`,
       asShown.agree && JSON.stringify(words) === JSON.stringify(want), r.error || `${words.join(' | ')} agree=${asShown.agree}`);
   }
@@ -279,6 +303,14 @@ app.whenReady().then(async () => {
   check('a tool started without the screen refuses such a file too, pointing to Repair', !r.ok && /תיקון PDF/.test(r.error || ''), r.error || 'made');
   r = await runTool('pdfa', [truncated], { level: '2b' });
   check('PDF/A refuses to hand over a copy with pages missing', !r.ok && /(עובדו|פגום|נפתח)/.test(r.error), r.ok ? r.summary : r.error);
+
+  /* ---- the tool's first words reach the window ---- */
+  // The files are checked before every tool, and that check says so on the bar. The tool's
+  // own first message comes right after it, and must not be held back as too soon.
+  const said = [];
+  const quick = { id: 'quick-test', run: async ({ ctx }) => { ctx.progress(0.1, 'הכלי התחיל'); return { summary: 'ok' }; } };
+  await jobs.start(quick, [heavy.file], {}, { onProgress: (p) => said.push(p.text) }).promise;
+  check('the tool\'s first message is shown, not swallowed after the check of the files', said.includes('הכלי התחיל'), JSON.stringify(said));
 
   /* ---- cancelling stops the program ---- */
   console.log('\ncancelling');

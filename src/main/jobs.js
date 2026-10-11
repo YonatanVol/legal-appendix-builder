@@ -163,6 +163,8 @@ function start(tool, inputs, options, hooks = {}) {
         ctx.progress(0, 'בודק את הקבצים…');
         await require('./pdf/inspect').samePagesEverywhere(inputs, controller.signal);
         throwIfAborted(controller.signal);
+        // So the tool's own first message is shown at once, not held back as too soon.
+        lastSent = 0;
       }
       const result = await tool.run({ inputs, options, ctx });
       throwIfAborted(controller.signal);
