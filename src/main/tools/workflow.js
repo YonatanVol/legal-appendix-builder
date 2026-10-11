@@ -99,6 +99,11 @@ async function run({ inputs, options = {}, ctx }) {
         current = next;
         producedBy = labels[0] || names[k];
       }
+      // A file is checked before a job, but a locked one only once it is unlocked: that is
+      // here, after Unlock, unless Repair comes next to put its pages right.
+      if (step.toolId === 'unlock' && steps[k + 1] && steps[k + 1].toolId !== 'repair') {
+        await require('../pdf/inspect').samePagesEverywhere(current);
+      }
     }
   }
   const tail = notes.length === 1 ? ` ${notes[0]}` : '';

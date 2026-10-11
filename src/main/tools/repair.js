@@ -34,7 +34,9 @@ async function run({ inputs, ctx }) {
     const name = path.basename(inputs[f]);
     ctx.progress(f / inputs.length, `בודק את "${name}"…`);
     const bytes = await fs.readFile(inputs[f]);
-    const expected = countPagesLoosely(bytes);
+    // The pages the screen showed (pdf.js), so "pages lost" means pages the user could see;
+    // where pdf.js cannot open the file, the pages the file claims.
+    const expected = (await shownCount(inputs[f])) || countPagesLoosely(bytes);
     const src = await stage(ctx, inputs[f], f);
 
     let fixed = null;
@@ -136,15 +138,14 @@ async function typePages(file) {
   // Returns how many pages are under `node`.
   const walk = (node) => {
     const kids = node.lookup(PDFName.of('Kids'));
-    if (!(kids instanceof PDFArray)) {
+    // A page is what says it is one, as pdf.js reads it, or what has no pages under it.
+    if (String(node.lookup(PDFName.of('Type'))) === '/Page' || !(kids instanceof PDFArray)) {
       if (String(node.get(PDFName.of('Type'))) !== '/Page') {
         node.set(PDFName.of('Type'), PDFName.of('Page'));
         changed = true;
       }
       return 1;
     }
-    // A node met again on the way down is a loop: it counts for nothing there.
-    if (inner.has(node)) return 0;
     inner.add(node);
     if (String(node.get(PDFName.of('Type'))) !== '/Pages') {
       node.set(PDFName.of('Type'), PDFName.of('Pages'));
@@ -154,7 +155,8 @@ async function typePages(file) {
     let count = 0;
     for (const ref of kids.asArray()) {
       const kid = ctxt.lookup(ref);
-      if (!(kid instanceof PDFDict)) {
+      // An entry that leads nowhere, or back up to a node above it (a loop), is dropped.
+      if (!(kid instanceof PDFDict) || inner.has(kid)) {
         changed = true;
         continue;
       }
@@ -205,6 +207,18 @@ async function hasContent(file) {
     return false;
   } catch {
     return false;
+  }
+}
+
+async function shownCount(file) {
+  let reader;
+  try {
+    reader = await require('../pdf/text').open(file);
+    return reader.numPages;
+  } catch {
+    return 0;
+  } finally {
+    if (reader) await reader.destroy().catch(() => {});
   }
 }
 

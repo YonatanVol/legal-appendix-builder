@@ -82,18 +82,18 @@ async function sweepLeftovers() {
   return removed;
 }
 
-/**
- * @param {{id: string, run: Function}} tool
- * @param {string[]} inputs
- * @param {object} options
- * @param {{onProgress?: Function, outputFolder?: string}} [hooks]
- */
 function startsWithRepair(tool, options) {
   if (tool.id === 'repair') return true;
   const first = String(tool.id).startsWith('wf:') && options && Array.isArray(options.steps) ? options.steps[0] : null;
   return !!first && first.toolId === 'repair';
 }
 
+/**
+ * @param {{id: string, run: Function}} tool
+ * @param {string[]} inputs
+ * @param {object} options
+ * @param {{onProgress?: Function, outputFolder?: string}} [hooks]
+ */
 function start(tool, inputs, options, hooks = {}) {
   const id = String(nextId++);
   const controller = new AbortController();
@@ -159,7 +159,11 @@ function start(tool, inputs, options, hooks = {}) {
       // The screen's rule, kept here too so no way of starting a job goes round it: a file
       // whose pages the screen (pdf.js) and the tools (pdf-lib) read differently waits for
       // Repair, which is the one tool that takes it.
-      if (!startsWithRepair(tool, options)) await require('./pdf/inspect').samePagesEverywhere(inputs);
+      if (!startsWithRepair(tool, options)) {
+        ctx.progress(0, 'בודק את הקבצים…');
+        await require('./pdf/inspect').samePagesEverywhere(inputs, controller.signal);
+        throwIfAborted(controller.signal);
+      }
       const result = await tool.run({ inputs, options, ctx });
       throwIfAborted(controller.signal);
       return { ok: true, outputs: job.outputs.slice(), ...result };

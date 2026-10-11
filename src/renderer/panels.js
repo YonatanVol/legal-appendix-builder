@@ -784,7 +784,7 @@ const panels = {
         if (r.cancelled || !r.files.length) return;
         const other = r.files[0];
         if (other.error) return view.error(other.error);
-        if (other.pagesAgree === false) return view.error(`בקובץ "${other.name}" יש עמודים שתוכנות שונות סופרות אחרת, ולכן אי אפשר להוסיף ממנו עמודים בבטחה. הרץ עליו קודם את "תיקון PDF".`);
+        if (other.pagesAgree === false) return view.error(`בקובץ "${other.name}" יש עמודים שתוכנות שונות קוראות אחרת, ולכן אי אפשר להוסיף ממנו עמודים בבטחה. הרץ עליו קודם את "תיקון PDF".`);
         save();
         st.extra.push({ path: other.path, token: other.token, name: other.name, pageCount: other.pageCount });
         const f = st.extra.length;

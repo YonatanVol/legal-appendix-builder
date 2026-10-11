@@ -241,6 +241,12 @@ app.whenReady().then(async () => {
     'every page without /Type': (d) => { for (const p of d.getPages()) p.node.delete(PDFName.of('Type')); },
     'a page count too small': (d) => d.catalog.Pages().set(PDFName.of('Count'), d.context.obj(2)),
     'an entry leading nowhere': (d) => d.catalog.Pages().lookup(PDFName.of('Kids')).push(PDFRef.of(9999)),
+    'a loop back to the top of the tree': (d) => d.catalog.Pages().lookup(PDFName.of('Kids')).push(d.catalog.get(PDFName.of('Pages'))),
+    'a page that also lists pages under it (an empty list)': (d) => d.getPage(1).node.set(PDFName.of('Kids'), d.context.obj([])),
+    'the same count, but other pages (the first without /Type, the count one short)': (d) => {
+      d.getPage(0).node.delete(PDFName.of('Type'));
+      d.catalog.Pages().set(PDFName.of('Count'), d.context.obj(2));
+    },
     'a count that leaves out a page without /Type': (d) => {
       const extra = d.addPage([595, 842]);
       extra.drawText('PAGE FOUR', { x: 60, y: 700, size: 18 });
@@ -255,12 +261,18 @@ app.whenReady().then(async () => {
     spoil(d);
     const file = path.join(dir, `tree-${label.length}.pdf`);
     await fsp.writeFile(file, await d.save({ addDefaultPage: false }));
+    if (/same count/.test(label)) {
+      const before = await require('../src/main/pdf/inspect').describe(file);
+      check('  (the same count, other pages: told apart by the pages themselves, not their number)',
+        before.pageCount === before.shownPages && before.pagesAgree === false, JSON.stringify([before.pageCount, before.shownPages, before.pagesAgree]));
+    }
     r = await runTool('repair', [file], {});
     const out = r.ok ? await PDFDocument.load(await fsp.readFile(r.display[0])) : null;
     const asShown = out ? await pagesAsShown(r.display[0], out) : { agree: false };
     const words = r.ok ? (await text.documentText(r.display[0])).map((w) => w.trim()) : [];
-    check(`  ${label}: after Repair both programs read the same pages, with no blank one added`,
-      asShown.agree && words.filter(Boolean).length === words.length && words.length >= 3, r.error || `${words.join(' | ')} agree=${asShown.agree}`);
+    const want = /leaves out/.test(label) ? ['PAGE ONE', 'PAGE TWO', 'PAGE THREE', 'PAGE FOUR'] : ['PAGE ONE', 'PAGE TWO', 'PAGE THREE'];
+    check(`  ${label}: after Repair both programs read the same pages, every one of them, none added`,
+      asShown.agree && JSON.stringify(words) === JSON.stringify(want), r.error || `${words.join(' | ')} agree=${asShown.agree}`);
   }
   // And a tool refuses such a file whichever way it is started, while Repair takes it.
   r = await runTool('compress', [odd], {});

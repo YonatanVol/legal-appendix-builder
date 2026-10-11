@@ -296,7 +296,7 @@ app.whenReady().then(async () => {
   await open('organize', [odd]);
   await until(`/תיקון PDF/.test(document.getElementById('tool-blocked').textContent)`, 15000);
   check('a file whose pages the thumbnails and the tools count differently is held back, pointing to Repair',
-    (await disabled('#tool-run')) && /סופרות אחרת/.test(await text$('#tool-blocked')), await text$('#tool-blocked'));
+    (await disabled('#tool-run')) && /קוראות אחרת/.test(await text$('#tool-blocked')), await text$('#tool-blocked'));
   await open('repair', [odd]);
   await until(`document.getElementById('tool-blocked').textContent === ''`, 15000);
   check('  while Repair takes it', !(await disabled('#tool-run')), await text$('#tool-blocked'));

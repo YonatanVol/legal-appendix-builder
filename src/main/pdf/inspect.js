@@ -149,8 +149,9 @@ async function describe(filePath) {
 }
 
 /** Refuses, naming the file, any PDF among `files` whose pages pdf.js and pdf-lib read differently. */
-async function samePagesEverywhere(files) {
+async function samePagesEverywhere(files, signal) {
   for (const file of files) {
+    if (signal && signal.aborted) return;
     if (!/\.pdf$/i.test(file)) continue;
     let doc;
     try {
@@ -160,7 +161,7 @@ async function samePagesEverywhere(files) {
     }
     if (doc.isEncrypted) continue;
     if (!(await pagesAsShown(file, doc)).agree) {
-      throw new Error(`בקובץ "${path.basename(file)}" יש עמודים שתוכנות שונות סופרות אחרת, ולכן אי אפשר לעבוד עליו בבטחה. הרץ עליו קודם את "תיקון PDF", ועבוד על הקובץ המתוקן.`);
+      throw new Error(`בקובץ "${path.basename(file)}" יש עמודים שתוכנות שונות קוראות אחרת, ולכן אי אפשר לעבוד עליו בבטחה. הרץ עליו קודם את "תיקון PDF", ועבוד על הקובץ המתוקן.`);
     }
   }
 }

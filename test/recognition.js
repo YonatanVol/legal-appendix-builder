@@ -846,8 +846,12 @@ app.whenReady().then(async () => {
     // Read again too, for the first three: what OCR adds comes from the pictures only.
     for (const ocr of Object.keys(corpus).indexOf(label) < 3 ? [false, true] : [false]) {
       r = await redactTool([file], { marks: [{ page: 0, x: 0, y: 0, w: 1, h: 1 }], ocr });
-      // Refused because programs read its pages differently: nothing is made, which is safe.
-      if (!r.ok && /סופרות אחרת/.test(r.error || '')) continue;
+      // Refused because programs read its pages differently: nothing is made, which is safe;
+      // but only the one file built for that may be refused so.
+      if (!r.ok && /קוראות אחרת/.test(r.error || '')) {
+        if (label !== 'linearized, first page outside the tree') outcomes.push(`refused: ${r.error}`);
+        continue;
+      }
       if (!r.ok) {
         outcomes.push(r.error);
         continue;

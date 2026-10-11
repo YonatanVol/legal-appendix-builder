@@ -125,6 +125,24 @@ app.whenReady().then(async () => {
   r = await jobs.start(tools.runnable('workflow'), [c3], { name: '', steps: twice }).promise;
   check('  without a workflow name, that result is named as the step that made it names its files', r.ok && /כבר קטן/.test(r.summary || '') && path.basename(r.display[0] || '') === 'מכתב ג - מכווץ.pdf', r.error || `${r.display} ${r.summary}`);
 
+  {
+    // A locked file whose pages programs read differently (the middle page does not say it
+    // is a page): checked once Unlock has opened it, before the next step.
+    const { PDFName } = require('pdf-lib');
+    const odd = await PDFDocument.create();
+    const font = await odd.embedFont(StandardFonts.Helvetica);
+    for (const w of ['ONE', 'TWO', 'THREE']) odd.addPage([595, 842]).drawText(w, { x: 60, y: 700, size: 18, font });
+    odd.getPage(1).node.delete(PDFName.of('Type'));
+    const oddFile = path.join(dir, 'מוזר.pdf');
+    await fsp.writeFile(oddFile, await odd.save());
+    // Locked by qpdf directly: Protect itself would refuse such a file.
+    const lockedFile = path.join(dir, 'מוזר נעול.pdf');
+    execFileSync(bin.locate('qpdf'), ['--encrypt', 'secret123', 'owner123', '256', '--', oddFile, lockedFile]);
+    r = await jobs.start(tools.runnable('workflow'), [lockedFile], { name: 'פתיחה וסיבוב', steps: [{ toolId: 'unlock' }, { toolId: 'rotate', options: { angle: 90 } }], secrets: { 0: { password: 'secret123' } } }).promise;
+    check('a workflow that starts by unlocking checks the unlocked file before going on',
+      !r.ok && /קוראות אחרת/.test(r.error || '') && /מוזר/.test(r.error || ''), r.error || r.summary);
+  }
+
   let jobId = null;
   const beforeCancel = fs.readdirSync(dir).sort().join('|');
   const cancelled = jobs.start(tools.runnable(`wf:${send.id}`), [a, b], { name: send.name, steps: send.steps, secrets: { 2: { password: 'x' } } }, { onProgress: (p) => { if (/מספרי עמודים/.test(p.text)) jobs.cancel(jobId); } });

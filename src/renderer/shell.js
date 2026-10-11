@@ -594,11 +594,11 @@ const shell = (() => {
     if (!t.available) return t.reason;
     if (!state.files.length) return t.multiple ? 'בחר קבצים כדי להתחיל.' : 'בחר קובץ כדי להתחיל.';
     // The thumbnails are drawn by pdf.js and the tools read pages with pdf-lib; a file the
-    // two count differently waits for Repair (see shownPageCount in pdf/inspect.js).
+    // two read differently waits for Repair (see pagesAsShown in pdf/inspect.js).
     const firstStep = t.workflow && t.workflow.steps && t.workflow.steps[0];
     if (t.id !== 'repair' && !(firstStep && firstStep.toolId === 'repair')) {
       const odd = state.files.find((f) => f.pagesAgree === false);
-      if (odd) return `בקובץ "${odd.name}" יש עמודים שתוכנות שונות סופרות אחרת, ולכן אי אפשר לעבוד עליו בבטחה. הרץ עליו קודם את "תיקון PDF", ועבוד על הקובץ המתוקן.`;
+      if (odd) return `בקובץ "${odd.name}" יש עמודים שתוכנות שונות קוראות אחרת, ולכן אי אפשר לעבוד עליו בבטחה. הרץ עליו קודם את "תיקון PDF", ועבוד על הקובץ המתוקן.`;
     }
     // Only Unlock takes a password-protected file; for every other tool it is a problem.
     const bad = state.files.find((f) => f.error && !(f.encrypted && t.acceptsEncrypted));
