@@ -346,11 +346,17 @@ app.whenReady().then(async () => {
   check('no scratch folders are left behind', jobs.running() === 0 && leftovers.length === 0, leftovers.join(', '));
   // A folder a run left behind when the program was closed by force (it may hold a copy
   // of a document) is removed the next time the program starts.
-  const orphan = path.join(jobs.SCRATCH_ROOT, 'left-by-a-crash');
+  // A process number no program has (the largest there can be).
+  const orphan = path.join(jobs.SCRATCH_ROOT, '4194304-left-by-a-crash');
   fs.mkdirSync(orphan, { recursive: true });
   fs.writeFileSync(path.join(orphan, 'given.pdf'), 'a copy of a document');
+  // One whose program is still running (this test's own parent) is another's work.
+  const living = path.join(jobs.SCRATCH_ROOT, `${process.ppid}-still-running`);
+  fs.mkdirSync(living, { recursive: true });
   const swept = await jobs.sweepLeftovers();
   check('a folder left by a run that never finished is removed at start', swept >= 1 && !fs.existsSync(orphan));
+  check('  while a folder of a program still running is left alone', fs.existsSync(living));
+  fs.rmSync(living, { recursive: true, force: true });
 
   disposeRenderer();
   await fsp.rm(dir, { recursive: true, force: true });

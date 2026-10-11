@@ -39,7 +39,9 @@ const SCRATCH_ROOT = path.join(os.tmpdir(), 'rotem-office');
 const inUse = new Set();
 
 async function makeScratch() {
-  const dir = path.join(SCRATCH_ROOT, crypto.randomBytes(6).toString('hex'));
+  // Named with this process's number, so a sweep can tell a folder still in use by a
+  // running program (another copy, a test) from one left by a program that is gone.
+  const dir = path.join(SCRATCH_ROOT, `${process.pid}-${crypto.randomBytes(6).toString('hex')}`);
   await fs.mkdir(dir, { recursive: true });
   inUse.add(dir);
   return dir;
@@ -49,8 +51,19 @@ async function makeScratch() {
  * Removes the folders of runs that never got to clean up: the program was closed by force,
  * the computer lost power. They can hold copies of the documents (Redact keeps one while
  * it works), so they are not left lying in the temporary folder. Called when the program
- * starts; only one copy of the program runs at a time, so nothing else is using them.
+ * starts. Only folders whose program is no longer running are removed; folders of an
+ * older version, named without a process number, are left alone.
  */
+function alive(pid) {
+  if (pid === process.pid) return true;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return err.code === 'EPERM';
+  }
+}
+
 async function sweepLeftovers() {
   let names = [];
   try {
@@ -62,6 +75,8 @@ async function sweepLeftovers() {
   for (const name of names) {
     const dir = path.join(SCRATCH_ROOT, name);
     if (inUse.has(dir)) continue;
+    const pid = Number((/^(\d+)-/.exec(name) || [])[1]);
+    if (!pid || alive(pid)) continue;
     await fs.rm(dir, { recursive: true, force: true }).then(() => { removed++; }, () => {});
   }
   return removed;
