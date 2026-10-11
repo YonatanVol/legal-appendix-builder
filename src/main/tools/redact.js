@@ -30,6 +30,8 @@ const DPI = 200;
  *                   as shown, measured from its top-left corner. A mark reaching past the
  *                   page's edge (a search hit's box can) is cut at the edge, never dropped.
  * options.ocr       read the pages again so the copy can be searched (default true)
+ * options.pages     how many pages the screen showed (pdf.js's count there); the copy is
+ *                   made only if pdf.js counts as many here
  * options.forToken  the screen's token for the file, to confirm the marks are for this
  *                   version of it
  */
@@ -53,7 +55,8 @@ async function run({ inputs, options = {}, ctx }) {
   const view = pagepicture.open(given, { signal: ctx.signal });
   let total = 0;
   const byPage = new Map();
-  const ocr = options.ocr !== false && !!bin.locate('gs');
+  const wantsOcr = options.ocr !== false;
+  const ocr = wantsOcr && !!bin.locate('gs');
   // Reading the pages again takes most of the time, so drawing gets the first part of the
   // bar and reading the rest.
   const drawShare = ocr ? 0.1 : 0.85;
@@ -65,7 +68,11 @@ async function run({ inputs, options = {}, ctx }) {
       if (/PDF_LOCKED/.test(String(err && err.message))) {
         throw new Error('הקובץ נעול בסיסמה. אפשר להסיר את הסיסמה בכלי "הסרת סיסמה" ולהשחיר את הקובץ שנוצר.');
       }
-      failed(ctx, err);
+      console.error('[redact] opening the file failed:', err);
+      throw new Error('לא ניתן היה לפתוח את הקובץ, ולכן לא נוצר עותק. אפשר לנסות קודם את "תיקון PDF".');
+    }
+    if (Number.isInteger(options.pages) && options.pages !== total) {
+      throw new Error('מספר העמודים שהוצגו במסך אינו תואם את הקובץ, ולכן לא נוצר עותק. פתח את הקובץ שוב וסמן מחדש.');
     }
     for (const m of marks) {
       if (m.page >= total) throw new Error('הסימונים אינם תואמים את הקובץ. ייתכן שהוא השתנה מאז שנפתח.');
@@ -110,10 +117,13 @@ async function run({ inputs, options = {}, ctx }) {
   }
   const outputPath = await ctx.writeOutput(bytes, { source, label: 'מושחר', ext: 'pdf' });
   const marked = byPage.size;
-  const what = marked === 1 ? 'הושחרו אזורים בעמוד אחד' : `הושחרו אזורים ב-${marked} עמודים`;
-  const how = searchable || ' הטקסט לא זוהה מחדש, ולכן אי אפשר לחפש בעותק.';
+  const what = marks.length === 1 ? 'הושחר אזור אחד' : `הושחרו ${marks.length} אזורים`;
+  const where = marked === 1 ? 'בעמוד אחד' : `ב-${marked} עמודים`;
+  const how = searchable || (wantsOcr
+    ? ' זיהוי הטקסט אינו זמין במחשב הזה, ולכן אי אפשר לחפש בעותק.'
+    : ' הטקסט לא זוהה מחדש, ולכן אי אפשר לחפש בעותק.');
   return {
-    summary: `${what}. ${marks.length === 1 ? 'האזור המסומן נמחק מהקובץ עצמו, לא רק הוסתר.' : `${marks.length} האזורים המסומנים נמחקו מהקובץ עצמו, לא רק הוסתרו.`} כל עמוד בעותק הוא תמונה של מה שהוצג במסך, ושום דבר אחר מהקובץ המקורי לא עבר אליו.${how}`,
+    summary: `${what} ${where}. מה שסומן נמחק מהקובץ עצמו, לא רק הוסתר. כל עמוד בעותק הוא תמונה של מה שהוצג במסך, ושום דבר אחר מהקובץ המקורי לא עבר אליו.${how}`,
     display: [outputPath],
   };
 }

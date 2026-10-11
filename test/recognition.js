@@ -852,7 +852,9 @@ app.whenReady().then(async () => {
       }
       const raw = expanded(r.display[0], dir);
       const count = (await PDFDocument.load(await fsp.readFile(r.display[0]))).getPageCount();
-      const leaked = (raw.match(/SECRET[A-Z0-9-]*|PASSWORDPLAIN|HIDDEN-[A-Z0-9-]+|HIDDENCOMMENT|NULLMEMBERCOMMENT/g) || []);
+      // OCR writes its words as glyph numbers, so its text is read back too.
+      const read = ocr ? (await text.documentText(r.display[0])).join(' ') : '';
+      const leaked = ((raw + read).match(/SECRET[A-Z0-9-]*|PASSWORDPLAIN|HIDDEN-[A-Z0-9-]+|HIDDENCOMMENT|NULLMEMBERCOMMENT/g) || []);
       if (leaked.length) outcomes.push(`inside: ${[...new Set(leaked)].join(', ')}`);
       if (!ocr) {
         const shapeOf = await onlyPictures(r.display[0]);
@@ -957,6 +959,17 @@ app.whenReady().then(async () => {
     const locked = await runTool('protect', [secret], { password: 'סיסמה-לבדיקה', passwordConfirm: 'סיסמה-לבדיקה' });
     r = locked.ok ? await redactTool([locked.display[0]], { marks: [{ page: 0, x: 0, y: 0, w: 1, h: 1 }] }) : locked;
     check('  a file locked with a password is refused, pointing to removing the password', !r.ok && /נעול בסיסמה/.test(r.error || ''), r.error);
+  }
+  {
+    // The screen's page count is sent along; a different count here refuses the copy.
+    r = await redactTool([secret], { marks: [{ page: 0, x: 0, y: 0, w: 1, h: 1 }], pages: 3 });
+    check('  a page count other than the one the screen showed is refused', !r.ok && /מספר העמודים שהוצגו במסך/.test(r.error || ''), r.error || 'made');
+    r = await redactTool([secret], { marks: [{ page: 0, x: 0, y: 0, w: 1, h: 1 }], pages: 2 });
+    check('  and the same count is accepted', r.ok, r.error);
+    const junk = path.join(dir, 'junk.pdf');
+    await fsp.writeFile(junk, '%PDF-1.7\nnothing a reader can use\n');
+    r = await redactTool([junk], { marks: [{ page: 0, x: 0, y: 0, w: 1, h: 1 }] });
+    check('  a file that cannot be opened says so', !r.ok && /לא ניתן היה לפתוח את הקובץ/.test(r.error || ''), r.error);
   }
   {
     // The picture of a marked page has the size pdf.js shows the page at: turned, with a
@@ -1144,6 +1157,25 @@ app.whenReady().then(async () => {
     after.includes('בית הדין') && !after.includes('024624470') && !after.includes('24624471'), after.slice(0, 120));
   const blackness = marks.map((m) => darkAt(out, m.page + 1, dir, [[m.x * 595 + 2, (m.x + m.w) * 595 - 2, (1 - m.y - m.h) * 842 + 2, (1 - m.y) * 842 - 2].map(Math.round)])[0]);
   check('  and every marked area is black in the picture', blackness.every((b) => b > 0.9), JSON.stringify(blackness));
+  {
+    // A file whose last page only pdf.js counts (no /Type): the screen counts its pages as
+    // pdf.js does, so that page can be seen, searched and marked, and the search finds the
+    // ID number on it.
+    const d = await PDFDocument.create();
+    const f = await d.embedFont(require('pdf-lib').StandardFonts.Helvetica);
+    for (const words of ['PAGE ONE', 'PAGE TWO', 'PAGE THREE 024624470']) d.addPage([595, 842]).drawText(words, { x: 60, y: 700, size: 18, font: f });
+    d.getPage(2).node.delete(PDFName.of('Type'));
+    const odd = path.join(dir, 'odd-count.pdf');
+    await fsp.writeFile(odd, await d.save());
+    await page(`(async () => { const r = await window.api.describeFiles(${JSON.stringify([odd])}); window.shell.open('redact', { files: r.files }); })()`);
+    await until(`/מתוך 3/.test(document.getElementById('tool-pages').textContent)`, 15000);
+    const nav = await page(`document.getElementById('tool-pages').textContent`);
+    check('the screen counts the pages of an unusual file as the copy will be drawn', /עמוד 1 מתוך 3/.test(nav), nav.slice(0, 80));
+    await page(`[...document.querySelectorAll('.redact-presets .chip')].find(b => b.textContent === 'מספרי זהות').click()`);
+    await until(`/נמצא/.test(document.querySelector('.redact-found').textContent)`);
+    const oddFound = await page(`document.querySelector('.redact-found').textContent`);
+    check('  and its search reaches the page only pdf.js counts', /נמצאה תוצאה אחת|נמצאו/.test(oddFound) && !/לא נמצא/.test(oddFound), oddFound);
+  }
   check('no errors in the page console', win.consoleErrors.length === 0, win.consoleErrors.slice(0, 3).join(' / '));
 
   require('../src/main/engine/ocr').shutdown();

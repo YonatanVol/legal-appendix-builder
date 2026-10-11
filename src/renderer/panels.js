@@ -1552,7 +1552,11 @@ const panels = {
       if (!file || !file.token) return;
       if (o.forToken && o.forToken !== file.token) o.marks = [];
       view.set('forToken', file.token);
-      const total = file.pageCount;
+      // The pages as pdf.js counts them: the copy is drawn page by page as pdf.js counts
+      // them, which in an unusual file differs from the file's own list, so every page it
+      // will draw must be one that can be seen, searched and marked here. Until pdf.js has
+      // counted, the file's own count stands in and the job waits (see blocked below).
+      let total = Number.isInteger(o.pages) ? o.pages : file.pageCount;
       let pageIndex = 0;
       let found = [];
 
@@ -1622,7 +1626,16 @@ const panels = {
         paintList();
       };
 
+      view.thumbs().then((t) => t.pageCount(file.token)).then((n) => {
+        if (!Number.isInteger(n) || n < 1) return;
+        view.set('pages', n);
+        if (n === total) return;
+        total = n;
+        if (stage && stage.isConnected) draw();
+      }).catch(() => {});
+
       function draw() {
+        if (pageIndex > total - 1) pageIndex = Math.max(0, total - 1);
         holder.replaceChildren();
         stage = previewPage(holder, view, file, pageIndex, 520);
         stage.classList.add('redact-stage');
@@ -1774,7 +1787,8 @@ const panels = {
       paintList();
     },
     blocked(view) {
-      return (view.options.marks || []).length ? null : 'סמן מה להשחיר: גרור על העמוד, או חפש טקסט וסמן את התוצאות.';
+      if (!(view.options.marks || []).length) return 'סמן מה להשחיר: גרור על העמוד, או חפש טקסט וסמן את התוצאות.';
+      return Number.isInteger(view.options.pages) ? null : 'טוען את העמודים…';
     },
   },
 
