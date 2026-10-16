@@ -250,6 +250,11 @@ npm start          # run the app
 npm test           # run every local suite
 ```
 
+On a Mac, `run.command` does the same with a double-click in Finder: it installs what is
+missing the first time and opens the app as a Mac app of its own, so its Terminal window can
+be closed. To keep it in the Dock or on the Desktop, use an alias of it (it runs the code in
+its own folder).
+
 **Windows builds happen on Windows**, in `.github/workflows/windows.yml`, on every push.
 This Mac can no longer build for Windows at all: electron-builder's Wine and `makensis`
 are Intel binaries, and macOS 27 has no Rosetta. The workflow:
