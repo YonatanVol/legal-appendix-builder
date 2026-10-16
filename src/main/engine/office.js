@@ -52,7 +52,7 @@ try {
   exit 1
 } finally {
   if ($doc) { try { $doc.Close($false) } catch {} }
-  if ($app) { try { $app.Quit() } catch {} ; [void][Runtime.InteropServices.Marshal]::ReleaseComObject($app) ; [Console]::Out.WriteLine('quit|') }
+  if ($app) { try { $app.Quit() ; [Console]::Out.WriteLine('quit|') } catch {} ; [void][Runtime.InteropServices.Marshal]::ReleaseComObject($app) }
 }
 `,
   excel: String.raw`
@@ -81,7 +81,7 @@ try {
   exit 1
 } finally {
   if ($book) { try { $book.Close($false) } catch {} }
-  if ($app) { try { $app.Quit() } catch {} ; [void][Runtime.InteropServices.Marshal]::ReleaseComObject($app) ; [Console]::Out.WriteLine('quit|') }
+  if ($app) { try { $app.Quit() ; [Console]::Out.WriteLine('quit|') } catch {} ; [void][Runtime.InteropServices.Marshal]::ReleaseComObject($app) }
 }
 `,
   powerpoint: String.raw`
@@ -108,7 +108,7 @@ try {
   exit 1
 } finally {
   if ($pres) { try { $pres.Close() } catch {} }
-  if ($app) { try { $app.Quit() } catch {} ; [void][Runtime.InteropServices.Marshal]::ReleaseComObject($app) ; [Console]::Out.WriteLine('quit|') }
+  if ($app) { try { $app.Quit() ; [Console]::Out.WriteLine('quit|') } catch {} ; [void][Runtime.InteropServices.Marshal]::ReleaseComObject($app) }
 }
 `,
   probe: String.raw`
@@ -176,8 +176,12 @@ function powershell(script, env, { signal, timeout = TIME_LIMIT_MS, host, stopPr
  * program, and still hidden. If the user has opened a document in it meanwhile, it has a
  * window, and it is theirs now; it is left alone.
  */
+function hiddenStopScript(pid, name) {
+  return `$p = Get-Process -Id ${Number(pid)} -ErrorAction SilentlyContinue; if ($p -and $p.ProcessName -eq '${String(name).replace(/[^A-Z]/g, '')}' -and $p.MainWindowHandle -eq 0) { Stop-Process -Id ${Number(pid)} -Force }`;
+}
+
 function stopHiddenOffice(pid, name) {
-  const script = `$p = Get-Process -Id ${Number(pid)} -ErrorAction SilentlyContinue; if ($p -and $p.ProcessName -eq '${String(name).replace(/[^A-Z]/g, '')}' -and $p.MainWindowHandle -eq 0) { Stop-Process -Id ${Number(pid)} -Force }`;
+  const script = hiddenStopScript(pid, name);
   try {
     const killer = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], { windowsHide: true, stdio: 'ignore' });
     killer.on('error', () => {});
@@ -256,7 +260,9 @@ async function convert(program, input, to, ctx) {
     const r = await powershell(SCRIPTS[program], { OFFICE_IN: input, OFFICE_OUT: out, OFFICE_TO: to }, { signal: ctx.signal });
     ctx.throwIfCancelled();
     if (r.code === 0 && fs.existsSync(out)) return { file: out, engine: PROGRAM[program] };
-    if (r.code === null) throw new Error(`${PROGRAM[program]} לא סיים את ההמרה תוך חמש דקות, ולכן היא הופסקה. אם המסמך גדול מאוד, נסה לפתוח אותו ב-${PROGRAM[program]} ולשמור כ-PDF ידנית.`);
+    // A program that showed a window of its own meanwhile (a sign-in or start-up question)
+    // is not stopped, since it can no longer be told apart from one the user opened.
+    if (r.code === null) throw new Error(`${PROGRAM[program]} לא סיים את ההמרה תוך חמש דקות, ולכן היא הופסקה. אם נשאר חלון של ${PROGRAM[program]} פתוח עם שאלה, ענה עליה או סגור אותו. אם המסמך גדול מאוד, נסה לפתוח אותו ב-${PROGRAM[program]} ולשמור כ-PDF ידנית.`);
     const failure = r.out.split(/\r?\n/).find((line) => line.startsWith('error|')) || '';
     const detail = failure.slice('error|'.length).trim();
     if (!libre) throw new Error(`${PROGRAM[program]} לא הצליח להמיר את הקובץ.${/password|סיסמ/i.test(detail) ? ' הקובץ מוגן בסיסמה.' : ''}`);
@@ -296,4 +302,4 @@ async function viaLibre(soffice, input, to, ctx) {
   return made;
 }
 
-module.exports = { powershell, detect, availability, convert, reset, SCRIPTS, PROGRAM };
+module.exports = { powershell, hiddenStopScript, detect, availability, convert, reset, SCRIPTS, PROGRAM };

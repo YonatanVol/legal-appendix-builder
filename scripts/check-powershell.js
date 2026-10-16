@@ -18,7 +18,7 @@ const { execFileSync } = require('child_process');
 const office = require('../src/main/engine/office');
 const wia = require('../src/main/engine/wia');
 
-const scripts = { ...office.SCRIPTS, scanner: wia.SCRIPT };
+const scripts = { ...office.SCRIPTS, scanner: wia.SCRIPT, 'stop a hidden Word': office.hiddenStopScript(4242, 'WINWORD') };
 
 function shell() {
   for (const exe of ['powershell.exe', 'pwsh']) {

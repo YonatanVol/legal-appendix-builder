@@ -201,13 +201,19 @@ app.whenReady().then(async () => {
       r.ok && heavySize > 24 * 1048576 && sentNow.every((x) => x.size <= 32 * 1000 * 1000) && covered === 5 && docs.length > 1,
       `${r.error || ''} sizes ${sentNow.map((x) => Math.round(x.size / 1048576)).join(',')} MB, pages ${covered}`);
   }
+  // Two ordinary pages, then one too large to send: found before anything is sent.
   const huge = await PDFDocument.create();
+  huge.addPage([595, 842]);
+  huge.addPage([595, 842]);
   huge.addPage([595, 842]).node.set(PDFName.of('Contents'), huge.context.register(huge.context.stream(`% ${noise(24 * 1024 * 1024)}`)));
   const hugeFile = path.join(dir, 'עמוד ענק.pdf');
   await fsp.writeFile(hugeFile, await huge.save({ useObjectStreams: false }));
   const beforeHuge = seen.length;
   r = await runTool('summarize', [hugeFile], {});
-  check('  a single page too large to send is said so, with the way out (compress), and nothing is sent', !r.ok && /גדול מדי/.test(r.error || '') && /כיווץ/.test(r.error || '') && seen.length === beforeHuge, r.error);
+  check('  a page too large to send is said so, with the way out (compress), before any part is sent', !r.ok && /עמוד 3/.test(r.error || '') && /גדול מדי/.test(r.error || '') && /כיווץ/.test(r.error || '') && seen.length === beforeHuge, `${r.error} (${seen.length - beforeHuge} sent)`);
+  const beforeHugeT = seen.length;
+  r = await runTool('translate', [hugeFile], { target: 'en' });
+  check('  in Translate too', !r.ok && /עמוד 3/.test(r.error || '') && seen.length === beforeHugeT, `${r.error} (${seen.length - beforeHugeT} sent)`);
 
   delayMs = 4000;
   let jobId = null;

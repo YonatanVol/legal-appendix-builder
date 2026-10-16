@@ -128,7 +128,10 @@ app.whenReady().then(async () => {
   check('  and takes its paths from the environment, never the command line', Object.values(office.SCRIPTS).every((b) => !/\$args/.test(b)));
   check('each Office script says which program is its own, and only when exactly one appeared',
     Object.entries(office.SCRIPTS).every(([name, b]) => name === 'probe' || (/\$mine\.Count -eq 1\) \{ \[Console\]::Out\.WriteLine\('pid\|'/.test(b) && /-notcontains/.test(b))));
-  check('  and says when it has quit it, after Quit()', Object.entries(office.SCRIPTS).every(([name, b]) => name === 'probe' || /Quit\(\)[^\n]*WriteLine\('quit\|'\)/.test(b)));
+  check('  and says it has quit it only when Quit() worked', Object.entries(office.SCRIPTS).every(([name, b]) => name === 'probe' || /try \{ \$app\.Quit\(\) ; \[Console\]::Out\.WriteLine\('quit\|'\) \} catch/.test(b)));
+  const stopScript = office.hiddenStopScript(4242, "WIN'WORD; Remove-Item x");
+  check('the Windows stop touches only that process, only while it is still that program and has no window',
+    /Get-Process -Id 4242 /.test(stopScript) && /ProcessName -eq 'WINWORDRI'/.test(stopScript) && /MainWindowHandle -eq 0/.test(stopScript) && /Stop-Process -Id 4242 -Force/.test(stopScript) && !/Remove-Item/.test(stopScript), stopScript);
 
   // Stopping a conversion stops the Office program too, not only PowerShell. Here a shell
   // stands in for PowerShell: it starts a program of its own, says "pid|N" for it as the
