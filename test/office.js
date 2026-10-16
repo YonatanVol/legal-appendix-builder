@@ -126,6 +126,65 @@ app.whenReady().then(async () => {
     check(`the ${name} script closes its program whatever happens`, name === 'probe' || /finally \{[\s\S]*Quit\(\)/.test(body));
   }
   check('  and takes its paths from the environment, never the command line', Object.values(office.SCRIPTS).every((b) => !/\$args/.test(b)));
+  check('each Office script says which program is its own, and only when exactly one appeared',
+    Object.entries(office.SCRIPTS).every(([name, b]) => name === 'probe' || (/\$mine\.Count -eq 1\) \{ \[Console\]::Out\.WriteLine\('pid\|'/.test(b) && /-notcontains/.test(b))));
+  check('  and says when it has quit it, after Quit()', Object.entries(office.SCRIPTS).every(([name, b]) => name === 'probe' || /Quit\(\)[^\n]*WriteLine\('quit\|'\)/.test(b)));
+
+  // Stopping a conversion stops the Office program too, not only PowerShell. Here a shell
+  // stands in for PowerShell: it starts a program of its own, says "pid|N" for it as the
+  // scripts do, and waits. (Its program writes elsewhere, as Office, which PowerShell does
+  // not start itself, never holds PowerShell's output.)
+  console.log('\nstopping a conversion');
+  const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+  const standIn = ['/bin/sh', ['-c', 'sleep 300 >/dev/null 2>&1 & echo "pid|$!|SLEEP"; exec sleep 300']];
+  const ownPid = (out) => Number((/pid\|(\d+)/.exec(out) || [])[1]);
+  // On Windows the program is stopped only while it is still that program and still hidden;
+  // here the stand-in's program is simply stopped, and the call is recorded.
+  const stopped = [];
+  const stopProgram = (pid, name) => { stopped.push(name); try { process.kill(pid); } catch { /* gone */ } };
+  let controller = new AbortController();
+  setTimeout(() => controller.abort(), 1500);
+  let ran = await office.powershell('', {}, { signal: controller.signal, host: standIn, stopProgram });
+  let program = ownPid(ran.out);
+  await new Promise((r) => setTimeout(r, 300));
+  check('Esc during a conversion stops the Office program the script started, not only the script', program > 0 && ran.code === null && !alive(program) && stopped[0] === 'SLEEP', `${program} alive=${alive(program)} ${stopped}`);
+  if (alive(program)) process.kill(program, 'SIGKILL');
+  ran = await office.powershell('', {}, { timeout: 1500, host: standIn, stopProgram });
+  program = ownPid(ran.out);
+  await new Promise((r) => setTimeout(r, 300));
+  check('  and so does the time limit', program > 0 && ran.code === null && !alive(program), `${program} alive=${alive(program)}`);
+  if (alive(program)) process.kill(program, 'SIGKILL');
+  // Once the script says it has quit its program, a later stop leaves that number alone: by
+  // then it may belong to something else.
+  const quitting = ['/bin/sh', ['-c', 'sleep 300 >/dev/null 2>&1 & echo "pid|$!|SLEEP"; echo "quit|"; exec sleep 300']];
+  const before = stopped.length;
+  controller = new AbortController();
+  setTimeout(() => controller.abort(), 1500);
+  ran = await office.powershell('', {}, { signal: controller.signal, host: quitting, stopProgram });
+  program = ownPid(ran.out);
+  check('  after the script has quit its program, stopping it leaves that process number alone', program > 0 && alive(program) && stopped.length === before, `${program} alive=${alive(program)}`);
+  if (alive(program)) process.kill(program, 'SIGKILL');
+  controller = new AbortController();
+  controller.abort();
+  const marker = path.join(dir, 'started.txt');
+  ran = await office.powershell('', {}, { signal: controller.signal, host: ['/bin/sh', ['-c', `touch '${marker}'`]] });
+  await new Promise((r) => setTimeout(r, 300));
+  check('  a conversion cancelled before it starts never starts its program', ran.code === null && !fs.existsSync(marker));
+
+  // How a scan ends, decided apart from the scanner, so it can be checked here.
+  console.log('\nhow a scan ends');
+  const wia = require('../src/main/engine/wia');
+  const pages = ['a.png', 'b.png'];
+  let end = wia.outcome({ files: pages, device: 'סורק', failure: '', cancelled: true });
+  check('a scan stopped after two pages keeps them, and says it was cancelled, not that the batch is complete', end.files && end.files.length === 2 && /בוטלה/.test(end.warning), JSON.stringify(end));
+  end = wia.outcome({ files: [], device: '', failure: '', cancelled: true });
+  check('  stopped before any page: it says the scan was cancelled, not that it failed', end.error === wia.MESSAGES.CANCELLED, JSON.stringify(end));
+  end = wia.outcome({ files: pages, device: 'סורק', failure: 'JAM 80210001', cancelled: false });
+  check('  a jam after two pages keeps them and says the paper jammed', end.files && /נתקע/.test(end.warning), JSON.stringify(end));
+  end = wia.outcome({ files: ['a.png'], device: 'סורק', failure: '', cancelled: true });
+  check('  one page: "נסרק דף אחד", and "הדף שנסרק נשמר"', /^נסרק דף אחד ואז/.test(end.warning) && /הדף שנסרק נשמר/.test(end.warning), end.warning);
+  end = wia.outcome({ files: pages, device: 'סורק', failure: '', cancelled: false });
+  check('  a complete batch carries no warning', end.files && end.warning === '', JSON.stringify(end));
 
   disposeRenderer();
   require('../src/main/engine/ocr').shutdown();

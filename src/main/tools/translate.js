@@ -2,20 +2,21 @@
 
 const fs = require('fs/promises');
 const path = require('path');
-const { PDFDocument } = require('pdf-lib');
 
 const claude = require('../engine/claude');
 const { wordFromMarkdown } = require('../pdf/docx');
 const { parse, runs } = require('../pdf/markdown');
 const { loadPdf } = require('../pdf/inspect');
+const { sendableParts } = require('../pdf/sendable');
 const { renderHtmlToPdf } = require('../pdf/render');
 const { FONT_FACES, FONT_STACK, escapeHtml } = require('../templates');
 
 /*
  * Translate PDF: the document translated by Claude, saved as a Word file and a PDF.
  *
- * The PDF is sent in parts of up to 15 pages, so even a long document fits and each
- * part's translation is complete. The layout is not kept page for page: the result is
+ * The PDF is sent in parts of up to 15 pages, each small enough to send (a part of heavy
+ * scans is halved until it is), so even a long document fits and each part's translation
+ * is complete. The layout is not kept page for page: the result is
  * the document's text, with its headings, lists and tables, in the other language. The
  * screen says so before the button is pressed.
  */
@@ -49,16 +50,14 @@ async function run({ inputs, options = {}, ctx }) {
   const doc = await loadPdf(source);
   const pages = doc.getPageCount();
   const chunks = [];
-  for (let from = 0; from < pages; from += PART_PAGES) {
-    const to = Math.min(pages, from + PART_PAGES);
+  for await (const { from, to, bytes } of sendableParts(doc, PART_PAGES, name)) {
+    ctx.throwIfCancelled();
     ctx.progress(0.05 + (from / pages) * 0.8, `מתרגם את עמודים ${from + 1}-${to} מתוך ${pages}… זה יכול לקחת כמה דקות.`);
-    const part = await PDFDocument.create();
-    (await part.copyPages(doc, Array.from({ length: to - from }, (_, k) => from + k))).forEach((p) => part.addPage(p));
     const r = await claude.ask({
       system: systemPrompt(target),
       maxTokens: 64000,
       content: [
-        { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: Buffer.from(await part.save()).toString('base64') } },
+        { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: Buffer.from(bytes).toString('base64') } },
         { type: 'text', text: `Translate pages ${from + 1}-${to} of "${name}". The first page of this part is page ${from + 1}.` },
       ],
       signal: ctx.signal,

@@ -383,13 +383,17 @@ function registerToolIpc() {
   ipcMain.handle('settings:get', async () => ({ ok: true, apiKeyHint: await settings.apiKeyHint() }));
   ipcMain.handle('settings:setKey', async (_event, key) => {
     try {
+      // A new key Anthropic refuses never costs the office the key that worked before it.
+      const before = await settings.savedKey();
       const hint = await settings.setApiKey(key);
       try {
         await require('./engine/claude').check();
         return { ok: true, apiKeyHint: hint, checked: true };
       } catch (err) {
         if (/שגוי|בוטל|הרשאה/.test(err.message)) {
-          await settings.clearApiKey();
+          // Put the earlier key back only if the refused one is still the one saved: a key
+          // removed while the check ran stays removed.
+          if ((await settings.getApiKey()) === String(key || '').trim()) await settings.restoreKey(before);
           return fail(err);
         }
         return { ok: true, apiKeyHint: hint, checked: false, warning: `המפתח נשמר, אבל לא ניתן היה לבדוק אותו כרגע: ${err.message}` };

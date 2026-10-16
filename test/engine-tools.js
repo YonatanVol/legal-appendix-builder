@@ -288,6 +288,18 @@ app.whenReady().then(async () => {
   const one = r.display && r.display[0];
   check('one chosen page as PNG is written beside the source', r.ok && /עמ' 2\.png$/.test(one || '') && fs.readFileSync(one).subarray(1, 4).toString() === 'PNG', r.error || one);
 
+  // A page with a crop box is drawn as shown: inside the box, never the area cut away.
+  const cropped = await PDFDocument.create();
+  const cropPage = cropped.addPage([595, 842]);
+  cropPage.drawText('KEPT', { x: 150, y: 300, size: 24 });
+  cropPage.setCropBox(100, 100, 300, 400);
+  const croppedFile = path.join(dir, 'חתוך.pdf');
+  await fsp.writeFile(croppedFile, await cropped.save());
+  r = await runTool('pdf-to-jpg', [croppedFile], { mode: 'pages', format: 'png', dpi: 72 });
+  const cropSize = r.ok ? nativeImage.createFromPath(r.display[0]).getSize() : {};
+  check('a cropped page becomes a picture of the page as shown, inside its crop box (300 x 400 at 72 DPI)',
+    Math.abs(cropSize.width - 300) <= 2 && Math.abs(cropSize.height - 400) <= 2, r.error || JSON.stringify(cropSize));
+
   r = await runTool('pdf-to-jpg', [heavy.file], { mode: 'images' });
   const imgs = r.ok && r.display[0] ? fs.readdirSync(r.display[0]) : [];
   const same = imgs.length ? fs.readFileSync(path.join(r.display[0], imgs.sort()[0])).equals(heavy.jpg) : false;
@@ -602,6 +614,35 @@ app.whenReady().then(async () => {
   await fsp.writeFile(note, 'x');
   await jobs.start(quick, [note], {}, { onProgress: (p) => said.push(p.text) }).promise;
   check('the tool\'s first message is shown, not swallowed after the check of the files', said.includes('הכלי התחיל'), JSON.stringify(said));
+
+  /* ---- a line handler that throws ---- */
+  // Progress throws once Esc is pressed; a program's next line must not then escape as an
+  // uncaught exception, which in the real program is an error box. The run fails instead.
+  let uncaught = null;
+  const onUncaught = (e) => { uncaught = e; };
+  process.on('uncaughtException', onUncaught);
+  const thrown = await bin.run('gs', ['-dNOPAUSE', '-dBATCH', '-dSAFER', '-sDEVICE=nullpage', doc], {
+    onLine: (line) => { if (/^Page/.test(line)) throw new Error('stopped here'); },
+  }).then(() => null, (e) => e);
+  await new Promise((res) => setTimeout(res, 500));
+  process.off('uncaughtException', onUncaught);
+  check('a line handler that throws fails the run with its error, and nothing escapes uncaught', thrown && thrown.message === 'stopped here' && !uncaught, `${thrown && thrown.message} / uncaught: ${uncaught && uncaught.message}`);
+
+  /* ---- one tool that fails its check ---- */
+  const compressModule = require('../src/main/tools/compress');
+  const realCheck = compressModule.availability;
+  compressModule.availability = () => { throw new Error('probe failed'); };
+  let grid = [];
+  try {
+    grid = await tools.list();
+  } catch {
+    grid = [];
+  } finally {
+    compressModule.availability = realCheck;
+  }
+  const brokenTile = grid.find((t) => t.id === 'compress') || {};
+  check('a tool whose check throws is shown unavailable, and every other tile still shows',
+    grid.length >= 30 && !brokenTile.available && !!brokenTile.reason && !!(grid.find((t) => t.id === 'merge') || {}).available, `${grid.length} tiles; ${brokenTile.reason}`);
 
   /* ---- cancelling stops the program ---- */
   console.log('\ncancelling');

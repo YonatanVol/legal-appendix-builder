@@ -45,7 +45,8 @@ async function pages(inputs, options, ctx) {
       '-dNOPAUSE', '-dBATCH', '-dSAFER',
       `-sDEVICE=${png ? 'png16m' : 'jpeg'}`,
       `-r${dpi}`,
-      '-dTextAlphaBits=4', '-dGraphicsAlphaBits=4',
+      // The page as shown: inside its crop box, as the screen and the Crop tool's copy have it.
+      '-dTextAlphaBits=4', '-dGraphicsAlphaBits=4', '-dUseCropBox',
       `-sPageList=${wanted.map((i) => i + 1).join(',')}`,
       `-sOutputFile=${pattern}`,
     ];

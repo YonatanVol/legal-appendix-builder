@@ -70,8 +70,8 @@ function availability(...names) {
 }
 
 /**
- * Run a program. Resolves with its exit code and output; rejects only when it could
- * not be started. `signal` stops it; `onLine` sees each line it prints; `input` is
+ * Run a program. Resolves with its exit code and output; rejects when it could not be
+ * started, or with the error of an `onLine` that threw (the program is stopped then). `signal` stops it; `onLine` sees each line it prints; `input` is
  * written to its standard input, which is how passwords reach qpdf, so they never
  * appear on a command line another program could read.
  */
@@ -87,12 +87,20 @@ function run(name, args, { signal, onLine, cwd, input } = {}) {
     let stdout = '';
     let stderr = '';
     let pending = '';
+    let broke = null;
+    // A line handler that throws (progress throws once Esc is pressed) stops the program and
+    // fails the run with that error; it never escapes as an uncaught exception.
     const feed = (chunk) => {
-      if (!onLine) return;
+      if (!onLine || broke) return;
       pending += chunk;
       const lines = pending.split(/\r?\n/);
       pending = lines.pop();
-      lines.forEach((l) => onLine(l));
+      try {
+        lines.forEach((l) => onLine(l));
+      } catch (err) {
+        broke = err;
+        child.kill();
+      }
     };
     child.stdout.on('data', (d) => {
       const s = d.toString('utf8');
@@ -112,6 +120,7 @@ function run(name, args, { signal, onLine, cwd, input } = {}) {
     child.on('error', (err) => reject(new Error(`לא ניתן היה להפעיל את ${name}: ${err.message}`)));
     child.on('close', (code) => {
       if (signal) signal.removeEventListener('abort', abort);
+      if (broke) return reject(broke);
       resolve({ code, stdout, stderr, killed: !!(signal && signal.aborted) });
     });
   });

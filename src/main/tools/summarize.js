@@ -2,25 +2,26 @@
 
 const fs = require('fs/promises');
 const path = require('path');
-const { PDFDocument } = require('pdf-lib');
 
 const claude = require('../engine/claude');
 const text = require('../pdf/text');
 const { wordFromMarkdown } = require('../pdf/docx');
 const { loadPdf } = require('../pdf/inspect');
+const { sendableParts, fits } = require('../pdf/sendable');
 
 /*
  * AI Summarizer: a summary of a document, written by Claude, saved as a Word file.
  *
  * The PDF itself is sent, so Claude reads its layout, tables and scanned pages as well
- * as its text. A file too large to send at once (over 30 MB or 550 pages) is sent in
- * parts of up to 100 pages, each part summarised, and the summaries combined.
+ * as its text. A file too large to send at once (over the request limit once encoded, or
+ * 550 pages) is sent in parts of up to 100 pages, each small enough to send, each part
+ * summarised, and the summaries combined. An answer that was cut off is never saved as a
+ * summary.
  *
  * The document leaves this PC for Anthropic's servers for this one request; the screen
  * says so before the button is pressed, and the tool is off until a key is entered.
  */
 
-const MAX_BYTES = 30 * 1024 * 1024;
 const MAX_PAGES = 550;
 const PART_PAGES = 100;
 
@@ -56,12 +57,10 @@ async function documentBlock(bytes) {
   return { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: Buffer.from(bytes).toString('base64') } };
 }
 
-/** The pages from..to (0-based, end exclusive) of a document, as a PDF of their own. */
-async function partBytes(doc, from, to) {
-  const part = await PDFDocument.create();
-  const pages = await part.copyPages(doc, Array.from({ length: to - from }, (_, k) => from + k));
-  pages.forEach((p) => part.addPage(p));
-  return part.save({ useObjectStreams: true });
+/** The answer's text, or, if it was cut off, an error: half a summary is not a summary. */
+function whole(r, what) {
+  if (r.truncated) throw new Error(`הסיכום של ${what} נקטע באמצע, ולכן לא נשמר. נסה אורך סיכום קצר יותר, או פצל את הקובץ לחלקים.`);
+  return r.text;
 }
 
 async function run({ inputs, options = {}, ctx }) {
@@ -73,21 +72,23 @@ async function run({ inputs, options = {}, ctx }) {
   const system = systemPrompt(options);
 
   let markdown;
-  if (bytes.length <= MAX_BYTES && pages <= MAX_PAGES) {
+  if (fits(bytes) && pages <= MAX_PAGES) {
     ctx.progress(0.1, 'שולח ל-Claude ומחכה לסיכום… זה יכול לקחת דקה או שתיים.');
     const r = await claude.ask({ system, content: [await documentBlock(bytes), { type: 'text', text: `סכם את המסמך "${name}".` }], signal: ctx.signal });
-    markdown = r.text;
+    markdown = whole(r, 'המסמך');
   } else {
     const parts = [];
-    for (let from = 0, n = 1; from < pages; from += PART_PAGES, n++) {
-      const to = Math.min(pages, from + PART_PAGES);
+    let n = 0;
+    for await (const { from, to, bytes: part } of sendableParts(doc, PART_PAGES, name)) {
+      ctx.throwIfCancelled();
+      n++;
       ctx.progress(0.05 + (from / pages) * 0.75, `מסכם את עמודים ${from + 1}-${to} מתוך ${pages}…`);
-      const r = await claude.ask({ system, content: [await documentBlock(await partBytes(doc, from, to)), { type: 'text', text: `זהו חלק ${n} של המסמך "${name}" (עמודים ${from + 1}-${to}). סכם את החלק הזה.` }], signal: ctx.signal });
-      parts.push(`## עמודים ${from + 1}-${to}\n\n${r.text}`);
+      const r = await claude.ask({ system, content: [await documentBlock(part), { type: 'text', text: `זהו חלק ${n} של המסמך "${name}" (עמודים ${from + 1}-${to}). סכם את החלק הזה.` }], signal: ctx.signal });
+      parts.push(`## עמודים ${from + 1}-${to}\n\n${whole(r, `עמודים ${from + 1}-${to}`)}`);
     }
     ctx.progress(0.85, 'מאחד את הסיכומים…');
     const r = await claude.ask({ system, content: [{ type: 'text', text: `אלה סיכומים של חלקי המסמך "${name}", לפי סדר העמודים. כתוב מהם סיכום אחד של המסמך כולו.\n\n${parts.join('\n\n')}` }], signal: ctx.signal });
-    markdown = r.text;
+    markdown = whole(r, 'המסמך כולו');
   }
   ctx.throwIfCancelled();
   if (!markdown.trim()) throw new Error('Claude לא החזיר סיכום. נסה שוב.');

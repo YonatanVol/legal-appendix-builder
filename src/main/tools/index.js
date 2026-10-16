@@ -104,19 +104,27 @@ function runnable(id) {
 async function list(env = {}) {
   const result = [];
   for (const meta of TOOLS) {
-    const mod = meta.screen ? null : implementation(meta.id);
     let available = true;
     let reason = '';
-    if (meta.screen && !SCREENS_BUILT.has(meta.screen)) {
+    // One tool that fails to load, or to check what it needs, is shown as unavailable; it
+    // never takes the other tiles with it.
+    try {
+      const mod = meta.screen ? null : implementation(meta.id);
+      if (meta.screen && !SCREENS_BUILT.has(meta.screen)) {
+        available = false;
+        reason = 'הכלי הזה עדיין לא זמין בגרסה הזו.';
+      } else if (!meta.screen && !mod) {
+        available = false;
+        reason = 'הכלי הזה עדיין לא זמין בגרסה הזו.';
+      } else if (mod && typeof mod.availability === 'function') {
+        const status = await mod.availability(env);
+        available = status.available;
+        reason = status.reason || '';
+      }
+    } catch (err) {
+      console.error(`[tools] "${meta.id}" could not be checked:`, err);
       available = false;
-      reason = 'הכלי הזה עדיין לא זמין בגרסה הזו.';
-    } else if (!meta.screen && !mod) {
-      available = false;
-      reason = 'הכלי הזה עדיין לא זמין בגרסה הזו.';
-    } else if (mod && typeof mod.availability === 'function') {
-      const status = await mod.availability(env);
-      available = status.available;
-      reason = status.reason || '';
+      reason = 'הכלי הזה לא נטען כראוי. סגור את התוכנה ופתח אותה שוב; אם זה חוזר, התקנה מחדש תפתור את זה.';
     }
     result.push({ ...meta, available, reason });
   }

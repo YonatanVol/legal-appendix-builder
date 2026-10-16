@@ -256,7 +256,8 @@ function value(text) {
 
 function finishSheet(sheet, rtl) {
   sheet.views = [{ rightToLeft: rtl }];
-  sheet.columns.forEach((col) => {
+  // A page with nothing on it gives a sheet with no columns at all.
+  (sheet.columns || []).forEach((col) => {
     let width = 8;
     col.eachCell({ includeEmpty: false }, (cell) => {
       width = Math.max(width, Math.min(60, String(cell.value).length + 2));

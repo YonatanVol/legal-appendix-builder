@@ -1085,6 +1085,16 @@ app.whenReady().then(async () => {
   check('  amounts become numbers, dates stay as written', JSON.stringify(row(3)) === '["07/08/2026","שכר טרחה",1250.5]' && row(4)[2] === 300, `${JSON.stringify(row(3))} ${JSON.stringify(row(4))}`);
   check('  a small amount like 12.50 is a number too, and a dotted date stays a date', JSON.stringify(row(5)) === '["20.08.2026","צילומים",12.5]', JSON.stringify(row(5)));
 
+  // A blank page gives a sheet with nothing on it, never a failed conversion.
+  const withBlank = await PDFDocument.load(await fsp.readFile(table));
+  withBlank.addPage([595, 842]);
+  const withBlankFile = path.join(dir, 'עם עמוד ריק.pdf');
+  await fsp.writeFile(withBlankFile, await withBlank.save());
+  r = await runTool('pdf-to-excel', [withBlankFile], {});
+  const blankBook = new ExcelJS.Workbook();
+  if (r.ok) await blankBook.xlsx.readFile(r.display[0]);
+  check('a document with a blank page converts, with a sheet for every page', r.ok && blankBook.worksheets.length === 2, r.error || `${blankBook.worksheets.length} sheets`);
+
   // Long descriptions in every row must stay their own column, with the amounts beside.
   const { layout } = require('../src/main/tools/pdf-to-excel');
   const longRows = [0, 1, 2].map((r) => [

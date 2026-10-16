@@ -95,7 +95,8 @@ async function ask({ system, content, maxTokens = 32000, effort = 'medium', sign
     throw new Error('Claude סירב לעבד את המסמך הזה. אפשר לנסות שוב, או לחלק אותו לחלקים קטנים יותר.');
   }
   const text = message.content.filter((b) => b.type === 'text').map((b) => b.text).join('');
-  if (message.stop_reason === 'max_tokens') return { text, truncated: true, usage: message.usage };
+  // Cut off by the length limit, or by the model's context window: either way not whole.
+  if (message.stop_reason === 'max_tokens' || message.stop_reason === 'model_context_window_exceeded') return { text, truncated: true, usage: message.usage };
   return { text, truncated: false, usage: message.usage };
 }
 

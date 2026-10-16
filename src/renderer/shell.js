@@ -573,7 +573,8 @@ const shell = (() => {
     const wrong = files.filter((f) => !t.accepts.includes(f.ext));
     const right = files.filter((f) => t.accepts.includes(f.ext));
     if (!t.multiple) {
-      state.files = right.slice(0, 1);
+      // A file of the wrong kind dropped on a one-file tool leaves the chosen file in place.
+      if (right.length) state.files = right.slice(0, 1);
     } else {
       const have = new Set(state.files.map((f) => f.path.toLowerCase()));
       for (const f of right) if (!have.has(f.path.toLowerCase())) state.files.push(f);

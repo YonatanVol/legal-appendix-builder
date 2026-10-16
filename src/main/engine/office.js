@@ -32,7 +32,13 @@ $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $app = $null; $doc = $null
 try {
+  # Which Word is this script's own, so a cancelled conversion can stop it: the one that
+  # was not running a moment before, and only when exactly one appeared. It is stopped only
+  # while it is still hidden, so a window the user opens meanwhile is never closed.
+  $before = @(Get-Process -Name WINWORD -ErrorAction SilentlyContinue | ForEach-Object { $_.Id })
   $app = New-Object -ComObject Word.Application
+  $mine = @(Get-Process -Name WINWORD -ErrorAction SilentlyContinue | Where-Object { $before -notcontains $_.Id })
+  if ($mine.Count -eq 1) { [Console]::Out.WriteLine('pid|' + $mine[0].Id + '|WINWORD') }
   $app.Visible = $false
   $app.DisplayAlerts = 0
   $app.AutomationSecurity = 3
@@ -46,7 +52,7 @@ try {
   exit 1
 } finally {
   if ($doc) { try { $doc.Close($false) } catch {} }
-  if ($app) { try { $app.Quit() } catch {} ; [void][Runtime.InteropServices.Marshal]::ReleaseComObject($app) }
+  if ($app) { try { $app.Quit() } catch {} ; [void][Runtime.InteropServices.Marshal]::ReleaseComObject($app) ; [Console]::Out.WriteLine('quit|') }
 }
 `,
   excel: String.raw`
@@ -54,7 +60,13 @@ $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $app = $null; $book = $null
 try {
+  # Which Excel is this script's own, so a cancelled conversion can stop it: the one that
+  # was not running a moment before, and only when exactly one appeared. It is stopped only
+  # while it is still hidden, so a window the user opens meanwhile is never closed.
+  $before = @(Get-Process -Name EXCEL -ErrorAction SilentlyContinue | ForEach-Object { $_.Id })
   $app = New-Object -ComObject Excel.Application
+  $mine = @(Get-Process -Name EXCEL -ErrorAction SilentlyContinue | Where-Object { $before -notcontains $_.Id })
+  if ($mine.Count -eq 1) { [Console]::Out.WriteLine('pid|' + $mine[0].Id + '|EXCEL') }
   $app.Visible = $false
   $app.DisplayAlerts = $false
   $app.AutomationSecurity = 3
@@ -69,7 +81,7 @@ try {
   exit 1
 } finally {
   if ($book) { try { $book.Close($false) } catch {} }
-  if ($app) { try { $app.Quit() } catch {} ; [void][Runtime.InteropServices.Marshal]::ReleaseComObject($app) }
+  if ($app) { try { $app.Quit() } catch {} ; [void][Runtime.InteropServices.Marshal]::ReleaseComObject($app) ; [Console]::Out.WriteLine('quit|') }
 }
 `,
   powerpoint: String.raw`
@@ -77,7 +89,13 @@ $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $app = $null; $pres = $null
 try {
+  # Which PowerPoint is this script's own, so a cancelled conversion can stop it: the one that
+  # was not running a moment before, and only when exactly one appeared. It is stopped only
+  # while it is still hidden, so a window the user opens meanwhile is never closed.
+  $before = @(Get-Process -Name POWERPNT -ErrorAction SilentlyContinue | ForEach-Object { $_.Id })
   $app = New-Object -ComObject PowerPoint.Application
+  $mine = @(Get-Process -Name POWERPNT -ErrorAction SilentlyContinue | Where-Object { $before -notcontains $_.Id })
+  if ($mine.Count -eq 1) { [Console]::Out.WriteLine('pid|' + $mine[0].Id + '|POWERPNT') }
   $app.AutomationSecurity = 3
   # Open: FileName, ReadOnly, Untitled, WithWindow (false: no window at all)
   $pres = $app.Presentations.Open($env:OFFICE_IN, -1, 0, 0)
@@ -90,7 +108,7 @@ try {
   exit 1
 } finally {
   if ($pres) { try { $pres.Close() } catch {} }
-  if ($app) { try { $app.Quit() } catch {} ; [void][Runtime.InteropServices.Marshal]::ReleaseComObject($app) }
+  if ($app) { try { $app.Quit() } catch {} ; [void][Runtime.InteropServices.Marshal]::ReleaseComObject($app) ; [Console]::Out.WriteLine('quit|') }
 }
 `,
   probe: String.raw`
@@ -103,16 +121,42 @@ foreach ($id in 'Word.Application', 'Excel.Application', 'PowerPoint.Application
 const PROGRAM = { word: 'Word', excel: 'Excel', powerpoint: 'PowerPoint' };
 const TIME_LIMIT_MS = 5 * 60 * 1000;
 
-function powershell(script, env, { signal, timeout = TIME_LIMIT_MS } = {}) {
+/**
+ * Run a script in PowerShell. Resolves with its exit code (null when it was stopped) and
+ * what it printed. A script that starts an Office program prints "pid|N|NAME" for it, and
+ * "quit|" once it has quit it; stopping the script (Esc, or the time limit) in between
+ * stops that program too, since quitting it is left to the script's `finally`, which a
+ * stopped script never reaches. `host` and `stopProgram` replace PowerShell and the
+ * Windows stop in tests.
+ */
+function powershell(script, env, { signal, timeout = TIME_LIMIT_MS, host, stopProgram = stopHiddenOffice } = {}) {
+  if (signal && signal.aborted) return Promise.resolve({ code: null, out: '' });
   const encoded = Buffer.from(script, 'utf16le').toString('base64');
+  const [command, args] = host || ['powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', encoded]];
   return new Promise((resolve, reject) => {
-    const child = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', encoded], {
+    const child = spawn(command, args, {
       windowsHide: true,
       env: { ...process.env, ...env },
     });
     let out = '';
-    child.stdout.on('data', (d) => { out += d.toString('utf8'); });
-    const stop = () => child.kill();
+    let pending = '';
+    let program = null;
+    child.stdout.on('data', (d) => {
+      const s = d.toString('utf8');
+      out += s;
+      pending += s;
+      const lines = pending.split(/\r?\n/);
+      pending = lines.pop();
+      for (const line of lines) {
+        const m = /^pid\|(\d+)\|(\w+)$/.exec(line.trim());
+        if (m) program = { pid: Number(m[1]), name: m[2] };
+        if (line.trim() === 'quit|') program = null;
+      }
+    });
+    const stop = () => {
+      child.kill();
+      if (program) stopProgram(program.pid, program.name);
+    };
     const timer = setTimeout(stop, timeout);
     if (signal) signal.addEventListener('abort', stop, { once: true });
     child.on('error', (err) => {
@@ -125,6 +169,21 @@ function powershell(script, env, { signal, timeout = TIME_LIMIT_MS } = {}) {
       resolve({ code, out });
     });
   });
+}
+
+/**
+ * Stops the Office program a stopped conversion left behind: only while it is still that
+ * program, and still hidden. If the user has opened a document in it meanwhile, it has a
+ * window, and it is theirs now; it is left alone.
+ */
+function stopHiddenOffice(pid, name) {
+  const script = `$p = Get-Process -Id ${Number(pid)} -ErrorAction SilentlyContinue; if ($p -and $p.ProcessName -eq '${String(name).replace(/[^A-Z]/g, '')}' -and $p.MainWindowHandle -eq 0) { Stop-Process -Id ${Number(pid)} -Force }`;
+  try {
+    const killer = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')], { windowsHide: true, stdio: 'ignore' });
+    killer.on('error', () => {});
+  } catch {
+    // no PowerShell: nothing more can be done
+  }
 }
 
 let found = null;
@@ -198,7 +257,8 @@ async function convert(program, input, to, ctx) {
     ctx.throwIfCancelled();
     if (r.code === 0 && fs.existsSync(out)) return { file: out, engine: PROGRAM[program] };
     if (r.code === null) throw new Error(`${PROGRAM[program]} לא סיים את ההמרה תוך חמש דקות, ולכן היא הופסקה. אם המסמך גדול מאוד, נסה לפתוח אותו ב-${PROGRAM[program]} ולשמור כ-PDF ידנית.`);
-    const detail = (r.out.split('|')[1] || '').trim();
+    const failure = r.out.split(/\r?\n/).find((line) => line.startsWith('error|')) || '';
+    const detail = failure.slice('error|'.length).trim();
     if (!libre) throw new Error(`${PROGRAM[program]} לא הצליח להמיר את הקובץ.${/password|סיסמ/i.test(detail) ? ' הקובץ מוגן בסיסמה.' : ''}`);
     // Office failed on this file; LibreOffice may still read it.
   }
@@ -236,4 +296,4 @@ async function viaLibre(soffice, input, to, ctx) {
   return made;
 }
 
-module.exports = { detect, availability, convert, reset, SCRIPTS, PROGRAM };
+module.exports = { powershell, detect, availability, convert, reset, SCRIPTS, PROGRAM };

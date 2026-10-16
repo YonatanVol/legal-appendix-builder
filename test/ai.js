@@ -16,7 +16,7 @@ const os = require('os');
 const path = require('path');
 const { execFileSync } = require('child_process');
 const { app, session } = require('electron');
-const { PDFDocument, StandardFonts } = require('pdf-lib');
+const { PDFDocument, StandardFonts, PDFName } = require('pdf-lib');
 const { openWindow } = require('./helpers/window');
 
 const results = [];
@@ -29,6 +29,7 @@ function check(label, condition, detail = '') {
 const seen = [];
 let mode = 'ok';
 let delayMs = 0;
+let checkDelayMs = 0;
 const ANSWER = '## עובדות\n- המערער **איתי ליבן** ערער על החלטת הוועדה מיום 07/07/2026.\n\n## סכומים\n| פריט | סכום |\n|---|---|\n| שכר טרחה | 1,250 |';
 
 function sse(res, text, stop = 'end_turn') {
@@ -48,6 +49,14 @@ const server = http.createServer((req, res) => {
   req.on('data', (d) => { body += d; });
   req.on('end', () => {
     const key = req.headers['x-api-key'];
+    if (key && key.includes('rejected') && checkDelayMs) {
+      const wait = checkDelayMs;
+      checkDelayMs = 0;
+      return setTimeout(() => {
+        res.writeHead(401, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ type: 'error', error: { type: 'authentication_error', message: 'invalid x-api-key' } }));
+      }, wait);
+    }
     if (key && key.includes('rejected')) {
       res.writeHead(401, { 'content-type': 'application/json' });
       return res.end(JSON.stringify({ type: 'error', error: { type: 'authentication_error', message: 'invalid x-api-key' } }));
@@ -58,10 +67,11 @@ const server = http.createServer((req, res) => {
     }
     if (req.method === 'POST' && req.url.startsWith('/v1/messages')) {
       const json = JSON.parse(body);
-      seen.push({ headers: req.headers, body: json });
+      seen.push({ headers: req.headers, body: json, size: Buffer.byteLength(body) });
       const doc = json.messages[0].content.find((c) => c.type === 'document');
       const go = () => {
         if (mode === 'refusal') return sse(res, '', 'refusal');
+        if (mode === 'max_tokens' || mode === 'model_context_window_exceeded') return sse(res, '## עובדות\n- המערער ערער על', mode);
         if (/^Translate/.test(json.system)) {
           const first = Number((/first page of this part is page (\d+)/.exec(JSON.stringify(json)) || [])[1] || 1);
           return sse(res, `<!-- page ${first} -->\n## Decision\nThe committee accepted the appeal in part on 07/07/2026.\n\n- Fee: 1,250`);
@@ -150,6 +160,55 @@ app.whenReady().then(async () => {
   check('a refusal from every model is said plainly, and nothing is written', !r.ok && /סירב/.test(r.error) && !fs.existsSync(path.join(dir, 'החלטה - סיכום (2).docx')), r.error);
   mode = 'ok';
 
+  for (const stop of ['max_tokens', 'model_context_window_exceeded']) {
+    mode = stop;
+    r = await runTool('summarize', [decision], {});
+    check(`a summary cut off (${stop}) is not saved as a summary, and the screen says it was cut off`,
+      !r.ok && /נקטע/.test(r.error || '') && !fs.existsSync(path.join(dir, 'החלטה - סיכום (2).docx')), r.error || r.summary);
+    r = await runTool('translate', [decision], { target: 'en' });
+    check(`  nor a translation cut off (${stop})`, !r.ok && /נקטע/.test(r.error || '') && !fs.existsSync(path.join(dir, 'החלטה - תרגום לאנגלית.docx')), r.error || r.summary);
+  }
+  mode = 'ok';
+  const partsBefore = seen.length;
+  r = await runTool('summarize', [big], {});
+  mode = 'max_tokens';
+  // (one part cut off in a long document: the whole summary is refused)
+  const cutPart = await runTool('summarize', [big], {});
+  mode = 'ok';
+  check('  and in a long document, a part summary cut off refuses the whole summary', r.ok && !cutPart.ok && /נקטע/.test(cutPart.error || '') && seen.length > partsBefore, cutPart.error);
+
+  // Heavy scans: a request carries the PDF as base64, a third larger, and may be at most
+  // 32 MB. Five pages of 5 MB each make a 25 MB file, under 32 MB but not once encoded.
+  console.log('\nlarge files');
+  const heavy = await PDFDocument.create();
+  const noise = (n) => { let x = ''; const chunk = require('crypto').randomBytes(Math.ceil(n * 0.75)).toString('base64'); x = chunk.slice(0, n); return x; };
+  for (let i = 0; i < 5; i++) {
+    const page = heavy.addPage([595, 842]);
+    const fill = heavy.context.register(heavy.context.stream(`% ${noise(5 * 1024 * 1024)}\nBT /F1 18 Tf 60 760 Td (Page ${i + 1}) Tj ET`));
+    page.node.set(PDFName.of('Contents'), fill);
+  }
+  const heavyFile = path.join(dir, 'סריקות כבדות.pdf');
+  await fsp.writeFile(heavyFile, await heavy.save({ useObjectStreams: false }));
+  const heavySize = fs.statSync(heavyFile).size;
+  for (const id of ['summarize', 'translate']) {
+    const from = seen.length;
+    r = await runTool(id, [heavyFile], { target: 'en' });
+    const sentNow = seen.slice(from);
+    const docs = sentNow.map((x) => x.body.messages[0].content.find((c) => c.type === 'document')).filter(Boolean);
+    let covered = 0;
+    for (const d of docs) covered += (await PDFDocument.load(Buffer.from(d.source.data, 'base64'))).getPageCount();
+    check(`${id}: a ${Math.round(heavySize / 1048576)} MB file is sent in parts each under 32 MB as sent, covering every page once`,
+      r.ok && heavySize > 24 * 1048576 && sentNow.every((x) => x.size <= 32 * 1000 * 1000) && covered === 5 && docs.length > 1,
+      `${r.error || ''} sizes ${sentNow.map((x) => Math.round(x.size / 1048576)).join(',')} MB, pages ${covered}`);
+  }
+  const huge = await PDFDocument.create();
+  huge.addPage([595, 842]).node.set(PDFName.of('Contents'), huge.context.register(huge.context.stream(`% ${noise(24 * 1024 * 1024)}`)));
+  const hugeFile = path.join(dir, 'עמוד ענק.pdf');
+  await fsp.writeFile(hugeFile, await huge.save({ useObjectStreams: false }));
+  const beforeHuge = seen.length;
+  r = await runTool('summarize', [hugeFile], {});
+  check('  a single page too large to send is said so, with the way out (compress), and nothing is sent', !r.ok && /גדול מדי/.test(r.error || '') && /כיווץ/.test(r.error || '') && seen.length === beforeHuge, r.error);
+
   delayMs = 4000;
   let jobId = null;
   const slow = jobs.start(tools.runnable('summarize'), [decision], {}, { onProgress: () => { setTimeout(() => jobs.cancel(jobId), 300); } });
@@ -226,6 +285,19 @@ app.whenReady().then(async () => {
   check('a good key is checked, saved, and shown only as a hint', /stuv/.test(await page(`document.getElementById('settings-status').textContent`)) &&
     !(await page(`document.body.innerText`)).includes('TESTKEY0123456789'));
   check('  and the field is emptied after saving', (await page(`document.getElementById('settings-key').value`)) === '');
+  await typeKey('sk-ant-api03-rejected1111111111111111111111111');
+  await until(`/שגוי/.test(document.getElementById('settings-result').textContent)`);
+  check('a mistyped new key is refused, and the key that worked before stays saved', (await settings.getApiKey()) === realKey && /stuv/.test(await settings.apiKeyHint() || ''), await settings.apiKeyHint());
+  // The key removed while a new one is being checked stays removed when the new one is refused.
+  checkDelayMs = 1500;
+  await page(`document.getElementById('settings-result').textContent = ''`);
+  await typeKey('sk-ant-api03-rejected2222222222222222222222222');
+  await new Promise((res) => setTimeout(res, 300));
+  await settings.clearApiKey();
+  await until(`/שגוי/.test(document.getElementById('settings-result').textContent)`);
+  check('  a key removed while a new one was being checked stays removed', !(await settings.getApiKey()), await settings.apiKeyHint());
+  await typeKey(realKey);
+  await until(`/נשמר ונבדק/.test(document.getElementById('settings-result').textContent)`);
   await page(`window.shell.goHome()`);
   check('the AI tiles are on afterwards without a restart', !(await page(`document.querySelector('.tile[data-tool="summarize"]').classList.contains('unavailable')`)));
   const store = fs.existsSync(require('../src/main/runs').storeFile()) ? fs.readFileSync(require('../src/main/runs').storeFile(), 'utf8') : '';

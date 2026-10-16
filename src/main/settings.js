@@ -80,4 +80,22 @@ async function clearApiKey() {
   await write(data);
 }
 
-module.exports = { setApiKey, getApiKey, apiKeyHint, clearApiKey, looksLikeKey, setStoreFile, storeFile };
+/** The stored key as it is kept (encrypted), to put back if a new one is refused. */
+async function savedKey() {
+  const data = await read();
+  return { apiKey: data.apiKey, apiKeyHint: data.apiKeyHint };
+}
+
+async function restoreKey(saved) {
+  const data = await read();
+  if (saved && saved.apiKey) {
+    data.apiKey = saved.apiKey;
+    data.apiKeyHint = saved.apiKeyHint;
+  } else {
+    delete data.apiKey;
+    delete data.apiKeyHint;
+  }
+  await write(data);
+}
+
+module.exports = { setApiKey, getApiKey, apiKeyHint, clearApiKey, looksLikeKey, setStoreFile, storeFile, savedKey, restoreKey };

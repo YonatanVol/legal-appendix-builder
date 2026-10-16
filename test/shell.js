@@ -246,6 +246,16 @@ app.whenReady().then(async () => {
   check('  and no file is left behind', (await fsp.readdir(docs)).length === before, (await fsp.readdir(docs)).join(', '));
   check('  and the screen is usable again', !(await run(`document.getElementById('tool-run').disabled`)));
 
+  /* ---- a one-file tool keeps its file when a wrong one is dropped ---- */
+  await run(`window.shell.goHome()`);
+  await press('.tile[data-tool="split"]');
+  await run(`window.shell.addFiles(${JSON.stringify(await describe([A]))})`);
+  await run(`window.shell.addFiles(${JSON.stringify(await describe([TXT]))})`);
+  const kept = await run(`[...document.querySelectorAll('#tool-file-list .file-name')].map(n => n.textContent)`);
+  check('a file of the wrong type dropped on a one-file tool is refused, and the file already chosen stays',
+    kept.length === 1 && kept[0] === path.basename(A) && /notes\.txt/.test(await text('#tool-error')), `${kept.join(' | ')} / ${await text('#tool-error')}`);
+  await run(`window.shell.goHome()`);
+
   /* ---- home again: recent runs and dropped files ---- */
   console.log('\nback home');
   await key('Escape');

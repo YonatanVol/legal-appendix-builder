@@ -120,6 +120,7 @@ function available() {
 async function acquire({ dpi = 300, mode = 'gray', onPage, signal } = {}) {
   const status = available();
   if (!status.available) throw new Error(status.reason);
+  if (signal && signal.aborted) throw new Error(MESSAGES.CANCELLED);
   const out = path.join(SCANS_ROOT, new Date().toISOString().replace(/[:.]/g, '-'));
   await fs.mkdir(out, { recursive: true });
   const intent = { color: 1, gray: 2, bw: 4 }[mode] || 2;
@@ -151,18 +152,34 @@ async function acquire({ dpi = 300, mode = 'gray', onPage, signal } = {}) {
       }
     });
     const abort = () => child.kill();
-    if (signal) signal.addEventListener('abort', abort, { once: true });
+    if (signal) {
+      if (signal.aborted) abort();
+      else signal.addEventListener('abort', abort, { once: true });
+    }
     child.on('error', (err) => reject(new Error(`לא ניתן היה להפעיל את שירות הסריקה של Windows: ${err.message}`)));
     child.on('close', () => {
       if (signal) signal.removeEventListener('abort', abort);
-      const key = failure.split(' ')[0];
-      const message = MESSAGES[key] || `הסריקה נכשלה (${failure || 'סיבה לא ידועה'}).`;
-      // Pages scanned before a jam are kept, and the stop is reported, never passed off
-      // as a complete batch.
-      if (files.length) return resolve({ files, device, warning: failure ? `נסרקו ${files.length} דפים ואז הסריקה נעצרה: ${message}` : '' });
-      reject(new Error(message));
+      const end = outcome({ files, device, failure, cancelled: !!(signal && signal.aborted) });
+      if (end.error) reject(new Error(end.error));
+      else resolve(end);
     });
   });
 }
 
-module.exports = { acquire, available, SCANS_ROOT, MESSAGES, SCRIPT };
+/**
+ * How a scan ended, from what the script reported. Pages scanned before a jam, or before
+ * the user stopped it, are kept, and the stop is said: never passed off as a complete
+ * batch. A scan stopped by the user is said to be stopped, not to have failed.
+ * Returns { files, device, warning } or { error }.
+ */
+function outcome({ files, device, failure, cancelled }) {
+  const key = cancelled ? 'CANCELLED' : failure.split(' ')[0];
+  const message = MESSAGES[key] || `הסריקה נכשלה (${failure || 'סיבה לא ידועה'}).`;
+  if (!files.length) return { error: message };
+  const scanned = files.length === 1 ? 'נסרק דף אחד' : `נסרקו ${files.length} דפים`;
+  const kept = files.length === 1 ? 'הדף שנסרק נשמר' : 'הדפים שנסרקו נשמרו';
+  if (cancelled) return { files, device, warning: `${scanned} ואז הסריקה בוטלה. ${kept}.` };
+  return { files, device, warning: failure ? `${scanned} ואז הסריקה נעצרה: ${message}` : '' };
+}
+
+module.exports = { acquire, available, outcome, SCANS_ROOT, MESSAGES, SCRIPT };
