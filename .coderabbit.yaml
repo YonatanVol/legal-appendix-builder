@@ -1,0 +1,7 @@
+# CodeRabbit reviews at most 100 files in a pull request. The program's code comes first:
+# the tests have their own independent reviews, and assets/ holds data files (OCR language
+# models, the PDF/A colour profile) with nothing to review.
+reviews:
+  path_filters:
+    - "!test/**"
+    - "!assets/**"
