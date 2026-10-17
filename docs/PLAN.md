@@ -15,7 +15,7 @@ Decisions taken with Yonatan on 2026-10-07, not to be reopened:
 
 ## Status, 2026-10-10
 
-All eight phases are built, tested and reviewed, as version 2.0.0 on this branch. Where the
+All eight phases are built, tested and reviewed, as version 2.0.1 on this branch (2.0.0 was a trial build on one office PC). Where the
 build differs from the plan below, it is because the plan's version did not hold up:
 
 - **Crop's "find margins"** reads the drawn pages in the window instead of asking

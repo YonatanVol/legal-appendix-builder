@@ -129,9 +129,19 @@ async function describe(filePath) {
     }
     const doc = await PDFDocument.load(bytes, { ignoreEncryption: true });
     const encrypted = doc.isEncrypted;
-    const pageCount = doc.getPageCount();
-    const first = pageCount ? doc.getPage(0) : null;
-    const pageSize = first ? first.getSize() : null;
+    // A locked file often keeps its page index in a compressed section that is encrypted too
+    // (bank and pension statements do), so its pages cannot be counted before the password
+    // is given. That file is protected, not damaged: it is listed as such, pages unknown.
+    let pageCount = 0;
+    let pageSize = null;
+    try {
+      pageCount = doc.getPageCount();
+      const first = pageCount ? doc.getPage(0) : null;
+      pageSize = first ? first.getSize() : null;
+    } catch (err) {
+      if (!encrypted) throw err;
+      pageCount = 0;
+    }
     return {
       path: filePath,
       name,

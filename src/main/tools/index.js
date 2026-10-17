@@ -145,6 +145,8 @@ async function list(env = {}) {
       accepts: PDF,
       multiple: true,
       icon: 'workflow',
+      // A workflow that starts by removing a password takes locked files, as Unlock does.
+      acceptsEncrypted: (w.steps[0] || {}).toolId === 'unlock',
       available: true,
       reason: '',
       workflow: { id: w.id, name: w.name, steps: w.steps },

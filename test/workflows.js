@@ -219,6 +219,25 @@ app.whenReady().then(async () => {
   await until(`document.getElementById('screen-name').textContent === 'סיכום'`);
   check('a workflow with a step that uses Claude says, before running, that the document goes to Anthropic',
     await page(`(() => { const n = document.querySelector('#tool-options .cloud-notice'); return !!n && n.getClientRects().length > 0 && /התהליך הזה שולח את המסמך ל-Anthropic/.test(n.textContent); })()`));
+  // A workflow that starts by removing a password takes a locked file on the screen, the
+  // kind a bank sends (its page index compressed and encrypted), and runs with its password.
+  const lockedStatement = path.join(dir, 'דוח נעול.pdf');
+  execFileSync(bin.locate('qpdf'), ['--object-streams=generate', '--allow-weak-crypto', '--encrypt', 'pw-statement', 'owner-statement', '128', '--use-aes=n', '--', a, lockedStatement]);
+  const openAndCompress = await workflows.save({ name: 'פתיחה וכיווץ', steps: [{ toolId: 'unlock' }, { toolId: 'compress', options: { level: 'light' } }] });
+  await page(`window.shell.refreshTools().then(() => window.shell.open('wf:${openAndCompress.id}'))`);
+  await until(`document.getElementById('screen-name').textContent === 'פתיחה וכיווץ'`);
+  await page(`(async () => { const r = await window.api.describeFiles(${JSON.stringify([lockedStatement])}); window.shell.addFiles(r.files); })()`);
+  await until(`document.querySelectorAll('#tool-file-list .file-row').length === 1`);
+  check('a workflow that starts with Unlock takes a locked file, listed as protected, and asks only for its password',
+    !(await page(`document.querySelector('#tool-file-list .file-row').classList.contains('bad')`)) &&
+    /מוגן בסיסמה/.test(await page(`document.querySelector('#tool-file-list .file-meta').textContent`)) &&
+    !/פגום|מוגן/.test(await page(`document.getElementById('tool-blocked').textContent`)),
+    `${await page(`document.querySelector('#tool-file-list').textContent`)} / ${await page(`document.getElementById('tool-blocked').textContent`)}`);
+  await page(`(() => { const p = document.querySelector('#tool-options input[type=password]'); p.value = 'pw-statement'; p.dispatchEvent(new Event('input', { bubbles: true })); return true; })()`);
+  await page(`document.getElementById('tool-run').click()`);
+  await until(`!window.shell.busy() && (!document.getElementById('tool-result').classList.contains('hidden') || !document.getElementById('tool-error').classList.contains('hidden'))`, 120000);
+  const opened = await page(`(document.querySelector('#tool-result-outputs .out-name') || {}).title || document.getElementById('tool-error').textContent`);
+  check('  and the run opens and compresses it', /פתיחה וכיווץ\.pdf$/.test(opened) && fs.existsSync(opened) && require('child_process').spawnSync(bin.locate('qpdf'), ['--requires-password', opened]).status === 2, opened);
   check('no errors in the page console', win.consoleErrors.length === 0, win.consoleErrors.slice(0, 3).join(' / '));
 
   disposeRenderer();

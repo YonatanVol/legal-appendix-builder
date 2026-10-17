@@ -1,6 +1,6 @@
 {
   "name": "rotem-office",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "description": "Builds a court-ready PDF bundle: pleading + appendices, with dividers, table of contents and running page numbers.",
   "main": "src/main/index.js",
   "private": true,

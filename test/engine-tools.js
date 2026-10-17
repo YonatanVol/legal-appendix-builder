@@ -245,6 +245,30 @@ app.whenReady().then(async () => {
   r = await runTool('unlock', [ownerOnly], {});
   check('restrictions without an opening password come off without one', r.ok && /ההגבלות/.test(r.summary) && qpdf('--requires-password', r.display[0]).code === 2, r.error || r.summary);
 
+  // Files from banks and pension funds often keep their page index in a compressed section
+  // that is itself encrypted, so it cannot be read before the password is given. Such a file
+  // is protected, not damaged, and Unlock takes it (a real pension statement was called
+  // damaged, 2026-10-18).
+  const packed = {
+    'the older encryption (RC4, revision 3)': ['--allow-weak-crypto', '--encrypt', 'pw-packed', 'owner-packed', '128', '--use-aes=n', '--'],
+    'AES-256': ['--encrypt', 'pw-packed', 'owner-packed', '256', '--'],
+  };
+  const packedFiles = {};
+  for (const [label, args] of Object.entries(packed)) {
+    const file = path.join(dir, `נעול דחוס ${Object.keys(packedFiles).length + 1}.pdf`);
+    qpdf('--object-streams=generate', ...args, doc, file);
+    packedFiles[label] = file;
+    // The file really is the case: pdf-lib cannot count its pages before the password.
+    const counted = await PDFDocument.load(await fsp.readFile(file), { ignoreEncryption: true }).then((d) => d.getPageCount()).then(() => 'counted', () => 'cannot count');
+    check(`  (${label}: the test file keeps its page index where pdf-lib cannot read it)`, counted === 'cannot count', counted);
+    const listed = await require('../src/main/pdf/inspect').describe(file);
+    check(`a locked file whose page index is compressed and encrypted (${label}) is listed as protected, not damaged`,
+      listed.encrypted === true && /מוגן בסיסמה/.test(listed.error || '') && !/פגום/.test(listed.error || ''), JSON.stringify({ encrypted: listed.encrypted, error: listed.error }));
+    r = await runTool('unlock', [file], { password: 'pw-packed' });
+    const unlockedPages = r.ok ? (await PDFDocument.load(await fsp.readFile(r.display[0]))).getPageCount() : 0;
+    check(`  and Unlock opens it with its password, every page there`, r.ok && unlockedPages === 3 && qpdf('--requires-password', r.display[0]).code === 2, r.error || `${unlockedPages} pages`);
+  }
+
   /* ---- history never holds a password ---- */
   const saved = runs.withoutSecrets({ password: 'a', passwordConfirm: 'a', ownerPassword: 'b', forToken: 't', imageToken: 'u', allowPrint: false, pages: '3, 5' });
   check('passwords and session tokens are stripped before a run is recorded', JSON.stringify(saved) === '{"allowPrint":false,"pages":"3, 5"}', JSON.stringify(saved));
@@ -726,6 +750,13 @@ app.whenReady().then(async () => {
   check('Unlock accepts the same file, listed as protected', (await blocked()) === '' &&
     (await page(`document.querySelector('#tool-file-list .file-meta').textContent`)).includes('מוגן בסיסמה') &&
     !(await page(`document.querySelector('#tool-file-list .file-row').classList.contains('bad')`)));
+
+  // The pension statement's case on the screen: listed as protected, and the run goes ahead.
+  await openTool('unlock', [packedFiles['the older encryption (RC4, revision 3)']]);
+  check('Unlock accepts a locked file with a compressed, encrypted page index, listed as protected and runnable',
+    (await blocked()) === '' && (await page(`document.querySelector('#tool-file-list .file-meta').textContent`)).includes('מוגן בסיסמה') &&
+    !(await page(`document.querySelector('#tool-file-list .file-row').classList.contains('bad')`)), await page(`document.querySelector('#tool-file-list').textContent`));
+  await openTool('unlock', [locked]);
 
   await page(`(() => { const i = document.querySelector('#tool-options input[type=password]'); i.value = 'סוד-123 abc'; i.dispatchEvent(new Event('input', { bubbles: true })); })()`);
   await page(`document.getElementById('tool-run').click()`);
