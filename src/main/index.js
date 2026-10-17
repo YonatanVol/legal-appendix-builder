@@ -5,6 +5,7 @@ const { app, BrowserWindow } = require('electron');
 const { registerIpc, isBuilding } = require('./ipc');
 const { disposeRenderer } = require('./pdf/render');
 const { lockDownNetwork } = require('./security');
+const { registerSchemes } = require('./protocol');
 const { createWindow } = require('./window');
 const updater = require('./updater');
 const { version } = require('../../package.json');
@@ -12,6 +13,9 @@ const { version } = require('../../package.json');
 // Must match appId in electron-builder.yml; test/config.js checks that it does. Windows
 // uses it to tie the running window to its Start-menu shortcut and taskbar pin.
 const APP_ID = 'com.rotem.office.appendixbuilder';
+
+// Has to happen before the app is ready; the window then serves itself on app://.
+registerSchemes();
 
 if (process.env.APPENDIX_BUILDER_SELFTEST) {
   // Run by the Windows CI against the installed program. See src/main/selftest.js.
@@ -35,6 +39,7 @@ if (process.env.APPENDIX_BUILDER_SELFTEST) {
 
   app.whenReady().then(() => {
     lockDownNetwork();
+    require('./jobs').sweepLeftovers();
     registerIpc();
     mainWindow = createWindow();
     updater.start({ getWindow: () => mainWindow, isBuilding, version });
@@ -44,7 +49,12 @@ if (process.env.APPENDIX_BUILDER_SELFTEST) {
     });
   });
 
-  app.on('before-quit', disposeRenderer);
+  app.on('before-quit', () => {
+    disposeRenderer();
+    require('./engine/ocr').shutdown();
+    require('./engine/imaging').dispose();
+    require('./engine/pagepicture').dispose();
+  });
 }
 
 module.exports = { APP_ID };

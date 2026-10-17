@@ -3,7 +3,7 @@
 const fs = require('fs/promises');
 const { PDFDocument, StandardFonts, degrees, rgb } = require('pdf-lib');
 
-const { loadPdf, inspect } = require('./inspect');
+const { loadPdf, inspect, samePagesEverywhere } = require('./inspect');
 const { resolveLayout, formatRange } = require('./layout');
 const { renderHtmlToPdf } = require('./render');
 const { dividerHtml, tocHtml } = require('../templates');
@@ -105,6 +105,8 @@ async function buildBundle({ bodyPath, appendices, outputPath }, onProgress = ()
   });
 
   onProgress('בודק את הקבצים…');
+  // A file whose pages programs read differently would lose or gain a page in the bundle.
+  await samePagesEverywhere([bodyPath, ...appendices.flatMap((a) => a.files)]);
 
   const bodyInfo = await inspect(bodyPath);
   const bodyDoc = await loadPdf(bodyPath);

@@ -15,6 +15,7 @@ const os = require('os');
 const path = require('path');
 const { execFileSync } = require('child_process');
 const { app, BrowserWindow } = require('electron');
+const { openWindow } = require('./helpers/window');
 
 const history = require('../src/main/history');
 const { registerIpc } = require('../src/main/ipc');
@@ -53,15 +54,7 @@ app.whenReady().then(async () => {
   await fsp.mkdir(OUT, { recursive: true });
   registerIpc();
 
-  const win = new BrowserWindow({
-    show: false,
-    webPreferences: {
-      preload: path.join(__dirname, '..', 'src', 'preload.js'),
-      contextIsolation: true,
-      nodeIntegration: false,
-    },
-  });
-  await win.loadFile(path.join(__dirname, '..', 'src', 'renderer', 'index.html'));
+  const win = await openWindow({ screen: 'appendix' });
   const run = (code) => win.webContents.executeJavaScript(code, true);
 
   const build = (outputPath, appendices, bodyPath = BODY) =>

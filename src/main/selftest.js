@@ -211,8 +211,95 @@ function run() {
     );
     check('the document side still cannot reach the network', blocked === 'blocked', blocked);
 
+    await toolChecks(page, scratch, makePdf);
+
     win.destroy();
     finish();
+  }
+
+  /**
+   * One job through each engine, from wherever the installed program keeps it: Chromium
+   * for stamped text, pdf.js read from inside the package, qpdf and Ghostscript from
+   * resources/vendor, and the PDF/A profile from outside app.asar. Each of these works
+   * from source and can fail only once packaged.
+   */
+  async function toolChecks(page, scratch, makePdf) {
+    const bin = require('./engine/binaries');
+    const grid = await page(`window.shell.ready.then(() => ({
+      tiles: document.querySelectorAll('.tile').length,
+      ranges: typeof window.pageRanges === 'object',
+    }))`);
+    check('the tool grid shows every tool', grid.tiles === 30, `${grid.tiles} tiles`);
+    check('  and the shared page-range parser loaded', grid.ranges);
+
+    const a = await makePdf('tool-a.pdf', 2);
+    const b = await makePdf('tool-b.pdf', 1);
+    const files = await page(`window.api.describeFiles(${JSON.stringify([a])})`);
+    const thumb = files.ok
+      ? await page(`new Promise((resolve) => {
+          const go = () => window.thumbs.render(${JSON.stringify(files.files[0].token)}, 0, 60)
+            .then((c) => resolve(c.width > 0 ? 'drawn' : 'empty')).catch((e) => resolve(String(e && e.message)));
+          if (window.thumbs) go(); else document.addEventListener('thumbs-ready', go, { once: true });
+        })`)
+      : 'not described';
+    check('page thumbnails draw (pdf.js and its worker load)', thumb === 'drawn', thumb);
+
+    if (app.isPackaged) {
+      const inside = (p) => !!p && path.resolve(p).startsWith(path.resolve(process.resourcesPath));
+      check('qpdf is the one shipped with the program', inside(bin.locate('qpdf')), bin.locate('qpdf') || 'not found');
+      check('Ghostscript is the one shipped with the program', inside(bin.locate('gs')), bin.locate('gs') || 'not found');
+    }
+
+    const jobs = [
+      ['merge', [a, b], {}],
+      ['page-numbers', [a], { format: 'page-n-of', position: 'bottom-center' }],
+      ['pdf-to-markdown', [a], {}],
+      ['protect', [a], { password: 'סיסמה 1' }],
+      ['compress', [a], { level: 'strong' }],
+      ['pdfa', [a], { level: '2b' }],
+      ['pdf-to-jpg', [a], { mode: 'pages', dpi: 72 }],
+    ];
+    const outputsOf = {};
+    for (const [toolId, inputs, options] of jobs) {
+      const result = await page(`window.api.startJob(${JSON.stringify({ toolId, inputs, options })})`);
+      check(`the ${toolId} tool runs`, result.ok, result.ok ? result.summary : result.error);
+      if (result.ok) outputsOf[toolId] = result.display || result.outputs;
+    }
+
+    // Redact from inside the package: the marked page is drawn by pdf.js in a hidden
+    // window served from the installed program, and no text of it may be left.
+    // Two pages of text, every page made a picture and read again (OCR): the marked page's
+    // words must be gone and the other page's read back, so a picture of the wrong page, or
+    // a missing one, would show.
+    const worded = path.join(scratch, 'tool-words.pdf');
+    {
+      const { StandardFonts } = require('pdf-lib');
+      const doc = await PDFDocument.create();
+      const font = await doc.embedFont(StandardFonts.Helvetica);
+      doc.addPage([595.28, 841.89]).drawText('MARKED PAGE ONE', { x: 60, y: 700, size: 18, font });
+      doc.addPage([595.28, 841.89]).drawText('KEPT PAGE TWO', { x: 60, y: 700, size: 18, font });
+      await fsp.writeFile(worded, await doc.save());
+    }
+    const redacted = await page(`window.api.startJob(${JSON.stringify({ toolId: 'redact', inputs: [worded], options: { marks: [{ page: 0, x: 0, y: 0, w: 1, h: 1 }] } })})`);
+    const redactedText = redacted.ok ? (await require('./pdf/text').documentText(redacted.display[0])) : [];
+    check('a page is redacted inside the package: read again, its words are gone and the other page\'s are there',
+      redacted.ok && redactedText.length === 2 && !/MARKED/.test(redactedText[0]) && /KEPT PAGE TWO/.test(redactedText[1]),
+      redacted.ok ? JSON.stringify(redactedText).slice(0, 120) : redacted.error);
+
+    // Recognition from inside the package: Hebrew stamped by Chromium, drawn as a picture
+    // by Ghostscript, then scanned back, cleaned and read by Tesseract in its own process.
+    const numbered = (outputsOf['page-numbers'] || [])[0];
+    if (numbered) {
+      const pictures = await page(`window.api.startJob(${JSON.stringify({ toolId: 'pdf-to-jpg', inputs: [numbered], options: { mode: 'pages', dpi: 300, format: 'png', pages: '1' } })})`);
+      const picture = pictures.ok && (pictures.display || [])[0];
+      const scanned = picture
+        ? await page(`window.api.startJob(${JSON.stringify({ toolId: 'scan', inputs: [picture], options: { mode: 'gray', ocr: true } })})`)
+        : { ok: false, error: pictures.error };
+      // The stamped words must come back: a summary saying "recognised" is not enough,
+      // since stray marks read with low confidence would say that too.
+      const words = scanned.ok ? (await require('./pdf/text').documentText(scanned.display[0])).join(' ') : '';
+      check('a picture of a Hebrew page is scanned to PDF and its Hebrew read back', scanned.ok && /עמוד/.test(words) && /מתוך/.test(words), scanned.ok ? words.slice(0, 80) : scanned.error);
+    }
   }
 
   /* ------------------------------------------------------------ live check ---- */

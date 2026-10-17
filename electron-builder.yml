@@ -1,5 +1,5 @@
 appId: com.rotem.office.appendixbuilder
-productName: בונה תיקי נספחים
+productName: כלי המשרד
 copyright: ""
 
 directories:
@@ -10,10 +10,35 @@ directories:
 files:
   - src/**/*
   - assets/fonts/**/*
+  - assets/pdfa/**/*
+  - assets/tessdata/**/*
   - package.json
   - "!**/*.map"
+  # pdf.js ships builds and viewers the app never loads.
+  - "!node_modules/pdfjs-dist/legacy/web/**"
+  - "!node_modules/pdfjs-dist/web/**"
+  - "!node_modules/pdfjs-dist/types/**"
+  - "!node_modules/pdfjs-dist/image_decoders/**"
+  # OCR runs in a Node utility process, which loads tesseract.js-core's .js and .wasm
+  # pair. The browser builds with the WebAssembly inlined (*.wasm.js) are never loaded;
+  # the self-test runs a real recognition from the installed program.
+  - "!node_modules/tesseract.js-core/*.wasm.js"
 
 npmRebuild: false
+
+# Ghostscript is a separate program and cannot read inside app.asar, so the PDF/A
+# profile it is handed lives beside it, unpacked.
+asarUnpack:
+  - assets/pdfa/**/*
+
+# qpdf and Ghostscript, fetched and checked by scripts/fetch-vendor.js, ship as
+# programs beside the app (resources/vendor), found by src/main/engine/binaries.js.
+extraResources:
+  - from: vendor/win
+    to: vendor
+    filter:
+      - "**/*"
+      - "!**/.version"
 
 # Releases are published by .github/workflows/windows.yml, which builds the installer on
 # a real Windows machine, installs it, launches it and has it produce a filing before
@@ -47,6 +72,8 @@ nsis:
   runAfterFinish: true
   createDesktopShortcut: true
   createStartMenuShortcut: true
-  shortcutName: בונה תיקי נספחים
+  shortcutName: כלי המשרד
+  # Removes the shortcuts earlier versions made under the old name (assets/installer.nsh).
+  include: assets/installer.nsh
   deleteAppDataOnUninstall: false   # keep her history if she reinstalls
   artifactName: "AppendixBuilder-Setup-${version}.${ext}"

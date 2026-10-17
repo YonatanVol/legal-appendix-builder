@@ -28,7 +28,6 @@ const el = {
   resultHint: $('result-hint'),
   restored: $('restored'),
   restoredText: $('restored-text'),
-  veil: $('drag-veil'),
   tab: $('history-tab'),
   count: $('history-count'),
   scrim: $('history-scrim'),
@@ -227,6 +226,9 @@ async function refresh() {
 
 function updateBuildState() {
   el.build.disabled = !!blockingReason() || state.building;
+  if (window.shell && window.shell.setBackBlocked) {
+    window.shell.setBackBlocked(state.building ? 'אפשר לחזור אחרי שהתיק ייווצר.' : '');
+  }
   updateRestartButton();
 }
 
@@ -349,25 +351,12 @@ function pathsFrom(event) {
     .filter((path) => path && path.toLowerCase().endsWith('.pdf'));
 }
 
-let dragDepth = 0;
-
-window.addEventListener('dragenter', (event) => {
-  event.preventDefault();
-  if (++dragDepth === 1) el.veil.classList.remove('hidden');
-});
-window.addEventListener('dragover', (event) => event.preventDefault());
-window.addEventListener('dragleave', (event) => {
-  event.preventDefault();
-  if (--dragDepth <= 0) {
-    dragDepth = 0;
-    el.veil.classList.add('hidden');
-  }
-});
-
-window.addEventListener('drop', async (event) => {
-  event.preventDefault();
-  dragDepth = 0;
-  el.veil.classList.add('hidden');
+/**
+ * Called by shell.js when files are dropped while this screen is open. The window-wide
+ * drag veil and listeners belong to the shell, which routes the drop to whichever
+ * screen is showing.
+ */
+async function handleAppendixDrop(event) {
   clearError();
 
   const paths = pathsFrom(event);
@@ -383,7 +372,7 @@ window.addEventListener('drop', async (event) => {
   } else {
     addAppendicesFromFiles(response.files);
   }
-});
+}
 
 el.bodyDrop.addEventListener('dragenter', () => el.bodyDrop.classList.add('over'));
 el.bodyDrop.addEventListener('dragleave', () => el.bodyDrop.classList.remove('over'));
@@ -767,8 +756,11 @@ function renderUpdate(status) {
 // A restart mid-build would kill a filing half written, so the button says why it waits.
 function updateRestartButton() {
   const button = $('update-restart');
-  button.disabled = state.building;
-  button.title = state.building ? 'אפשר להפעיל מחדש אחרי שיצירת התיק תסתיים' : '';
+  const toolBusy = !!(window.shell && window.shell.busy());
+  button.disabled = state.building || toolBusy;
+  button.title = state.building
+    ? 'אפשר להפעיל מחדש אחרי שיצירת התיק תסתיים'
+    : toolBusy ? 'אפשר להפעיל מחדש אחרי שהפעולה תסתיים' : '';
 }
 
 $('update-restart').addEventListener('click', async () => {
@@ -798,6 +790,9 @@ window.api
     announceUpdate(response.justUpdated);
   })
   .catch(() => {});
+
+/** For the shell: leaving this screen mid-build would hide a filing still being written. */
+window.appendixBusy = () => state.building;
 
 /* ---------------- start ---------------- */
 

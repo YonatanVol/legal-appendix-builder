@@ -13,6 +13,7 @@ const fsp = require('fs/promises');
 const os = require('os');
 const path = require('path');
 const { app, BrowserWindow } = require('electron');
+const { openWindow } = require('./helpers/window');
 
 const history = require('../src/main/history');
 const { registerIpc } = require('../src/main/ipc');
@@ -75,14 +76,7 @@ app.whenReady().then(async () => {
 
   registerIpc();
 
-  const win = new BrowserWindow({
-    width: 1040, height: 900, show: false,
-    webPreferences: {
-      preload: path.join(__dirname, '..', 'src', 'preload.js'),
-      contextIsolation: true, nodeIntegration: false,
-    },
-  });
-  await win.loadFile(path.join(__dirname, '..', 'src', 'renderer', 'index.html'));
+  const win = await openWindow({ screen: 'appendix' });
   const run = (code) => win.webContents.executeJavaScript(code, true);
 
   // A real press: pointerdown, pointerup, then click. Calling .click() alone would

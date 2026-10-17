@@ -8,3 +8,6 @@ test/fixtures/
 test/output/
 dist-next/
 dist-tampered/
+
+# Third-party programs fetched by scripts/fetch-vendor.js for the Windows build.
+vendor/

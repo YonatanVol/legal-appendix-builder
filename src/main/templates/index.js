@@ -263,4 +263,4 @@ ${rows}
   return { html, margins: TOC_MARGINS, script: LEADER_SCRIPT };
 }
 
-module.exports = { dividerHtml, tocHtml, escapeHtml, TOC_MARGINS, DIVIDER_MARGINS };
+module.exports = { dividerHtml, tocHtml, escapeHtml, TOC_MARGINS, DIVIDER_MARGINS, FONT_FACES, FONT_STACK };
