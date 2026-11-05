@@ -461,7 +461,7 @@ const shell = (() => {
 
     state.files.forEach((file, index) => {
       const li = document.createElement('li');
-      li.className = 'file-row' + (file.error && !(file.encrypted && t.acceptsEncrypted) ? ' bad' : '');
+      li.className = 'file-row' + (takes(t, file) ? '' : ' bad');
       li.dataset.index = String(index);
 
       if (t.multiple && state.files.length > 1) {
@@ -506,8 +506,12 @@ const shell = (() => {
       text.className = 'file-text';
       const name = nameNode(file.name);
       let meta;
-      if (file.encrypted && t.acceptsEncrypted) {
+      if (file.restricted) {
+        meta = metaNode([file.pageCount ? pageWord(file.pageCount) : '', 'נעול להדפסה והעתקה בלבד', sizeText(file.size)], 'file-meta');
+      } else if (file.encrypted && t.acceptsEncrypted) {
         meta = metaNode(['מוגן בסיסמה', sizeText(file.size)], 'file-meta');
+      } else if (file.damaged && t.acceptsDamaged) {
+        meta = metaNode(['פגום', sizeText(file.size)], 'file-meta');
       } else if (file.error) {
         meta = document.createElement('span');
         meta.className = 'file-error';
@@ -516,6 +520,16 @@ const shell = (() => {
         meta = metaNode([file.pageCount ? pageWord(file.pageCount) : '', sizeText(file.size)], 'file-meta');
       }
       text.append(name, meta);
+      // A file only Repair can help: the way there is on its row, with this file in it.
+      if ((file.damaged || file.pagesAgree === false) && !t.acceptsDamaged && t.id !== 'repair') {
+        const fix = document.createElement('button');
+        fix.type = 'button';
+        fix.className = 'link repair-it';
+        fix.textContent = 'לתיקון הקובץ';
+        fix.title = `פתח את "${file.name}" בכלי "תיקון PDF"`;
+        fix.addEventListener('click', () => open('repair', { files: [file] }));
+        text.append(fix);
+      }
 
       const buttons = document.createElement('div');
       buttons.className = 'row-buttons';
@@ -589,6 +603,11 @@ const shell = (() => {
     }
   }
 
+  /** Whether tool `t` works on `file` as it is: Unlock takes a locked file, Repair a damaged one. */
+  function takes(t, file) {
+    return !file.error || (file.encrypted && t.acceptsEncrypted) || (file.damaged && t.acceptsDamaged);
+  }
+
   function blockedReason() {
     const t = tool(view.toolId);
     const state = current();
@@ -602,7 +621,7 @@ const shell = (() => {
       if (odd) return `בקובץ "${odd.name}" יש עמודים שתוכנות שונות קוראות אחרת, ולכן אי אפשר לעבוד עליו בבטחה. הרץ עליו קודם את "תיקון PDF", ועבוד על הקובץ המתוקן.`;
     }
     // Only Unlock takes a password-protected file; for every other tool it is a problem.
-    const bad = state.files.find((f) => f.error && !(f.encrypted && t.acceptsEncrypted));
+    const bad = state.files.find((f) => !takes(t, f));
     if (bad) return `${bad.error} הסר אותו מהרשימה כדי להמשיך.`;
     if (t.min && state.files.length < t.min) {
       const panel = panelFor(view.toolId);

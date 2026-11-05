@@ -7,6 +7,16 @@ const { PDFDocument } = require('pdf-lib');
 const A4 = { width: 595.28, height: 841.89 };
 
 /**
+ * Whether `bytes` start as a PDF. The standard lets a file carry a little before its
+ * "%PDF-" line (some systems prefix a download with a header of their own), and every
+ * reader accepts up to 1024 bytes of it, as Acrobat does; so does this check.
+ */
+function looksLikePdf(bytes) {
+  const head = bytes.subarray(0, 1024 + 5).toString('latin1');
+  return head.indexOf('%PDF-') !== -1;
+}
+
+/**
  * Load a PDF from disk, failing with a Hebrew message the user can act on.
  * Scanned files are frequently encrypted with an empty password; pdf-lib cannot
  * decrypt content streams, so copying such pages would silently produce garbage.
@@ -25,7 +35,7 @@ async function loadPdf(filePath, { updateMetadata = true } = {}) {
   if (bytes.length === 0) {
     throw new Error(`הקובץ "${name}" ריק.`);
   }
-  if (bytes.subarray(0, 5).toString('latin1') !== '%PDF-') {
+  if (!looksLikePdf(bytes)) {
     throw new Error(`הקובץ "${name}" אינו קובץ PDF תקין.`);
   }
 
@@ -124,7 +134,7 @@ async function describe(filePath) {
   try {
     const bytes = await fs.readFile(filePath);
     if (bytes.length === 0) return { path: filePath, name, ext, size, pageCount: 0, error: `הקובץ "${name}" ריק.` };
-    if (bytes.subarray(0, 5).toString('latin1') !== '%PDF-') {
+    if (!looksLikePdf(bytes)) {
       return { path: filePath, name, ext, size, pageCount: 0, error: `הקובץ "${name}" אינו קובץ PDF תקין.` };
     }
     const doc = await PDFDocument.load(bytes, { ignoreEncryption: true });
@@ -142,6 +152,15 @@ async function describe(filePath) {
       if (!encrypted) throw err;
       pageCount = 0;
     }
+    if (encrypted) {
+      // Locked only against printing and copying: it opens without a password, as every
+      // reader opens it, and the tools work on an opened copy (src/main/pdf/restrictions.js).
+      // Its pages are counted as the screen shows them.
+      const open = await shownWithoutPassword(filePath);
+      if (open) {
+        return { path: filePath, name, ext, size, pageCount: open.pages, shownPages: open.pages, pagesAgree: true, pageSize: open.size, encrypted, restricted: true };
+      }
+    }
     return {
       path: filePath,
       name,
@@ -154,7 +173,22 @@ async function describe(filePath) {
       error: encrypted ? `הקובץ "${name}" מוגן בסיסמה. הסר את הסיסמה בכלי "הסרת סיסמה" ונסה שוב.` : undefined,
     };
   } catch (err) {
-    return { path: filePath, name, ext, size, pageCount: 0, error: `הקובץ "${name}" פגום או לא נתמך. אפשר לנסות את כלי "תיקון PDF".` };
+    // `damaged`: Repair takes it, and its row leads there.
+    return { path: filePath, name, ext, size, pageCount: 0, damaged: true, error: `הקובץ "${name}" פגום או לא נתמך. אפשר לנסות את כלי "תיקון PDF".` };
+  }
+}
+
+/** The pages of an encrypted file as pdf.js shows them without a password, or null if it needs one. */
+async function shownWithoutPassword(filePath) {
+  let reader;
+  try {
+    reader = await require('./text').open(filePath);
+    const view = (await reader.getPage(1)).view;
+    return { pages: reader.numPages, size: { width: view[2] - view[0], height: view[3] - view[1] } };
+  } catch {
+    return null;
+  } finally {
+    if (reader) await reader.destroy().catch(() => {});
   }
 }
 
@@ -176,4 +210,4 @@ async function samePagesEverywhere(files, signal) {
   }
 }
 
-module.exports = { loadPdf, inspect, describe, pagesAsShown, samePagesEverywhere, A4 };
+module.exports = { looksLikePdf, loadPdf, inspect, describe, pagesAsShown, samePagesEverywhere, A4 };

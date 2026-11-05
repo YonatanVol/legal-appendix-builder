@@ -300,6 +300,41 @@ app.whenReady().then(async () => {
   await open('repair', [odd]);
   await until(`document.getElementById('tool-blocked').textContent === ''`, 15000);
   check('  while Repair takes it', !(await disabled('#tool-run')), await text$('#tool-blocked'));
+
+  /* ---- a damaged file: the way to Repair is on its row, and Repair takes it ---- */
+  console.log('\na damaged file');
+  const whole = await PDFDocument.create();
+  const hf = await whole.embedFont(StandardFonts.Helvetica);
+  for (let i = 1; i <= 3; i++) whole.addPage([400, 400]).drawText(`Page ${i}`, { x: 60, y: 200, size: 24, font: hf });
+  const wholeBytes = Buffer.from(await whole.save({ useObjectStreams: false }));
+  const cut = path.join(dir, 'הורדה שנקטעה.pdf');
+  // A download cut off at 70%: what an interrupted transfer leaves.
+  await fsp.writeFile(cut, wholeBytes.subarray(0, Math.floor(wholeBytes.length * 0.7)));
+  await open('merge', [cut, eight]);
+  check('a cut-off download is listed as damaged and Merge waits',
+    (await disabled('#tool-run')) && /פגום/.test(await text$('#tool-blocked')), await text$('#tool-blocked'));
+  check('  its row offers to repair it', await run(`!!document.querySelector('.file-row.bad .repair-it')`));
+  await press('.file-row.bad .repair-it');
+  await until(`document.getElementById('screen-name').textContent === 'תיקון PDF'`, 5000);
+  check('  which opens Repair with that file alone',
+    (await text$('#screen-name')) === 'תיקון PDF' && (await run(`[...document.querySelectorAll('#tool-file-list .file-row')].length`)) === 1 &&
+    /הורדה שנקטעה/.test(await text$('#tool-file-list .file-row')), `${await text$('#screen-name')} / ${await text$('#tool-file-list')}`);
+  check('  where it is listed without blocking the run', !(await disabled('#tool-run')) && !(await run(`!!document.querySelector('#tool-file-list .file-row.bad')`)), await text$('#tool-blocked'));
+  res = await runTool();
+  let repaired = [];
+  if (!res.error && res.out[0]) {
+    const d = await text.open(res.out[0]);
+    for (let i = 1; i <= d.numPages; i++) repaired.push((await text.pageLines(d, i)).lines.map((l) => l.text).join(' '));
+    await d.destroy();
+  }
+  // The result is this file's (named after it, not one left from an earlier run) and holds its pages' text.
+  check('  and Repair brings back what the download held',
+    !res.error && /^הורדה שנקטעה/.test(path.basename(res.out[0] || '')) && repaired.length >= 1 && repaired.every((t, i) => t.includes(`Page ${i + 1}`)),
+    res.error || `${path.basename(res.out[0] || '')}: ${repaired.join(' / ')}`);
+  // Organize with the odd file from before shows the same way to Repair.
+  await open('organize', [odd]);
+  await until(`/תיקון PDF/.test(document.getElementById('tool-blocked').textContent)`, 15000);
+  check('a file whose pages programs read differently also has the way to Repair on its row', await run(`!!document.querySelector('#tool-file-list .repair-it')`));
   check('no errors in the page console', win.consoleErrors.length === 0, win.consoleErrors.slice(0, 3).join(' / '));
 
   await fsp.rm(dir, { recursive: true, force: true });

@@ -82,6 +82,16 @@ async function sweepLeftovers() {
   return removed;
 }
 
+function firstStep(tool, options) {
+  const workflow = String(tool.id).startsWith('wf:') || tool.id === 'workflow';
+  return workflow && options && Array.isArray(options.steps) && options.steps[0] ? options.steps[0].toolId : tool.id;
+}
+
+// Tools that take a restricted-only file as it is: Unlock removes the restriction itself, and
+// Redact draws pages through pdf.js, which opens such files, and checks the file it was given
+// is the one the screen marked.
+const TAKES_RESTRICTED = new Set(['unlock', 'redact']);
+
 function startsWithRepair(tool, options) {
   if (tool.id === 'repair') return true;
   const first = String(tool.id).startsWith('wf:') && options && Array.isArray(options.steps) ? options.steps[0] : null;
@@ -112,6 +122,10 @@ function start(tool, inputs, options, hooks = {}) {
   job.promise = (async () => {
     const scratch = await makeScratch();
     let lastSent = 0;
+    // A copy opened from a file locked only against printing and copying stands for that
+    // file: what is written is named after it, and saved beside it.
+    let original = new Map();
+    const realSource = (source) => original.get(source) || source;
     const ctx = {
       signal: controller.signal,
       scratch,
@@ -136,6 +150,7 @@ function start(tool, inputs, options, hooks = {}) {
         await fs.writeFile(temp, bytes);
         throwIfAborted(controller.signal);
         let target;
+        source = realSource(source);
         if (dir) target = { dir, stem: name };
         else if (name) target = { dir: hooks.outputFolder || path.dirname(source), stem: name };
         else target = output.targetFor(source, label, { folder: hooks.outputFolder });
@@ -146,7 +161,7 @@ function start(tool, inputs, options, hooks = {}) {
       },
       async outputFolder(source, label) {
         throwIfAborted(controller.signal);
-        const target = output.targetFor(source, label, { folder: hooks.outputFolder });
+        const target = output.targetFor(realSource(source), label, { folder: hooks.outputFolder });
         const folder = await output.makeFolder(target.dir, target.stem);
         job.outputs.push(folder);
         return folder;
@@ -156,6 +171,14 @@ function start(tool, inputs, options, hooks = {}) {
     };
 
     try {
+      let lifted = 0;
+      if (!TAKES_RESTRICTED.has(firstStep(tool, options))) {
+        const opened = await require('./pdf/restrictions').openRestricted(inputs, scratch, controller.signal);
+        throwIfAborted(controller.signal);
+        inputs = opened.inputs;
+        original = opened.original;
+        lifted = opened.lifted;
+      }
       // The screen's rule, kept here too so no way of starting a job goes round it: a file
       // whose pages the screen (pdf.js) and the tools (pdf-lib) read differently waits for
       // Repair, which is the one tool that takes it.
@@ -168,7 +191,9 @@ function start(tool, inputs, options, hooks = {}) {
       }
       const result = await tool.run({ inputs, options, ctx });
       throwIfAborted(controller.signal);
-      return { ok: true, outputs: job.outputs.slice(), ...result };
+      // Said only when a copy was saved: a run that saved nothing has nothing to say it of.
+      const note = job.outputs.length ? require('./pdf/restrictions').liftedNote(lifted) : '';
+      return { ok: true, outputs: job.outputs.slice(), ...result, ...(note && typeof result.summary === 'string' ? { summary: result.summary + note } : {}) };
     } catch (err) {
       if (controller.signal.aborted || (err && err.cancelled)) {
         await removeAll(job.outputs);

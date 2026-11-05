@@ -32,7 +32,7 @@ const TOOLS = [
   { id: 'crop', group: 'organize', name: 'חיתוך PDF', description: 'חיתוך שוליים בעמוד אחד או בכולם, גם אוטומטית.', accepts: PDF, multiple: false, icon: 'crop' },
 
   { id: 'compress', group: 'optimize', name: 'כיווץ PDF', description: 'קובץ קטן יותר, באיכות שתבחר. מציג את הגודל לפני ואחרי.', accepts: PDF, multiple: true, icon: 'compress' },
-  { id: 'repair', group: 'optimize', name: 'תיקון PDF', description: 'שחזור קובץ פגום שלא נפתח או נפתח עם שגיאות.', accepts: PDF, multiple: true, icon: 'repair' },
+  { id: 'repair', group: 'optimize', name: 'תיקון PDF', description: 'שחזור קובץ פגום שלא נפתח או נפתח עם שגיאות.', accepts: PDF, multiple: true, icon: 'repair', acceptsDamaged: true },
   { id: 'ocr', group: 'optimize', name: 'זיהוי טקסט (OCR)', description: 'הופך סריקה לקובץ שאפשר לחפש בו ולהעתיק ממנו, בעברית ובאנגלית.', accepts: PDF, multiple: true, icon: 'ocr' },
   { id: 'pdfa', group: 'optimize', name: 'PDF ל-PDF/A', description: 'המרה לתקן הארכיון לשמירה ארוכת טווח.', accepts: PDF, multiple: true, icon: 'pdfa' },
 
@@ -147,6 +147,8 @@ async function list(env = {}) {
       icon: 'workflow',
       // A workflow that starts by removing a password takes locked files, as Unlock does.
       acceptsEncrypted: (w.steps[0] || {}).toolId === 'unlock',
+      // And one that starts by repairing takes damaged files, as Repair does.
+      acceptsDamaged: (w.steps[0] || {}).toolId === 'repair',
       available: true,
       reason: '',
       workflow: { id: w.id, name: w.name, steps: w.steps },

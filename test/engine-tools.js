@@ -269,6 +269,49 @@ app.whenReady().then(async () => {
     check(`  and Unlock opens it with its password, every page there`, r.ok && unlockedPages === 3 && qpdf('--requires-password', r.display[0]).code === 2, r.error || `${unlockedPages} pages`);
   }
 
+  // Statements from banks and pension funds are often locked only against printing and
+  // copying: no password opens them, every reader shows them. They are listed as usable,
+  // and every tool works on them (on an opened copy), saving beside the file under its name
+  // and saying the copy has no restriction; the file itself is never touched.
+  const hashOf = (f) => require('crypto').createHash('sha256').update(fs.readFileSync(f)).digest('hex');
+  const restricted = {
+    'AES-256': ['--encrypt', '--user-password=', '--owner-password=bank', '--bits=256', '--print=none', '--extract=n', '--modify=none', '--'],
+    'RC4, revision 3': ['--allow-weak-crypto', '--encrypt', '--user-password=', '--owner-password=bank', '--bits=128', '--use-aes=n', '--print=none', '--extract=n', '--'],
+  };
+  for (const [label, args] of Object.entries(restricted)) {
+    const file = path.join(dir, `דוח בנק ${label.length}.pdf`);
+    qpdf('--object-streams=generate', ...args, doc, file);
+    const before = hashOf(file);
+    const listed = await require('../src/main/pdf/inspect').describe(file);
+    check(`a file locked only against printing and copying (${label}) is listed as usable, its pages counted`,
+      !listed.error && listed.restricted === true && listed.pageCount === 3, JSON.stringify({ error: listed.error, restricted: listed.restricted, pages: listed.pageCount }));
+    for (const [tool, options] of [['compress', { level: 'light' }], ['page-numbers', {}], ['rotate', { angle: 90 }], ['merge', {}]]) {
+      r = await runTool(tool, tool === 'merge' ? [file, doc] : [file], options);
+      if (r.ok && !r.outputs.length) {
+        // Compress saves nothing for a file already as small as it gets, and then says nothing
+        // about a copy it did not make.
+        check(`  ${tool} finds nothing to do, saves nothing, and says nothing of a copy`, !/נעול להדפסה/.test(r.summary || ''), r.summary);
+        continue;
+      }
+      const outFile = r.ok ? r.outputs[0] : '';
+      const pages = outFile ? (await PDFDocument.load(await fsp.readFile(outFile))).getPageCount() : 0;
+      check(`  ${tool} works on it: saved beside it under its name, unlocked, every page, and says the restriction is gone`,
+        r.ok && path.dirname(outFile) === dir && path.basename(outFile).startsWith(path.basename(file, '.pdf')) &&
+        qpdf('--requires-password', outFile).code === 2 && pages === (tool === 'merge' ? 6 : 3) && /נעול להדפסה והעתקה/.test(r.summary || ''),
+        r.error || `${path.basename(outFile)} ${pages} pages: ${r.summary}`);
+    }
+    check(`  and the file itself is unchanged, byte for byte`, hashOf(file) === before);
+  }
+  {
+    // The standard lets a file carry a little before its "%PDF-" line; every reader accepts it.
+    const prefixed = path.join(dir, 'עם כותרת.pdf');
+    fs.writeFileSync(prefixed, Buffer.concat([Buffer.from('Content-Type: application/pdf\r\n\r\n'), fs.readFileSync(doc)]));
+    const listed = await require('../src/main/pdf/inspect').describe(prefixed);
+    r = await runTool('merge', [prefixed, doc], {});
+    check('a file with a few bytes before its "%PDF-" line is listed as a PDF and merged like any other',
+      !listed.error && listed.pageCount === 3 && r.ok && (await PDFDocument.load(await fsp.readFile(r.outputs[0]))).getPageCount() === 6, listed.error || r.error);
+  }
+
   /* ---- history never holds a password ---- */
   const saved = runs.withoutSecrets({ password: 'a', passwordConfirm: 'a', ownerPassword: 'b', forToken: 't', imageToken: 'u', allowPrint: false, pages: '3, 5' });
   check('passwords and session tokens are stripped before a run is recorded', JSON.stringify(saved) === '{"allowPrint":false,"pages":"3, 5"}', JSON.stringify(saved));
@@ -746,6 +789,16 @@ app.whenReady().then(async () => {
 
   await openTool('merge', [locked, doc]);
   check('Merge refuses a protected file and points to Unlock', /הסרת סיסמה/.test(await blocked()), await blocked());
+  {
+    // On the screen: a file locked only against printing and copying is a normal row, with
+    // a note, and a tool runs on it.
+    const bankFile = path.join(dir, 'דוח בנק למסך.pdf');
+    qpdf('--encrypt', '--user-password=', '--owner-password=bank', '--bits=256', '--print=none', '--', doc, bankFile);
+    await openTool('merge', [bankFile, doc]);
+    check('Merge takes a file locked only against printing and copying, listed with a note, nothing blocked',
+      (await blocked()) === '' && (await page(`document.querySelector('#tool-file-list .file-meta').textContent`)).includes('נעול להדפסה והעתקה') &&
+      !(await page(`!!document.querySelector('#tool-file-list .file-row.bad')`)), await page(`document.querySelector('#tool-file-list').textContent`));
+  }
   await openTool('unlock', [locked]);
   check('Unlock accepts the same file, listed as protected', (await blocked()) === '' &&
     (await page(`document.querySelector('#tool-file-list .file-meta').textContent`)).includes('מוגן בסיסמה') &&
