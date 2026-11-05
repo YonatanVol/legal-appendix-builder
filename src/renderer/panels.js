@@ -1715,36 +1715,16 @@ const panels = {
         });
       }
 
-      /** Where a match sits inside a run of text, by its share of the characters. */
-      // Where a match sits is estimated from its share of the characters, which a
-      // proportional font or mixed Hebrew and digits can throw off. So the box reaches a
-      // full average character further on each side: covering too much is safe, too
-      // little is not.
-      function subBox(b, start, end) {
-        const len = b.str.length || 1;
-        const s = Math.max(0, start - 1);
-        const e2 = Math.min(len, end + 1);
-        if (b.vertical) return { x: b.x - b.w * 0.1, y: b.y + (b.h * s) / len, w: b.w * 1.2, h: (b.h * (e2 - s)) / len };
-        const from = b.rtl ? 1 - e2 / len : s / len;
-        return { x: b.x + b.w * from, y: b.y - b.h * 0.1, w: (b.w * (e2 - s)) / len, h: b.h * 1.2 };
-      }
-
       async function findAll(re, what) {
         foundNote.textContent = 'מחפש…';
         markFound.disabled = true;
         const thumbs = await view.thumbs();
         const hits = [];
         for (let p = 0; p < total; p++) {
+          // Matched across the pieces of each line: a PDF can split one ID number or word
+          // into several pieces, and a piece-by-piece search would miss it without a word.
           const boxes = await thumbs.textBoxes(file.token, p);
-          for (const b of boxes) {
-            re.lastIndex = 0;
-            let m;
-            while ((m = re.exec(b.str))) {
-              if (!m[0]) { re.lastIndex++; continue; }
-              hits.push({ page: p, ...subBox(b, m.index, m.index + m[0].length), text: m[0] });
-              if (!re.global) break;
-            }
-          }
+          for (const hit of window.textFind.findInBoxes(boxes, re)) hits.push({ page: p, ...hit });
         }
         found = hits;
         const pages = new Set(hits.map((h) => h.page));

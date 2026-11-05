@@ -1192,6 +1192,43 @@ app.whenReady().then(async () => {
     const oddFound = await page(`document.querySelector('.redact-found').textContent`);
     check('  and its search reaches the page only pdf.js counts', /נמצאה תוצאה אחת|נמצאו/.test(oddFound) && !/לא נמצא/.test(oddFound), oddFound);
   }
+  {
+    // An ID number the file split into three touching pieces (it switches font midway, as
+    // files do for bold digits or a mixed-font line): the search must find it whole, mark
+    // every piece, and the copy must have none of it.
+    const { StandardFonts } = require('pdf-lib');
+    const d = await PDFDocument.create();
+    const fonts = [await d.embedFont(StandardFonts.Helvetica), await d.embedFont(StandardFonts.Courier), await d.embedFont(StandardFonts.Helvetica)];
+    const pg = d.addPage([595, 842]);
+    pg.drawText('ID:', { x: 60, y: 600, size: 20, font: fonts[0] });
+    let x = 110;
+    const pieces = ['024', '624', '470'];
+    pieces.forEach((piece, k) => {
+      pg.drawText(piece, { x, y: 700, size: 20, font: fonts[k] });
+      x += fonts[k].widthOfTextAtSize(piece, 20);
+    });
+    const splitFile = path.join(dir, 'split-id.pdf');
+    await fsp.writeFile(splitFile, await d.save());
+    const reader = await text.open(splitFile);
+    const items = (await (await reader.getPage(1)).getTextContent()).items.filter((i) => /\d/.test(i.str));
+    await reader.destroy();
+    check('  (the test file really gives the ID number as more than one piece of text)', items.length > 1, JSON.stringify(items.map((i) => i.str)));
+    await page(`(async () => { const r = await window.api.describeFiles(${JSON.stringify([splitFile])}); window.shell.open('redact', { files: r.files }); })()`);
+    await until(`document.querySelector('.redact-stage img')`);
+    await page(`[...document.querySelectorAll('.redact-presets .chip')].find(b => b.textContent === 'מספרי זהות').click()`);
+    await until(`/נמצא/.test(document.querySelector('.redact-found').textContent)`);
+    const splitFound = await page(`document.querySelector('.redact-found').textContent`);
+    check('an ID number split into pieces is found whole', /נמצאה תוצאה אחת/.test(splitFound), splitFound);
+    await page(`document.querySelector('.redact-bar .primary').click()`);
+    const splitMarks = await page(`window.shell.view.perTool.get('redact').options.marks`);
+    await page(`document.getElementById('tool-run').click()`);
+    await until(`!window.shell.busy() && !document.getElementById('tool-result').classList.contains('hidden')`, 90000);
+    const splitOut = await page(`document.querySelector('#tool-result-outputs .out-name').title`);
+    const splitAfter = (await text.documentText(splitOut)).join(' ');
+    const covered = darkAt(splitOut, 1, dir, [[112, Math.round(x) - 2, 702, 712]])[0];
+    check('  and the mark covers every piece: the whole number is black, and none of it is read back',
+      splitMarks.length === 1 && covered > 0.9 && !pieces.some((piece) => splitAfter.includes(piece)), JSON.stringify({ marks: splitMarks.length, covered, read: splitAfter.slice(0, 60) }));
+  }
   check('no errors in the page console', win.consoleErrors.length === 0, win.consoleErrors.slice(0, 3).join(' / '));
 
   require('../src/main/engine/ocr').shutdown();
