@@ -91,6 +91,14 @@ function firstStep(tool, options) {
 // Redact draws pages through pdf.js, which opens such files, and checks the file it was given
 // is the one the screen marked.
 const TAKES_RESTRICTED = new Set(['unlock', 'redact']);
+// Tools that put every file they are given into the one file they save.
+const COMBINES = new Set(['merge', 'organize']);
+
+/** The tools a run goes through: the tool itself, or a workflow's steps. */
+function stepsOf(tool, options) {
+  const workflow = String(tool.id).startsWith('wf:') || tool.id === 'workflow';
+  return workflow && options && Array.isArray(options.steps) ? options.steps.map((s) => s && s.toolId) : [tool.id];
+}
 
 function startsWithRepair(tool, options) {
   if (tool.id === 'repair') return true;
@@ -126,6 +134,11 @@ function start(tool, inputs, options, hooks = {}) {
     // file: what is written is named after it, and saved beside it.
     let original = new Map();
     const realSource = (source) => original.get(source) || source;
+    // The opened copies something was saved from, for the note that says so.
+    const savedFromOpened = new Set();
+    const noteSource = (source) => {
+      if (original.has(source)) savedFromOpened.add(source);
+    };
     const ctx = {
       signal: controller.signal,
       scratch,
@@ -150,6 +163,7 @@ function start(tool, inputs, options, hooks = {}) {
         await fs.writeFile(temp, bytes);
         throwIfAborted(controller.signal);
         let target;
+        noteSource(source);
         source = realSource(source);
         if (dir) target = { dir, stem: name };
         else if (name) target = { dir: hooks.outputFolder || path.dirname(source), stem: name };
@@ -161,6 +175,7 @@ function start(tool, inputs, options, hooks = {}) {
       },
       async outputFolder(source, label) {
         throwIfAborted(controller.signal);
+        noteSource(source);
         const target = output.targetFor(realSource(source), label, { folder: hooks.outputFolder });
         const folder = await output.makeFolder(target.dir, target.stem);
         job.outputs.push(folder);
@@ -191,8 +206,12 @@ function start(tool, inputs, options, hooks = {}) {
       }
       const result = await tool.run({ inputs, options, ctx });
       throwIfAborted(controller.signal);
-      // Said only when a copy was saved: a run that saved nothing has nothing to say it of.
-      const note = job.outputs.length ? require('./pdf/restrictions').liftedNote(lifted) : '';
+      // Said of copies that were saved from opened files: a tool that puts all its files into
+      // one carries every one of them; any other, those it saved a copy of. Not when the copy
+      // was given a password of its own (Protect), which the note would contradict.
+      const steps = stepsOf(tool, options);
+      const carried = job.outputs.length && COMBINES.has(steps[0]) ? lifted : savedFromOpened.size;
+      const note = steps.includes('protect') ? '' : require('./pdf/restrictions').liftedNote(carried);
       return { ok: true, outputs: job.outputs.slice(), ...result, ...(note && typeof result.summary === 'string' ? { summary: result.summary + note } : {}) };
     } catch (err) {
       if (controller.signal.aborted || (err && err.cancelled)) {

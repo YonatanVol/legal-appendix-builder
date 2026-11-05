@@ -29,6 +29,33 @@ async function restrictedOnly(name, cwd, signal) {
 }
 
 /**
+ * Whether `file` may be encrypted: the standard puts the /Encrypt entry in the trailer, at the
+ * end of the file, or, in a file arranged for the web (linearized), also in the first section
+ * near its start. Reading those two ends spares copying every plain file of a batch. A file
+ * this misses is not opened, and the tool then refuses it as encrypted, as before.
+ */
+async function mayBeEncrypted(file) {
+  const SPAN = 64 * 1024;
+  let handle;
+  try {
+    handle = await fs.open(file, 'r');
+    const { size } = await handle.stat();
+    const read = async (at, length) => {
+      const buf = Buffer.alloc(length);
+      const { bytesRead } = await handle.read(buf, 0, length, at);
+      return buf.subarray(0, bytesRead).toString('latin1');
+    };
+    const head = await read(0, Math.min(SPAN, size));
+    if (head.includes('/Encrypt')) return true;
+    return size > SPAN && (await read(Math.max(SPAN, size - SPAN), Math.min(SPAN, size - SPAN))).includes('/Encrypt');
+  } catch {
+    return false;
+  } finally {
+    if (handle) await handle.close().catch(() => {});
+  }
+}
+
+/**
  * Opened copies of the restricted-only files among `inputs`, in the job's scratch folder,
  * each under its own name so what the tool says names the file the user chose.
  * Returns { inputs, original, lifted }: the paths to give the tool, a map from a copy back
@@ -40,7 +67,7 @@ async function openRestricted(inputs, scratch, signal) {
   for (let i = 0; i < inputs.length; i++) {
     const file = inputs[i];
     const staged = `rs-${i}.pdf`;
-    if (!/\.pdf$/i.test(file) || !(await fs.copyFile(file, path.join(scratch, staged)).then(() => true, () => false)) ||
+    if (!/\.pdf$/i.test(file) || !(await mayBeEncrypted(file)) || !(await fs.copyFile(file, path.join(scratch, staged)).then(() => true, () => false)) ||
       !(await restrictedOnly(staged, scratch, signal))) {
       await fs.rm(path.join(scratch, staged), { force: true });
       opened.push(file);
@@ -72,4 +99,4 @@ function liftedNote(count) {
     : ` ${count} מהקבצים היו נעולים להדפסה והעתקה בלבד, ולכן העותקים נשמרו בלי ההגבלה.`;
 }
 
-module.exports = { restrictedOnly, openRestricted, liftedNote };
+module.exports = { restrictedOnly, mayBeEncrypted, openRestricted, liftedNote };

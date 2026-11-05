@@ -278,29 +278,61 @@ app.whenReady().then(async () => {
     'AES-256': ['--encrypt', '--user-password=', '--owner-password=bank', '--bits=256', '--print=none', '--extract=n', '--modify=none', '--'],
     'RC4, revision 3': ['--allow-weak-crypto', '--encrypt', '--user-password=', '--owner-password=bank', '--bits=128', '--use-aes=n', '--print=none', '--extract=n', '--'],
   };
+  const lockedFiles = {};
   for (const [label, args] of Object.entries(restricted)) {
     const file = path.join(dir, `דוח בנק ${label.length}.pdf`);
     qpdf('--object-streams=generate', ...args, doc, file);
+    lockedFiles[label] = file;
+    // Compress is given a heavy scan, locked the same way, so it has something to make smaller.
+    const heavyLocked = path.join(dir, `סריקה נעולה ${label.length}.pdf`);
+    qpdf('--object-streams=generate', ...args, (await heavyPdf(path.join(dir, `סריקה ${label.length}.pdf`))).file, heavyLocked);
     const before = hashOf(file);
+    const heavyBefore = hashOf(heavyLocked);
     const listed = await require('../src/main/pdf/inspect').describe(file);
     check(`a file locked only against printing and copying (${label}) is listed as usable, its pages counted`,
       !listed.error && listed.restricted === true && listed.pageCount === 3, JSON.stringify({ error: listed.error, restricted: listed.restricted, pages: listed.pageCount }));
     for (const [tool, options] of [['compress', { level: 'light' }], ['page-numbers', {}], ['rotate', { angle: 90 }], ['merge', {}]]) {
-      r = await runTool(tool, tool === 'merge' ? [file, doc] : [file], options);
-      if (r.ok && !r.outputs.length) {
-        // Compress saves nothing for a file already as small as it gets, and then says nothing
-        // about a copy it did not make.
-        check(`  ${tool} finds nothing to do, saves nothing, and says nothing of a copy`, !/נעול להדפסה/.test(r.summary || ''), r.summary);
-        continue;
-      }
+      const input = tool === 'compress' ? heavyLocked : file;
+      r = await runTool(tool, tool === 'merge' ? [file, doc] : [input], options);
       const outFile = r.ok ? r.outputs[0] : '';
       const pages = outFile ? (await PDFDocument.load(await fsp.readFile(outFile))).getPageCount() : 0;
+      const expected = tool === 'merge' ? 6 : tool === 'compress' ? 2 : 3;
       check(`  ${tool} works on it: saved beside it under its name, unlocked, every page, and says the restriction is gone`,
-        r.ok && path.dirname(outFile) === dir && path.basename(outFile).startsWith(path.basename(file, '.pdf')) &&
-        qpdf('--requires-password', outFile).code === 2 && pages === (tool === 'merge' ? 6 : 3) && /נעול להדפסה והעתקה/.test(r.summary || ''),
+        r.ok && path.dirname(outFile) === dir && path.basename(outFile).startsWith(path.basename(input, '.pdf')) &&
+        qpdf('--requires-password', outFile).code === 2 && pages === expected && /נעול להדפסה והעתקה/.test(r.summary || ''),
         r.error || `${path.basename(outFile)} ${pages} pages: ${r.summary}`);
     }
-    check(`  and the file itself is unchanged, byte for byte`, hashOf(file) === before);
+    check(`  and the files themselves are unchanged, byte for byte`, hashOf(file) === before && hashOf(heavyLocked) === heavyBefore);
+  }
+  {
+    // Only a file that may be locked is copied and checked: a batch of plain files is not
+    // copied whole into the job's folder first.
+    const fsPromises = require('fs/promises');
+    const realCopy = fsPromises.copyFile;
+    const copied = [];
+    fsPromises.copyFile = (from, ...rest) => {
+      copied.push(path.basename(String(from)));
+      return realCopy(from, ...rest);
+    };
+    const scratchFor = await fsp.mkdtemp(path.join(dir, 'open-'));
+    let opened;
+    try {
+      opened = await require('../src/main/pdf/restrictions').openRestricted([doc, lockedFiles['AES-256']], scratchFor);
+    } finally {
+      fsPromises.copyFile = realCopy;
+    }
+    check('only the locked file is copied to be opened; the plain one is used where it is',
+      copied.length === 1 && copied[0] === path.basename(lockedFiles['AES-256']) && opened.inputs[0] === doc && opened.lifted === 1, JSON.stringify(copied));
+  }
+  {
+    // The note is said of copies that were saved, and only where it is true.
+    const plainHeavy = (await heavyPdf(path.join(dir, 'סריקה רגילה.pdf'))).file;
+    r = await runTool('compress', [lockedFiles['RC4, revision 3'], plainHeavy], { level: 'light' });
+    check('Compress of a locked file that needs nothing and a plain one that does: one copy, and no word of a restriction',
+      r.ok && r.outputs.length === 1 && path.basename(r.outputs[0]).startsWith('סריקה רגילה') && !/נעול להדפסה/.test(r.summary || ''), r.error || `${r.outputs.length} copies: ${r.summary}`);
+    r = await runTool('protect', [lockedFiles['AES-256']], { password: 'new-pass-1' });
+    check('Protect of a locked file says nothing of a copy saved without restriction, as its copy has a password',
+      r.ok && !/בלי ההגבלה/.test(r.summary || '') && qpdf('--requires-password', r.outputs[0]).code === 0, r.error || r.summary);
   }
   {
     // The standard lets a file carry a little before its "%PDF-" line; every reader accepts it.

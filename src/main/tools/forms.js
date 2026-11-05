@@ -206,6 +206,22 @@ async function drawAppearances(doc, fields) {
 /** The fields of a form, for the screen. Positions are fractions of the page as shown. */
 async function readFields(file) {
   const doc = await PDFDocument.load(await fs.readFile(file), { ignoreEncryption: true, updateMetadata: false });
+  if (!doc.isEncrypted) return fieldsOf(doc);
+  // Locked only against printing and copying: read from an opened copy, as a run fills one,
+  // so the screen shows the names the run will fill.
+  const os = require('os');
+  const path = require('path');
+  const scratch = await fs.mkdtemp(path.join(os.tmpdir(), 'office-form-'));
+  try {
+    const opened = await require('../pdf/restrictions').openRestricted([file], scratch);
+    if (!opened.lifted) throw new Error(`הקובץ "${path.basename(file)}" מוגן בסיסמה. הסר את הסיסמה בכלי "הסרת סיסמה" ונסה שוב.`);
+    return fieldsOf(await PDFDocument.load(await fs.readFile(opened.inputs[0]), { updateMetadata: false }));
+  } finally {
+    await fs.rm(scratch, { recursive: true, force: true });
+  }
+}
+
+function fieldsOf(doc) {
   const form = doc.getForm();
   const pages = doc.getPages();
   const refs = pages.map((p) => p.ref.toString());

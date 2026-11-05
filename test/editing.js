@@ -191,6 +191,28 @@ app.whenReady().then(async () => {
   r = await runTool('forms', [formFile], { values: { name: 'רון קלנר' }, flatten: true });
   const flat = r.ok ? await PDFDocument.load(await fsp.readFile(r.display[0])) : null;
   check('flattening turns the fields into page content', flat && flat.getForm().getFields().length === 0 && (await text.documentText(r.display[0]))[0].includes('רון קלנר'), r.error);
+  {
+    // A form locked only against printing and copying, packed the way banks and government
+    // sites send them: it opens without a password, so its fields are read and filled.
+    const locked = path.join(dir, 'טופס נעול.pdf');
+    const plainIn = path.join(dir, 'locked-in.pdf');
+    const plainOut = path.join(dir, 'locked-out.pdf');
+    await fsp.copyFile(formFile, plainIn);
+    require('child_process').execFileSync(require('../src/main/engine/binaries').locate('qpdf'),
+      ['--object-streams=generate', '--encrypt', '--user-password=', '--owner-password=gov', '--bits=256', '--print=none', '--modify=none', '--', plainIn, plainOut]);
+    await fsp.rename(plainOut, locked);
+    let read = [];
+    try {
+      read = await readFields(locked);
+    } catch (err) {
+      read = [{ name: `threw: ${err.message}` }];
+    }
+    check('a form locked only against printing has its fields read by their names', read.map((f) => f.name).sort().join() === 'agree,city,name', JSON.stringify(read.map((f) => f.name)));
+    r = await runTool('forms', [locked], { values: { name: 'רון קלנר', city: 'חיפה' } });
+    const lockedFilled = r.ok ? (await PDFDocument.load(await fsp.readFile(r.display[0]))).getForm() : null;
+    check('  and is filled under those names, in a copy beside it', lockedFilled && lockedFilled.getTextField('name').getText() === 'רון קלנר' &&
+      lockedFilled.getDropdown('city').getSelected()[0] === 'חיפה' && path.dirname(r.display[0]) === dir, r.error);
+  }
   // A form that asks viewers to draw its fields, with a value already in one of them:
   // filling another must not leave the first blank.
   const asking = path.join(dir, 'טופס שמבקש ציור.pdf');
