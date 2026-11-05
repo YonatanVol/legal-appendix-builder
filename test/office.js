@@ -119,6 +119,17 @@ app.whenReady().then(async () => {
   office.reset({ office: new Set(['word']), libre: found.libre });
   check('with Office present, its tools are available even without LibreOffice',
     (await tools.list()).find((t) => t.id === 'word-to-pdf').available);
+  // LibreOffice removed but its launcher left behind (as Homebrew leaves one on a Mac), or a
+  // program file that is gone (Windows): the run says LibreOffice is the problem, not the file.
+  let broken = path.join(dir, 'missing', 'soffice.exe');
+  if (process.platform !== 'win32') {
+    broken = path.join(dir, 'soffice');
+    await fsp.writeFile(broken, '#!/bin/sh\nexec /Applications/NoSuchLibreOffice.app/Contents/MacOS/soffice "$@"\n', { mode: 0o755 });
+  }
+  office.reset({ office: new Set(), libre: broken });
+  r = await runTool('word-to-pdf', [docx]);
+  check('a LibreOffice whose installation is gone is named as the problem, not the document',
+    !r.ok && /LibreOffice/.test(r.error) && /התקנ/.test(r.error) && !/פגום או מוגן/.test(r.error), r.error);
   office.reset();
 
   console.log('\nthe Office scripts');

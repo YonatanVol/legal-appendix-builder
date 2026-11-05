@@ -289,7 +289,12 @@ async function viaLibre(soffice, input, to, ctx) {
     const stop = () => child.kill();
     const timer = setTimeout(stop, TIME_LIMIT_MS);
     ctx.signal.addEventListener('abort', stop, { once: true });
-    child.on('error', reject);
+    // It could not be started at all: the program file is gone or cannot run.
+    child.on('error', () => {
+      clearTimeout(timer);
+      ctx.signal.removeEventListener('abort', stop);
+      resolve('not-started');
+    });
     child.on('close', (c) => {
       clearTimeout(timer);
       ctx.signal.removeEventListener('abort', stop);
@@ -297,6 +302,11 @@ async function viaLibre(soffice, input, to, ctx) {
     });
   });
   ctx.throwIfCancelled();
+  // 126 and 127 are the shell's "cannot run" and "not found": a launcher left behind after
+  // LibreOffice itself was removed (as Homebrew leaves one on a Mac).
+  if (code === 'not-started' || (!isWin && (code === 126 || code === 127))) {
+    throw new Error('LibreOffice לא נפתח, כי ההתקנה שלו במחשב חסרה או פגומה. צריך להתקין אותו מחדש, או להמיר דרך Microsoft Office אם הוא מותקן.');
+  }
   const made = path.join(outDir, `${path.basename(input, path.extname(input))}.${to}`);
   if (code !== 0 || !fs.existsSync(made)) throw new Error('LibreOffice לא הצליח להמיר את הקובץ. ייתכן שהוא פגום או מוגן בסיסמה.');
   return made;
