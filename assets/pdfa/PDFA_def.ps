@@ -1,0 +1,22 @@
+%!
+% PDF/A output intent for Ghostscript, adapted from Ghostscript's own lib/PDFA_def.ps
+% (AGPL). The profile path arrives as -sICCProfile=..., and the file must also be
+% allowed with --permit-file-read, because -dSAFER is always on.
+[/_objdef {icc_PDFA} /type /stream /OBJ pdfmark
+[{icc_PDFA} << /N 3 >> /PUT pdfmark
+[{icc_PDFA} {ICCProfile (r) file} stopped
+{
+  (OFFICE-PDFA-ICC-FAILED\n) print
+  cleartomark
+}
+{
+  /PUT pdfmark
+  [/_objdef {OutputIntent_PDFA} /type /dict /OBJ pdfmark
+  [{OutputIntent_PDFA} <<
+    /Type /OutputIntent
+    /S /GTS_PDFA1
+    /DestOutputProfile {icc_PDFA}
+    /OutputConditionIdentifier (sRGB)
+  >> /PUT pdfmark
+  [{Catalog} << /OutputIntents [ {OutputIntent_PDFA} ] >> /PUT pdfmark
+} ifelse

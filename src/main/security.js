@@ -8,7 +8,8 @@ const { session } = require('electron');
 //
 // data: is required: generated pages are handed to Chromium as data: URLs so that no
 // case details are ever written to a temporary file.
-const ALLOWED_SCHEMES = new Set(['file:', 'data:', 'blob:', 'devtools:', 'chrome-extension:']);
+// app: is the renderer itself, served from disk by protocol.js.
+const ALLOWED_SCHEMES = new Set(['app:', 'file:', 'data:', 'blob:', 'devtools:', 'chrome-extension:']);
 
 function isAllowed(url) {
   try {
@@ -83,7 +84,39 @@ function lockDownUpdater(targetSession, options = {}) {
   targetSession.setPermissionRequestHandler((_wc, _permission, callback) => callback(false));
 }
 
+/*
+ * The second exception: Summarize and Translate, which send a document's text to
+ * Claude. They use a session of their own that may reach Anthropic's API over HTTPS and
+ * nothing else, and only when the office has entered a key. The document session keeps
+ * no network at all.
+ */
+const AI_PARTITION = 'office-ai';
+const AI_HOSTS = new Set(['api.anthropic.com']);
+
+function isAllowedForAi(url, { testBase } = {}) {
+  let target;
+  try {
+    target = new URL(url);
+  } catch {
+    return false;
+  }
+  const local = loopbackFeed(testBase);
+  if (local && target.origin === local.origin) return true;
+  return target.protocol === 'https:' && AI_HOSTS.has(target.hostname);
+}
+
+function lockDownAi(targetSession, options = {}) {
+  targetSession.webRequest.onBeforeRequest((details, callback) =>
+    callback({ cancel: !isAllowedForAi(details.url, options) })
+  );
+  targetSession.setPermissionRequestHandler((_wc, _permission, callback) => callback(false));
+}
+
 module.exports = {
+  lockDownAi,
+  isAllowedForAi,
+  AI_PARTITION,
+  AI_HOSTS,
   lockDownNetwork,
   isAllowed,
   ALLOWED_SCHEMES,
